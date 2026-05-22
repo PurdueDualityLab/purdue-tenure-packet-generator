@@ -30,7 +30,8 @@ publications/
 ├── README.md
 ├── .gitignore
 ├── assets/
-│   └── config.yaml            # ME, ADVISORS, STUDENTS, RANKS (user-curated)
+│   ├── config.example.yaml    # committed schema + starter venue rankings
+│   └── config.yaml            # ME, ADVISORS, STUDENTS, RANKS (gitignored — your data)
 └── src/
     └── pubs_emitter/
         ├── __init__.py
@@ -47,8 +48,10 @@ publications/
         └── cli.py             # parse_args + main()
 ```
 
-The bib (`my_papers.bib`), CVE YAML (`non-scholar-work.yaml`), cache
-(`lookup_cache.sqlite`), and output (`publications.rtf`) are all gitignored.
+The bib (`my_papers.bib`), CVE YAML (`non-scholar-work.yaml`), live user
+config (`assets/config.yaml`), cache (`lookup_cache.sqlite`), and output
+(`publications.rtf`) are all gitignored. Only `assets/config.example.yaml`
+— which carries the schema + starter venue rankings — is committed.
 
 ## Pipeline
 

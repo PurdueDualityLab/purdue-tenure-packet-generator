@@ -9,6 +9,10 @@ doi_cache.sqlite
 my_papers*.bib
 non-scholar-work.yaml
 
+# Live user config — schema lives in assets/config.example.yaml (committed).
+# Personal data (your real name/students/venue judgments) stays local.
+assets/config.yaml
+
 # Python
 .venv/
 __pycache__/

@@ -20,6 +20,14 @@ echo "==> Upgrading pip"
 echo "==> Installing pubs-emitter (editable) + dev extras"
 "$VENV_DIR/bin/python" -m pip install --quiet -e ".[dev]"
 
+# Bootstrap the user's live config from the committed template on first run.
+# Subsequent runs leave the existing config alone.
+if [[ ! -f assets/config.yaml ]]; then
+    cp assets/config.example.yaml assets/config.yaml
+    echo "==> Created assets/config.yaml from template"
+    echo "    Edit it with your name, students, and venue rankings before running."
+fi
+
 echo ""
 echo "Done. Activate with:"
 echo "    source $VENV_DIR/bin/activate"

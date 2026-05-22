@@ -123,8 +123,13 @@ same bar. If you need to suppress an unavoidable warning, prefer an inline
 ## Setup / env
 
 - **`./setup.sh`** is the one-command bootstrap: creates `.venv`, installs
-  the package editable with dev extras (`pylint`, `mypy`, type stubs).
+  the package editable with dev extras (`pylint`, `mypy`, type stubs), and
+  copies `assets/config.example.yaml` → `assets/config.yaml` on first run.
   Idempotent — safe to re-run.
+- **`assets/config.yaml` is gitignored**; only `assets/config.example.yaml`
+  is committed. The example carries the schema documentation + a starter
+  set of venue rankings. The live config holds personal data (real
+  students, your actual venue judgments) and stays local.
 - **`pyproject.toml`** is the source of truth for deps + lint configs. No
   `requirements.txt`.
 - **`PUBS_EMITTER_CONFIG`** env var overrides `assets/config.yaml` path
