@@ -1,3 +1,4 @@
 bibtexparser
 requests
 pylatexenc
+pyyaml
