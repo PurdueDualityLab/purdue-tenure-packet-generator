@@ -136,6 +136,14 @@ logging.basicConfig(
 log = logging.getLogger("pubs-emitter")
 
 
+# DOI-lookup counters (mutated by fetch_doi_or_url + resolve_link; summarized in main).
+DOI_STATS: dict[str, int] = {
+    "cache_hits": 0,        # cache row found (whether the cached value was a DOI or empty)
+    "cache_misses": 0,      # cache miss → Crossref/DBLP query
+    "arxiv_constructed": 0, # arXiv entries: DOI built from arXiv ID, cache bypassed
+}
+
+
 # ==========================================
 # TYPES
 # ==========================================
@@ -269,9 +277,11 @@ def fetch_doi_or_url(conn: sqlite3.Connection, title: str, authors: str) -> str:
     cur.execute("SELECT doi_or_url FROM doi_cache WHERE title=?", (title.lower(),))
     row = cur.fetchone()
     if row:
+        DOI_STATS["cache_hits"] += 1
         log.debug("DOI cache hit: %s", title[:60])
         return row[0]
 
+    DOI_STATS["cache_misses"] += 1
     log.info("Fetching DOI for: %s", title[:60])
     link = try_crossref(title, authors) or try_dblp(title)
     if not link:
@@ -372,6 +382,7 @@ def resolve_link(
                 "Add the ID via `eprint = {<id>}` or include `arXiv:<id>` in the journal field."
             )
             sys.exit(1)
+        DOI_STATS["arxiv_constructed"] += 1
         return f"https://doi.org/10.48550/arXiv.{arxiv_id}"
     return fetch_doi_or_url(conn, title, raw_authors)
 
@@ -521,6 +532,22 @@ def log_section_summary(publications: Publications) -> None:
             log.info("Section %s '%s': %d papers", SECTION_CODES[section], section, len(cits))
 
 
+def log_doi_stats() -> None:
+    """Summarize DOI-lookup outcomes so the cache's effectiveness is visible."""
+    hits = DOI_STATS["cache_hits"]
+    misses = DOI_STATS["cache_misses"]
+    arxiv = DOI_STATS["arxiv_constructed"]
+    lookups = hits + misses
+    if lookups:
+        rate = 100.0 * hits / lookups
+        log.info(
+            "DOI cache: %d/%d hits (%.0f%%); %d network queries; %d arXiv constructed (cache bypassed)",
+            hits, lookups, rate, misses, arxiv,
+        )
+    elif arxiv:
+        log.info("DOI cache: 0 lookups; %d arXiv constructed (cache bypassed)", arxiv)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -579,6 +606,7 @@ def main(argv: list[str] | None = None) -> None:
             publications[section].sort(key=lambda c: c.year)
 
         log_section_summary(publications)
+        log_doi_stats()
         write_rtf(args.out, publications)
     finally:
         conn.close()
