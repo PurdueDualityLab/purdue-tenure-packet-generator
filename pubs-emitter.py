@@ -1,54 +1,73 @@
 #!/usr/bin/env python3
+"""Generate a formatted RTF publication list from BibTeX.
 
-import sqlite3
-import requests
+Run: python3 pubs-emitter.py --bib my_papers.bib
+Set LOG_LEVEL=DEBUG to see DOI cache hits per paper.
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import os
 import re
+import sqlite3
+import sys
 import urllib.parse
 from collections import defaultdict
+from typing import Literal, NamedTuple
+
 import bibtexparser
-import sys
+import requests
+from pylatexenc.latex2text import LatexNodes2Text
 
-BIB_FILE = "my_papers.bib"
-OUT_FILE = "publications.rtf"
-DB_FILE = "doi_cache.sqlite"
+_LATEX_DECODER = LatexNodes2Text()
+
+
+def decode_latex(s: str) -> str:
+    """Convert LaTeX escapes (`{\\c{C}}` → `Ç`, `{\\'e}` → `é`, `{NLP}` → `NLP`) to Unicode."""
+    return _LATEX_DECODER.latex_to_text(s)
 
 # ==========================================
-# CONFIGURATION: AUTHOR LISTS
+# CONFIGURATION
 # ==========================================
+DEFAULT_OUT_FILE = "publications.rtf"
+DEFAULT_DB_FILE = "doi_cache.sqlite"
+
 ME = ["Davis, James C", "Davis, J.", "Davis, James"]
 ADVISORS = ["Lee, Dongyoon"]
 
-# You can tinker with these lists. The script will automatically generate
-# reverse formats (e.g., "Kalu, Kelechi G.") before inserting into the DB.
-STUDENTS = {
-    "G": [ # PhDs, MScs, and Alumni (Grad)
-        "Paschal C. Amusuo", "Dharun Anand", "Kelechi G. Kalu", "Purvish Jajal", 
+StudentType = Literal["G", "U"]
+
+STUDENTS: dict[StudentType, list[str]] = {
+    "G": [  # PhDs, MScs, and Alumni (Grad)
+        "Paschal C. Amusuo", "Dharun Anand", "Kelechi G. Kalu", "Purvish Jajal",
         "Nick Eliopoulos", "Berk Çakar", "Huiyun Peng", "Daniel Lugo", "Drew Rozema",
         "Sofia Okorafor", "Chinenye Okafor", "Tanmay Singla", "Parth V. Patil", "Ishgair",
         "Wenxin Jiang", "Taylor Schorlemmer", "Jason Jones", "William Maxam", "Trey Maxam",
-        "Geoffrey Cramer", "Ricardo Calvo"
+        "Geoffrey Cramer", "Ricardo Calvo",
     ],
-    "U": [ # Undergraduates and Alumni (Undergrad)
-        "Charlie Sale", "Arav Tewari", "Taylor Le Lievre", "Nathaniel Bielanski", 
-        "Owen Cochell", "Ethan Burmane", "Sophie Chen", "Mohammed Ahmed", 
-        "Mohammed Sameh", "Mingyu Kim", "Heesoo Kim", "Zhongwei Xu", 
-        "Matthew Campbell", "Kyle Robinson", "Ananya Singh", "Evan Williams", 
-        "David Li", "Zach Ghera", "Allen Liu", "Feny Patel", "Efe Barlas", 
+    "U": [  # Undergraduates and Alumni (Undergrad)
+        "Charlie Sale", "Arav Tewari", "Taylor Le Lievre", "Nathaniel Bielanski",
+        "Owen Cochell", "Ethan Burmane", "Sophie Chen", "Mohammed Ahmed",
+        "Mohammed Sameh", "Mingyu Kim", "Heesoo Kim", "Zhongwei Xu",
+        "Matthew Campbell", "Kyle Robinson", "Ananya Singh", "Evan Williams",
+        "David Li", "Zach Ghera", "Allen Liu", "Feny Patel", "Efe Barlas",
         "Xin Du", "Diego Montes", "Naveen Vivek", "Anirudh Vegesana", "Vishnu Banna",
-	"Jiashen Kuo", "Luke Chigges", "Kyung Ko", "Joseph Woo", "Anusha Sarraf",
-	"Bhavesh Pareek", "Erik Kocinare"
-
-
-# TODO: I am on item 43 from website, "Discrepancies"
-# Once we are working on the full bib, need to add an assert that every student appears in at least one paper.
-
-    ]
+        "Jiashen Kuo", "Luke Chigges", "Kyung Ko", "Joseph Woo", "Anusha Sarraf",
+        "Bhavesh Pareek", "Erik Kocinare",
+    ],
 }
 
-# ==========================================
-# CONFIGURATION: VENUE RANKS
-# ==========================================
-RANKS = {
+# TODO: On item 43 from website, "Discrepancies".
+# Once we're working on the full bib, add an assert that every student
+# appears in at least one paper.
+
+Category = Literal["Journals", "Conferences and Workshops", "arXiv / Preprints"]
+Rank = str  # "Rank 1" | "Rank 2" | "Rank 3" | "Workshop" | "Magazine" | "Preprint"
+Section = Literal["Journals", "Conferences and Workshops", "Magazines and Preprints"]
+
+RANKS: dict[str, Rank] = {
     # Rank 1
     "EMSE": "Rank 1", "ICSE": "Rank 1", "FSE": "Rank 1", "ESEC/FSE": "Rank 1",
     "ASE": "Rank 1", "ISSTA": "Rank 1", "JSS": "Rank 1",
@@ -73,291 +92,497 @@ RANKS = {
     "LCTES-WIP": "Workshop", "ACIEE": "Workshop", "ICSE-DREE": "Workshop",
 
     # Magazines
-    "IEEE Design&Test": "Magazine", "Computer": "Magazine"
+    "IEEE Design&Test": "Magazine", "Computer": "Magazine",
+}
+
+SECTION_ORDER: list[Section] = [
+    "Journals",
+    "Conferences and Workshops",
+    "Magazines and Preprints",
+]
+
+SECTION_CODES: dict[Section, str] = {
+    "Journals": "C.2",
+    "Conferences and Workshops": "C.4",
+    "Magazines and Preprints": "C.5",
+}
+
+# Inline tier label appended at end of each citation.
+TIER_LABELS: dict[Rank, str] = {
+    "Rank 1": "Tier 1",
+    "Rank 2": "Tier 2",
+    "Rank 3": "Tier 3",
+    "Workshop": "Workshop",
+    "Magazine": "Magazine",
+    "Preprint": "Preprint",
+}
+
+# Sponsoring orgs: spell out on first occurrence per section, bare acronym after.
+ORG_EXPANSIONS: dict[str, str] = {
+    "IEEE": "Institute of Electrical and Electronics Engineers (IEEE)",
+    "ACM": "Association for Computing Machinery (ACM)",
+    "USENIX": "USENIX Association (USENIX)",
 }
 
 # ==========================================
-# INITIALIZATION & DATABASE SETUP
+# LOGGING
 # ==========================================
-# Pre-process student names to catch both "First Last" and "Last, First"
-PROCESSED_STUDENTS = {}
-for s_type, names in STUDENTS.items():
-    for name in names:
-        PROCESSED_STUDENTS[name.lower()] = s_type
-        if " " in name:
-            parts = name.split()
-            last_name = parts[-1]
-            first_names = " ".join(parts[:-1])
-            reversed_name = f"{last_name}, {first_names}"
-            PROCESSED_STUDENTS[reversed_name.lower()] = s_type
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%H:%M:%S",
+    stream=sys.stderr,
+)
+log = logging.getLogger("pubs-emitter")
 
-# Keep SQLite ONLY for the DOI Cache
-conn = sqlite3.connect(DB_FILE)
-cur = conn.cursor()
-cur.execute('''CREATE TABLE IF NOT EXISTS doi_cache 
-               (title TEXT PRIMARY KEY, doi_or_url TEXT)''')
-conn.commit()
 
 # ==========================================
-# DATABASE SETUP & POPULATION
+# TYPES
 # ==========================================
-conn = sqlite3.connect(DB_FILE)
-cur = conn.cursor()
-cur.execute('''CREATE TABLE IF NOT EXISTS doi_cache 
-               (title TEXT PRIMARY KEY, doi_or_url TEXT)''')
-cur.execute('''CREATE TABLE IF NOT EXISTS ranks 
-               (acronym TEXT PRIMARY KEY, rank TEXT)''')
+class Citation(NamedTuple):
+    section: Section
+    rank: Rank
+    year: int          # sort key; 9999 for "In Press" / unparseable
+    year_str: str      # display value
+    authors_rtf: str   # already carries RTF markup (\b, \super, ...)
+    title: str         # raw text; escaped at render time
+    venue: str         # raw cleaned text; expansion + escape at render time
+    details: str       # ', vol(issue), pages' suffix; escaped at render time
+    link: str          # full URL ("" if none)
 
-# Reset and populate the students table every run
-cur.execute('''DROP TABLE IF EXISTS students''')
-cur.execute('''CREATE TABLE students (name TEXT PRIMARY KEY, type TEXT)''')
 
-for s_type, names in STUDENTS.items():
-    for name in names:
-        # Insert "First Last"
-        cur.execute("INSERT OR IGNORE INTO students (name, type) VALUES (?, ?)", (name, s_type))
-        
-        # Auto-generate and insert "Last, First M." variation for BibTeX matching
-        if " " in name:
-            parts = name.split()
-            last_name = parts[-1]
-            first_names = " ".join(parts[:-1])
-            reversed_name = f"{last_name}, {first_names}"
-            cur.execute("INSERT OR IGNORE INTO students (name, type) VALUES (?, ?)", (reversed_name, s_type))
+Publications = dict[Section, list[Citation]]
+BibEntry = dict[str, str]
 
-conn.commit()
 
 # ==========================================
-# HELPER FUNCTIONS
+# DATABASE
 # ==========================================
-def is_me_or_advisor(bib_name, person_list):
+def open_db(path: str) -> sqlite3.Connection:
+    """Open the DOI cache + create a fresh students table for this run."""
+    conn = sqlite3.connect(path)
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE IF NOT EXISTS doi_cache (title TEXT PRIMARY KEY, doi_or_url TEXT)")
+    cur.execute("DROP TABLE IF EXISTS students")
+    cur.execute("CREATE TABLE students (name TEXT PRIMARY KEY, type TEXT)")
+    conn.commit()
+    return conn
+
+
+def populate_students(conn: sqlite3.Connection, students: dict[StudentType, list[str]]) -> None:
+    """Insert every student name + auto-generated 'Last, First' reverse form."""
+    cur = conn.cursor()
+    for s_type, names in students.items():
+        for name in names:
+            cur.execute("INSERT OR IGNORE INTO students (name, type) VALUES (?, ?)", (name, s_type))
+            if " " in name:
+                parts = name.split()
+                reversed_name = f"{parts[-1]}, {' '.join(parts[:-1])}"
+                cur.execute(
+                    "INSERT OR IGNORE INTO students (name, type) VALUES (?, ?)",
+                    (reversed_name, s_type),
+                )
+    conn.commit()
+
+
+# ==========================================
+# AUTHOR CLASSIFICATION
+# ==========================================
+def name_matches(bib_name: str, person_list: list[str]) -> bool:
     return any(p.lower() in bib_name.lower() for p in person_list)
 
-def get_student_type(bib_name):
-    """Queries the SQLite DB to check if the author is a known student."""
+
+def lookup_student_type(conn: sqlite3.Connection, bib_name: str) -> str:
+    """Return 'G' / 'U' if bib_name matches a known student, else ''."""
+    cur = conn.cursor()
     cur.execute("SELECT name, type FROM students")
     for db_name, s_type in cur.fetchall():
-        # Match exact string inclusion (case-insensitive) to prevent "Li" from matching "Lie"
         if db_name.lower() in bib_name.lower():
             return s_type
     return ""
 
-def format_author_name(bib_name, is_last):
-    """Converts 'Last, First Middle' -> 'F.M. Last' and applies RTF tags."""
-    if ',' in bib_name:
-        parts = [p.strip() for p in bib_name.split(',')]
+
+def format_author(conn: sqlite3.Connection, bib_name: str, is_last: bool) -> str:
+    """'Last, F.I.' format. Bold for me. Comma-joined role markers after the name."""
+    bib_name = decode_latex(bib_name)
+    if "," in bib_name:
+        parts = [p.strip() for p in bib_name.split(",")]
         last = parts[0]
         firsts = parts[1].split() if len(parts) > 1 else []
     else:
         parts = bib_name.split()
         last = parts[-1]
         firsts = parts[:-1]
-    
-    initials = ".".join([f[0].upper() for f in firsts]) + "." if firsts else ""
-    formatted_name = f"{initials} {last}".strip()
 
-    # Apply RTF formatting
-    is_me = is_me_or_advisor(bib_name, ME)
-    if is_me:
-        formatted_name = f"\\b {formatted_name}\\b0"
-        
-    superscripts = ""
-    
-    # Check DB for student status
-    student_type = get_student_type(bib_name)
+    initials = ".".join(f[0].upper() for f in firsts) + "." if firsts else ""
+    formatted = f"{last}, {initials}" if initials else last
+
+    if name_matches(bib_name, ME):
+        formatted = f"\\b {formatted}\\b0"
+
+    markers: list[str] = []
+    student_type = lookup_student_type(conn, bib_name)
     if student_type:
-        superscripts += student_type
-        
-    # Check Advisors
-    if is_me_or_advisor(bib_name, ADVISORS): 
-        superscripts += "#"
-        
-    # Final author asterisk
-    if is_last: 
-        superscripts += "*"
-    
-    if superscripts:
-        formatted_name += f"\\super {superscripts}\\nosupersub"
-        
-    return formatted_name
+        markers.append(student_type)
+    if name_matches(bib_name, ADVISORS):
+        markers.append("#")
+    if is_last:
+        markers.append("*")
 
-def fetch_doi_or_url(title, authors):
-    """Query Crossref first, fallback to DBLP for USENIX/others."""
-    cur.execute("SELECT doi_or_url FROM doi_cache WHERE title=?", (title.lower(),))
-    row = cur.fetchone()
-    if row:
-        return row[0]
-        
-    print(f"Fetching DOI for: {title[:50]}...")
-    
-    # 1. Try Crossref
+    if markers:
+        formatted += f"\\super {','.join(markers)}\\nosupersub"
+    return formatted
+
+
+# ==========================================
+# DOI LOOKUP
+# ==========================================
+def try_crossref(title: str, authors: str) -> str:
     try:
         query = urllib.parse.quote(f"{title} {authors.split(' and ')[0]}")
         url = f"https://api.crossref.org/works?query={query}&select=DOI,title&rows=1"
         resp = requests.get(url, timeout=5).json()
-        items = resp.get('message', {}).get('items', [])
+        items = resp.get("message", {}).get("items", [])
         if items:
-            link = f"https://doi.org/{items[0]['DOI']}"
-            cur.execute("INSERT INTO doi_cache VALUES (?, ?)", (title.lower(), link))
-            conn.commit()
-            return link
+            return f"https://doi.org/{items[0]['DOI']}"
     except Exception as e:
-        pass
+        log.warning("Crossref query failed for '%s': %s", title[:60], e)
+    return ""
 
-    # 2. Try DBLP
+
+def try_dblp(title: str) -> str:
     try:
         q_title = urllib.parse.quote(title)
         url = f"https://dblp.org/search/publ/api?q={q_title}&format=json&h=1"
         resp = requests.get(url, timeout=5).json()
-        hits = resp.get('result', {}).get('hits', {}).get('hit', [])
+        hits = resp.get("result", {}).get("hits", {}).get("hit", [])
         if hits:
-            link = hits[0]['info'].get('ee', '')
-            if link:
-                cur.execute("INSERT INTO doi_cache VALUES (?, ?)", (title.lower(), link))
-                conn.commit()
-                return link
-    except Exception:
-        pass
-
-    # 3. Fallback
-    cur.execute("INSERT INTO doi_cache VALUES (?, ?)", (title.lower(), ""))
-    conn.commit()
+            return hits[0]["info"].get("ee", "") or ""
+    except Exception as e:
+        log.warning("DBLP query failed for '%s': %s", title[:60], e)
     return ""
 
-def get_venue_rank(acronym, title):
-    """Returns the rank from the dictionary, or triggers a fatal error if missing."""
+
+def fetch_doi_or_url(conn: sqlite3.Connection, title: str, authors: str) -> str:
+    """Cache-first DOI lookup: Crossref, then DBLP, then empty string."""
+    cur = conn.cursor()
+    cur.execute("SELECT doi_or_url FROM doi_cache WHERE title=?", (title.lower(),))
+    row = cur.fetchone()
+    if row:
+        log.debug("DOI cache hit: %s", title[:60])
+        return row[0]
+
+    log.info("Fetching DOI for: %s", title[:60])
+    link = try_crossref(title, authors) or try_dblp(title)
+    if not link:
+        log.warning("No DOI/URL found for: %s", title[:60])
+    cur.execute("INSERT INTO doi_cache VALUES (?, ?)", (title.lower(), link))
+    conn.commit()
+    return link
+
+
+# ==========================================
+# ARXIV ID EXTRACTION
+# ==========================================
+# Modern arXiv IDs: 2605.10712 (YYMM.NNNNN, 4 or 5 digit suffix)
+# Legacy IDs: hep-ph/0501001 or math.GT/0501001
+ARXIV_ID_RE = re.compile(r"\b(\d{4}\.\d{4,5}|[a-z\-]+(?:\.[A-Z]{2})?/\d{7})\b")
+
+
+def extract_arxiv_id(entry: BibEntry) -> str | None:
+    """Pull an arXiv ID out of the entry. Prefers `eprint`, falls back to text fields."""
+    if "eprint" in entry:
+        m = ARXIV_ID_RE.search(entry["eprint"])
+        if m:
+            return m.group(1)
+    for field in ("journal", "booktitle", "url", "title"):
+        m = ARXIV_ID_RE.search(entry.get(field, ""))
+        if m:
+            return m.group(1)
+    return None
+
+
+# ==========================================
+# VENUE PARSING
+# ==========================================
+def parse_venue(venue_str: str) -> tuple[str | None, str]:
+    """Pull '[ACRONYM'YY]' off the front. Returns (acronym, cleaned-venue)."""
+    match = re.search(r"\[(.*?)\]", venue_str)
+    if not match:
+        return None, venue_str
+    raw_acronym = match.group(1).strip()
+    acronym = re.sub(r"[\'’`\s]+\d{2,4}$", "", raw_acronym).strip()
+    cleaned = venue_str.replace(match.group(0), "").strip()
+    cleaned = re.sub(r"^[,:\s]+", "", cleaned)
+    return acronym, cleaned
+
+
+def lookup_rank(acronym: str | None, title: str) -> Rank:
+    """Resolve an acronym to its rank, or abort with a clear error."""
     if not acronym:
-        print(f"\n[FATAL ERROR] Missing [ACRONYM] tag in venue field.")
-        print(f"-> Paper: '{title}'")
+        log.error("Missing [ACRONYM] tag in venue field for paper: '%s'", title)
         sys.exit(1)
-    
-    # Look for exact or case-insensitive match
-    for known_acronym, rank in RANKS.items():
-        if acronym.upper() == known_acronym.upper():
+    for known, rank in RANKS.items():
+        if acronym.upper() == known.upper():
             return rank
-            
-    print(f"\n[FATAL ERROR] Unranked venue encountered: '{acronym}'")
-    print(f"-> Paper: '{title}'")
-    print("Please add it to the RANKS dictionary at the top of the script to continue.")
+    log.error("Unranked venue '%s' for paper: '%s'", acronym, title)
+    log.error("Add '%s' to the RANKS dictionary at the top of the script.", acronym)
     sys.exit(1)
 
-def escape_rtf(text):
-    """Escapes curly braces and backslashes for raw RTF."""
-    return text.replace('\\', '\\\\').replace('{', '\\{').replace('}', '\\}')
 
 # ==========================================
-# MAIN PROCESSING LOOP
+# CITATION BUILDING
 # ==========================================
-def main():
-    with open(BIB_FILE, 'r', encoding='utf-8') as f:
-        bib_database = bibtexparser.load(f)
+def escape_rtf(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
 
-    # Structure: dict[Category][Rank] = [citations...]
-    publications = {
-        "Journals": defaultdict(list),
-        "Conferences and Workshops": defaultdict(list),
-        "arXiv / Preprints": defaultdict(list)
-    }
 
-    for entry in bib_database.entries:
-        title = entry.get('title', '').replace('{', '').replace('}', '').replace('\n', ' ')
-        raw_authors = entry.get('author', '')
-        year = entry.get('year', 'In Press')
-        
-        # 1. Determine Category and extract Venue details
-        category = "Unknown"
-        venue_str = ""
-        
-        if 'journal' in entry:
-            venue_str = entry['journal'].replace('\n', ' ')
-            category = "arXiv / Preprints" if "arxiv" in venue_str.lower() else "Journals"
-        elif 'booktitle' in entry:
-            venue_str = entry['booktitle'].replace('\n', ' ')
-            category = "Conferences and Workshops"
-        elif 'eprint' in entry:
-            venue_str = "arXiv"
-            category = "arXiv / Preprints"
+def classify_entry(entry: BibEntry) -> tuple[Category, str]:
+    """Determine (category, raw-venue-string) for a BibTeX entry."""
+    if "journal" in entry:
+        venue = entry["journal"].replace("\n", " ")
+        category: Category = "arXiv / Preprints" if "arxiv" in venue.lower() else "Journals"
+        return category, venue
+    if "booktitle" in entry:
+        return "Conferences and Workshops", entry["booktitle"].replace("\n", " ")
+    if "eprint" in entry:
+        return "arXiv / Preprints", "arXiv"
+    return "arXiv / Preprints", ""
 
-        # 2. Parse Acronym from venue string "[ACRONYM'YY]"
-        acronym = None
-        # Match anything inside the first pair of brackets
-        match = re.search(r'\[(.*?)\]', venue_str)
-        if match:
-            # Extracts everything inside (e.g., "USENIX Security'26" or "JSS 2025")
-            raw_acronym = match.group(1).strip()
-            
-            # Safely strip trailing quotes, backticks, spaces, and the 2-4 digit year
-            acronym = re.sub(r'[\'’`\s]+\d{2,4}$', '', raw_acronym).strip()
-            
-            # Remove the bracketed tag from the final string
-            venue_str = venue_str.replace(match.group(0), '').strip()
-            venue_str = re.sub(r'^[,:\s]+', '', venue_str)
 
-        # Pass the title into the updated get_venue_rank function
-        rank = get_venue_rank(acronym, title) if category != "arXiv / Preprints" else "Preprint"
+def resolve_link(
+    conn: sqlite3.Connection,
+    entry: BibEntry,
+    category: Category,
+    title: str,
+    raw_authors: str,
+) -> str:
+    """Pick the right link source.
 
-        # 3. Format Authors
-        author_list = raw_authors.split(' and ')
-        formatted_authors = []
-        for i, auth in enumerate(author_list):
-            is_last = (i == len(author_list) - 1)
-            formatted_authors.append(format_author_name(auth.strip(), is_last))
-        
-        authors_final = ", ".join(formatted_authors)
+    arXiv: construct the canonical arXiv DOI (`10.48550/arXiv.<id>`).
+    Hard-fails if no ID can be parsed — every [arXiv'XX] entry must carry one.
 
-         # 4. Fetch DOI / Link
-        if category == "arXiv / Preprints":
-            # Bypass external APIs to prevent aggressive/wrong fuzzy matching.
-            # Just pull it if Google Scholar already provided it in the .bib file.
-            if 'doi' in entry:
-                link = f"https://doi.org/{entry['doi'].replace('https://doi.org/', '')}"
-            elif 'url' in entry:
-                link = entry['url']
-            else:
-                link = ""
-        else:
-            link = fetch_doi_or_url(title, raw_authors)
+    Everything else: cache-backed Crossref + DBLP lookup.
+    """
+    if category == "arXiv / Preprints":
+        arxiv_id = extract_arxiv_id(entry)
+        if not arxiv_id:
+            log.error("arXiv entry missing arXiv ID: '%s'", title)
+            log.error(
+                "Add the ID via `eprint = {<id>}` or include `arXiv:<id>` in the journal field."
+            )
+            sys.exit(1)
+        return f"https://doi.org/10.48550/arXiv.{arxiv_id}"
+    return fetch_doi_or_url(conn, title, raw_authors)
 
-        # 5. Build Citation String
-        vol_issue = entry.get('volume', '')
-        if 'number' in entry: vol_issue += f"({entry['number']})"
-        pages = entry.get('pages', '')
-        
-        details = []
-        if vol_issue: details.append(vol_issue)
-        if pages: details.append(pages)
-        details_str = ", ".join(details)
-        if details_str: details_str = f", {details_str}"
 
-        citation = f"{authors_final}, \"{escape_rtf(title)},\" {escape_rtf(venue_str)}{details_str} ({year})."
-        if link:
-            citation += f" {{\\field{{\\*\\fldinst HYPERLINK \"{link}\"}}{{\\fldrslt {link}}}}}"
+def format_details(entry: BibEntry) -> str:
+    """', vol(issue), pages' suffix."""
+    vol_issue = entry.get("volume", "")
+    if "number" in entry:
+        vol_issue += f"({entry['number']})"
+    pages = entry.get("pages", "")
+    parts = [p for p in (vol_issue, pages) if p]
+    return ", " + ", ".join(parts) if parts else ""
 
-        publications[category][rank].append(citation)
 
-    # ==========================================
-    # GENERATE RTF FILE
-    # ==========================================
-    print("\nGenerating RTF file...")
-    with open(OUT_FILE, 'w', encoding='utf-8') as out:
+def parse_year(year_str: str) -> int:
+    """Sort key for chronological order. Non-int strings sort to the end."""
+    try:
+        return int(year_str)
+    except ValueError:
+        return 9999
+
+
+def derive_section(category: Category, rank: Rank) -> Section:
+    """Map (category, rank) to the display section. Magazines + preprints share C.5."""
+    if category == "arXiv / Preprints" or rank in ("Magazine", "Preprint"):
+        return "Magazines and Preprints"
+    if category == "Conferences and Workshops":
+        return "Conferences and Workshops"
+    return "Journals"
+
+
+def build_citation(conn: sqlite3.Connection, entry: BibEntry) -> Citation:
+    """Assemble a Citation. RTF assembly is deferred to render time."""
+    title = decode_latex(entry.get("title", "")).replace("\n", " ")
+    raw_authors = entry.get("author", "")
+    year_str = entry.get("year", "In Press")
+
+    category, venue_str = classify_entry(entry)
+    venue_str = decode_latex(venue_str)
+    acronym, venue_str = parse_venue(venue_str)
+    rank: Rank = "Preprint" if category == "arXiv / Preprints" else lookup_rank(acronym, title)
+    section = derive_section(category, rank)
+
+    author_list = raw_authors.split(" and ")
+    formatted_authors = [
+        format_author(conn, a.strip(), is_last=(i == len(author_list) - 1))
+        for i, a in enumerate(author_list)
+    ]
+    authors_rtf = ", ".join(formatted_authors)
+    link = resolve_link(conn, entry, category, title, raw_authors)
+
+    return Citation(
+        section=section,
+        rank=rank,
+        year=parse_year(year_str),
+        year_str=year_str,
+        authors_rtf=authors_rtf,
+        title=title,
+        venue=venue_str,
+        details=format_details(entry),
+        link=link,
+    )
+
+
+# ==========================================
+# RTF OUTPUT
+# ==========================================
+def apply_acronym_expansions(venue: str, done: set[str]) -> str:
+    """Spell out an org acronym on its first occurrence in this section.
+
+    Mutates `done` to record which acronyms have been expanded so subsequent
+    citations in the same section keep them as bare acronyms.
+    """
+    for acronym, expansion in ORG_EXPANSIONS.items():
+        if acronym in done:
+            continue
+        if re.search(rf"\b{acronym}\b", venue):
+            venue = re.sub(rf"\b{acronym}\b", expansion, venue, count=1)
+            done.add(acronym)
+    return venue
+
+
+def render_doi_field(link: str) -> str:
+    """RTF for the hyperlink + visible 'DOI:<bare>' (or 'URL:<full>') prefix."""
+    if not link:
+        return ""
+    if link.startswith("https://doi.org/"):
+        prefix = "DOI:"
+        display = link[len("https://doi.org/"):]
+    else:
+        prefix = "URL:"
+        display = link
+    return f' {prefix}{{\\field{{\\*\\fldinst HYPERLINK "{link}"}}{{\\fldrslt {display}}}}}'
+
+
+def render_citation(cit: Citation, expansion_done: set[str]) -> str:
+    """RTF body for one citation (no paragraph wrapping)."""
+    venue = apply_acronym_expansions(cit.venue, expansion_done)
+    body = (
+        f"{cit.authors_rtf}, ({cit.year_str}). "
+        f"{escape_rtf(cit.title)}, "
+        f"\\i {escape_rtf(venue)}\\i0"
+        f"{escape_rtf(cit.details)}."
+    )
+    body += render_doi_field(cit.link)
+    body += f" \\i {TIER_LABELS[cit.rank]}\\i0."
+    return body
+
+
+def write_rtf(path: str, publications: Publications) -> None:
+    log.info("Generating RTF file: %s", path)
+    with open(path, "w", encoding="utf-8") as out:
         out.write(r"{\rtf1\ansi\ansicpg1252\deff0{\fonttbl{\f0\froman\fcharset0 Times New Roman;}}")
         out.write(r"{\colortbl;\red0\green0\blue255;}")
-        
-        for category, ranks in publications.items():
-            if not ranks: continue
-            
-            out.write(f"\\par\\b\\fs28 {category}\\b0\\fs24\\par\\par\n")
-            
-            # Sort ranks (Custom sort so Rank 1 > Rank 2 > Rank 3 > Workshop > Unranked)
-            for rank in sorted(ranks.keys()):
-                out.write(f"\\b {rank}\\b0\\par\n")
-                
-                for idx, cit in enumerate(ranks[rank], 1):
-                    out.write(f"{idx}. {cit}\\par\\par\n")
+
+        for section in SECTION_ORDER:
+            citations = publications.get(section, [])
+            if not citations:
+                continue
+            code = SECTION_CODES[section]
+            out.write(f"\\pard\\b\\fs28 {code} {section}\\b0\\fs24\\par\\par\n")
+
+            expansion_done: set[str] = set()
+            for idx, cit in enumerate(citations, 1):
+                body = render_citation(cit, expansion_done)
+                # Hanging indent: first line flush, continuation lines indented to 720 twips.
+                out.write(f"\\pard\\li720\\fi-720 {code}.{idx}.\\tab {body}\\par\\par\n")
         out.write("}")
-        
-    print(f"Success! Check {OUT_FILE}")
+    log.info("Done. Output: %s", path)
+
+
+# ==========================================
+# MAIN
+# ==========================================
+def load_bib(path: str) -> list[BibEntry]:
+    log.info("Loading BibTeX from %s", path)
+    with open(path, "r", encoding="utf-8") as f:
+        db = bibtexparser.load(f)
+    log.info("Loaded %d entries", len(db.entries))
+    return db.entries
+
+
+def log_section_summary(publications: Publications) -> None:
+    for section in SECTION_ORDER:
+        cits = publications.get(section, [])
+        if cits:
+            log.info("Section %s '%s': %d papers", SECTION_CODES[section], section, len(cits))
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Generate a formatted RTF publication list from a BibTeX file. "
+            "Output is suitable for pasting into Word with formatting preserved "
+            "(bold for me, superscripts for student/advisor roles, hyperlinks to DOIs)."
+        ),
+        epilog=(
+            "Environment:\n"
+            "  LOG_LEVEL   Logging verbosity (DEBUG, INFO, WARNING, ERROR). Default: INFO.\n\n"
+            "BibTeX convention:\n"
+            "  Each `journal` / `booktitle` field must begin with a bracketed\n"
+            "  acronym + year tag, e.g. `[ICSE'25] Proceedings of ...`. The acronym\n"
+            "  must appear in the RANKS dictionary at the top of this script."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--bib",
+        required=True,
+        metavar="PATH",
+        help="Path to the input BibTeX file (required).",
+    )
+    parser.add_argument(
+        "--out",
+        default=DEFAULT_OUT_FILE,
+        metavar="PATH",
+        help=f"Path to write the output RTF file. Default: {DEFAULT_OUT_FILE}",
+    )
+    parser.add_argument(
+        "--cache",
+        default=DEFAULT_DB_FILE,
+        metavar="PATH",
+        help=(
+            f"Path to the SQLite DOI cache. Created if missing; safe to delete "
+            f"to force re-lookup. Default: {DEFAULT_DB_FILE}"
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    conn = open_db(args.cache)
+    try:
+        populate_students(conn, STUDENTS)
+        entries = load_bib(args.bib)
+
+        publications: Publications = defaultdict(list)
+        for entry in entries:
+            cit = build_citation(conn, entry)
+            publications[cit.section].append(cit)
+
+        # Chronological order (oldest first) within each section.
+        for section in publications:
+            publications[section].sort(key=lambda c: c.year)
+
+        log_section_summary(publications)
+        write_rtf(args.out, publications)
+    finally:
+        conn.close()
+
 
 if __name__ == "__main__":
     main()
-

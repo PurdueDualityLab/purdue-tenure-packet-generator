@@ -1,0 +1,10 @@
+# Generated DOI cache (regenerable from Crossref/DBLP)
+doi_cache.sqlite
+
+# Private input bib (real paper list, may include unpublished work)
+my_papers.bib
+
+# Python
+.venv/
+__pycache__/
+*.pyc
