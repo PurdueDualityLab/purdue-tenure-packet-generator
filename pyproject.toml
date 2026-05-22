@@ -1,0 +1,91 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pubs-emitter"
+version = "0.2.0"
+description = "Generate a formatted RTF publication list from BibTeX + YAML."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    {name = "James C. Davis", email = "davisjam@purdue.edu"},
+]
+dependencies = [
+    "bibtexparser",
+    "requests",
+    "pylatexenc",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pylint",
+    "mypy",
+    "types-PyYAML",
+    "types-requests",
+]
+
+[project.scripts]
+pubs-emitter = "pubs_emitter.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pubs_emitter = ["py.typed"]
+
+# ----- Pylint -------------------------------------------------------------
+[tool.pylint.main]
+py-version = "3.10"
+recursive = true
+jobs = 0
+
+[tool.pylint.messages_control]
+# Keep substantive checks (unused-import, redefined-name, dangerous-default-value,
+# broad-except, etc.) and disable the noisy style/code-org categories.
+disable = [
+    "missing-module-docstring",
+    "missing-class-docstring",
+    "missing-function-docstring",
+    "too-many-arguments",
+    "too-many-positional-arguments",
+    "too-many-locals",
+    "too-many-branches",
+    "too-many-statements",
+    "too-many-instance-attributes",
+    "too-many-return-statements",
+    "too-few-public-methods",
+    "invalid-name",
+    "fixme",
+    "line-too-long",
+    "import-outside-toplevel",
+    "wrong-import-position",
+]
+
+[tool.pylint.format]
+max-line-length = 100
+
+[tool.pylint.design]
+max-args = 8
+max-locals = 20
+
+# ----- Mypy ---------------------------------------------------------------
+[tool.mypy]
+python_version = "3.10"
+files = ["src/pubs_emitter", "pubs-emitter.py"]
+strict_optional = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_return_any = true
+disallow_untyped_defs = false   # gradual; existing code is mostly annotated
+no_implicit_optional = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["bibtexparser", "bibtexparser.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["pylatexenc", "pylatexenc.*"]
+ignore_missing_imports = true

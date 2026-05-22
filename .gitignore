@@ -1,13 +1,23 @@
 # Generated output (regenerable from the bib)
 publications.rtf
 
-# Generated DOI cache (regenerable from Crossref/DBLP)
+# Generated lookup caches (regenerable from Crossref / DBLP / NVD / USPTO)
+lookup_cache.sqlite
 doi_cache.sqlite
 
-# Private input bib (real paper list, may include unpublished work)
-my_papers.bib
+# Private input data (real paper list / CVE disclosures, may include unpublished work)
+my_papers*.bib
+non-scholar-work.yaml
 
 # Python
 .venv/
 __pycache__/
 *.pyc
+*.egg-info/
+build/
+dist/
+
+# Tooling caches
+.mypy_cache/
+.pytest_cache/
+.pylint.d/
