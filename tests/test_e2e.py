@@ -144,6 +144,38 @@ class TestE2eSectionHeadings:
         assert "A Patented Invention" in rtf
         assert "11,176,090" in rtf
 
+    def test_university_service_emitted(
+        self, e2e_outputs: tuple[str, pathlib.Path]
+    ) -> None:
+        rtf, _ = e2e_outputs
+        assert "C.23 Service to Purdue" in rtf
+        assert "Member, Test Faculty Committee. 2024." in rtf
+        assert "Organizer, Test Reading Group. 2023-2024." in rtf
+
+    def test_profession_service_emitted(
+        self, e2e_outputs: tuple[str, pathlib.Path]
+    ) -> None:
+        rtf, _ = e2e_outputs
+        assert "C.24" in rtf
+        assert "PC Member, ICSE. 2025, 2026, 2027." in rtf
+
+    def test_national_service_emitted(
+        self, e2e_outputs: tuple[str, pathlib.Path]
+    ) -> None:
+        rtf, _ = e2e_outputs
+        assert "C.25" in rtf
+        assert "US National Science Foundation, Panelist. 2025." in rtf
+
+    def test_other_service_emitted_with_journal_no_year(
+        self, e2e_outputs: tuple[str, pathlib.Path]
+    ) -> None:
+        rtf, _ = e2e_outputs
+        assert "C.26" in rtf
+        # Journal-review entry has no year string → renders with single period only.
+        assert "Reviewer, IEEE Transactions on Software Engineering (TSE)." in rtf
+        # Multi-year entry → renders with year list verbatim.
+        assert "PC Member, EuroSec. 2024, 2025, 2026." in rtf
+
 
 class TestE2eContentInvariants:
     def test_grants_omit_inspired_by_emission(

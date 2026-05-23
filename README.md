@@ -30,8 +30,8 @@ pages, hanging-indent layout, RTF tables for patents + student lists.
    section name-drops the linked paper's section ref; student tables
    auto-populate the "Related Publications" column from the bib.
 
-> **Tip:** If you clone this repo and `claude` it, it'll help you populate
-> `non-scholar-work.yaml` from your CV — just give it screenshots of each
+> **Tip:** A GenAI tool --- Codex, Claude, etc. --- can help you populate
+> `non-scholar-work.yaml` from your CV. Just give it screenshots of each
 > section.
 
 ## Quick start

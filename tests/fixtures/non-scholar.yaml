@@ -56,3 +56,22 @@ graduate_students:
     position: Software Engineer
 
 undergraduate_students: []
+
+university_service:
+  - description: "Member, Test Faculty Committee"
+    year: 2024
+  - description: "Organizer, Test Reading Group"
+    year: "2023-2024"
+
+profession_service:
+  - description: "PC Member, ICSE"
+    year: "2025, 2026, 2027"
+
+national_service:
+  - description: "US National Science Foundation, Panelist"
+    year: 2025
+
+other_service:
+  - description: "Reviewer, IEEE Transactions on Software Engineering (TSE)"
+  - description: "PC Member, EuroSec"
+    year: "2024, 2025, 2026"

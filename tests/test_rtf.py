@@ -570,6 +570,91 @@ class TestRenderStudentsSection:
         assert "Chair" in out
 
 
+class TestRenderServiceSection:
+    def test_emits_section_heading_and_body(self) -> None:
+        buf = io.StringIO()
+        render_service_section(
+            "University Service",
+            [ServiceEntry(year=2025, year_str="2025", description="ECE Rep on COE Cmte")],
+            buf,
+        )
+        out = buf.getvalue()
+        assert "C.23" in out
+        assert "Service to Purdue" in out
+        assert "ECE Rep on COE Cmte. 2025." in out
+
+    def test_multi_year_string_rendered_verbatim(self) -> None:
+        buf = io.StringIO()
+        render_service_section(
+            "Profession Service",
+            [ServiceEntry(year=2025, year_str="2025, 2026, 2027", description="PC Member, ICSE")],
+            buf,
+        )
+        assert "PC Member, ICSE. 2025, 2026, 2027." in buf.getvalue()
+
+    def test_year_range_string_rendered_verbatim(self) -> None:
+        buf = io.StringIO()
+        render_service_section(
+            "University Service",
+            [ServiceEntry(year=2023, year_str="2023-present", description="Member, ABET")],
+            buf,
+        )
+        assert "Member, ABET. 2023-present." in buf.getvalue()
+
+    def test_empty_year_str_suppresses_year_emission(self) -> None:
+        # Journal reviewing → no year string → render description with a
+        # single trailing period (no double period or stray year).
+        buf = io.StringIO()
+        render_service_section(
+            "Other Service",
+            [ServiceEntry(year=9999, year_str="", description="Reviewer, IEEE TSE")],
+            buf,
+        )
+        out = buf.getvalue()
+        assert "Reviewer, IEEE TSE." in out
+        # Regression guards: no orphan ". ." and no stray 9999.
+        assert ".." not in out.replace("\\par", "")
+        assert "9999" not in out
+
+    def test_section_codes_match_section_param(self) -> None:
+        # All four service sections route through the same renderer; each
+        # must surface its own C.X code.
+        for section, expected_code in (
+            ("University Service", "C.23"),
+            ("Profession Service", "C.24"),
+            ("National Service", "C.25"),
+            ("Other Service", "C.26"),
+        ):
+            buf = io.StringIO()
+            render_service_section(
+                section,
+                [ServiceEntry(year=2024, year_str="2024", description="x")],
+                buf,
+            )
+            assert expected_code in buf.getvalue()
+
+    def test_empty_list_writes_nothing(self) -> None:
+        buf = io.StringIO()
+        render_service_section("Other Service", [], buf)
+        assert buf.getvalue() == ""
+
+    def test_numbered_list_increments(self) -> None:
+        buf = io.StringIO()
+        render_service_section(
+            "Profession Service",
+            [
+                ServiceEntry(year=2025, year_str="2025", description="First"),
+                ServiceEntry(year=2026, year_str="2026", description="Second"),
+                ServiceEntry(year=2027, year_str="2027", description="Third"),
+            ],
+            buf,
+        )
+        out = buf.getvalue()
+        assert "C.24.1." in out
+        assert "C.24.2." in out
+        assert "C.24.3." in out
+
+
 class TestRenderKeyWorksSection:
     def test_emits_citation_then_impact_paragraphs(self) -> None:
         buf = io.StringIO()
