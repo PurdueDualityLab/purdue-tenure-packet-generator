@@ -25,7 +25,10 @@ from .lookup import (
     fetch_doi_or_url,
     fetch_patent_date,
 )
-from .types import BibEntry, Category, Citation, InvitedTalk, Patent, Rank, Section
+from .types import (
+    BibEntry, Category, Citation, ConferencePresentation, Grant, InvitedTalk,
+    LeadershipRole, MediaAppearance, Patent, Rank, Section,
+)
 from .venue import (
     CVE_ID_RE,
     MissingArxivId,
@@ -176,6 +179,56 @@ def build_invited_talk(talk: dict) -> InvitedTalk:
         topic=decode_latex(talk.get("topic", "")).replace("\n", " "),
         subtitle=decode_latex(talk.get("subtitle", "")).replace("\n", " "),
         venue=decode_latex(talk.get("venue", "")).replace("\n", " "),
+    )
+
+
+def build_grant(entry: dict) -> Grant:
+    """Build a Grant from a YAML dict."""
+    return Grant(
+        start_year=int(entry.get("start_year", 0)),
+        end_year=int(entry.get("end_year", 0)),
+        title=decode_latex(entry.get("title", "")).replace("\n", " "),
+        agency=decode_latex(entry.get("agency", "")).replace("\n", " "),
+        agency_short=entry.get("agency_short", "") or "",
+        grant_number=str(entry.get("grant_number", "") or ""),
+        role=entry.get("role", "") or "",
+        co_pis=list(entry.get("co_pis") or []),
+        lead_pi=decode_latex(entry.get("lead_pi", "") or "").replace("\n", " "),
+        responsibility_percent=int(entry.get("responsibility_percent", 0) or 0),
+        amount=int(entry.get("amount", 0)),
+        activities=decode_latex(entry.get("activities", "") or "").replace("\n", " "),
+        responsibility=decode_latex(entry.get("responsibility", "") or "").replace("\n", " "),
+    )
+
+
+def build_conference_presentation(entry: dict) -> ConferencePresentation:
+    """Build a ConferencePresentation. All metadata comes from the linked paper."""
+    return ConferencePresentation(
+        paper_title=entry.get("paper_title", ""),
+    )
+
+
+def build_media_appearance(entry: dict) -> MediaAppearance:
+    """Build a MediaAppearance from a YAML dict."""
+    year_str = str(entry.get("year", ""))
+    return MediaAppearance(
+        year=parse_year(year_str),
+        year_str=year_str,
+        title=decode_latex(entry.get("title", "")).replace("\n", " "),
+        venue=decode_latex(entry.get("venue", "")).replace("\n", " "),
+        url=entry.get("url", "") or "",
+    )
+
+
+def build_leadership_role(role: dict) -> LeadershipRole:
+    """Build a LeadershipRole record from a YAML dict."""
+    year_str = str(role.get("year", ""))
+    return LeadershipRole(
+        year=parse_year(year_str),
+        year_str=year_str,
+        role=decode_latex(role.get("role", "")).replace("\n", " "),
+        description=decode_latex(role.get("description", "")).replace("\n", " "),
+        society=decode_latex(role.get("society", "")).replace("\n", " "),
     )
 
 
@@ -348,6 +401,63 @@ def validate_non_scholar(non_scholar: dict, bib_entries: list[BibEntry]) -> None
                 f"but no matching entry exists in the bib "
                 f"(case/whitespace-insensitive match but same text required)."
             )
+
+    for key in ("grants_as_pi", "grants_as_co_pi", "gifts", "internal_grants"):
+        for i, grant in enumerate(non_scholar.get(key) or []):
+            if not isinstance(grant, dict):
+                errors.append(
+                    f"`{key}[{i}]` must be a mapping; got {type(grant).__name__}"
+                )
+                continue
+            for required in (
+                "title", "agency", "agency_short",
+                "role", "start_year", "end_year", "amount",
+            ):
+                if grant.get(required) in (None, ""):
+                    errors.append(f"{key}[{i}] missing required field `{required}`")
+
+    for i, pres in enumerate(non_scholar.get("conference_presentations") or []):
+        if not isinstance(pres, dict):
+            errors.append(
+                f"`conference_presentations[{i}]` must be a mapping; "
+                f"got {type(pres).__name__}"
+            )
+            continue
+        paper_title = pres.get("paper_title")
+        if not paper_title:
+            errors.append(
+                f"conference_presentations[{i}] missing required field `paper_title`"
+            )
+            continue
+        if normalize_title(paper_title) not in bib_titles:
+            errors.append(
+                f"conference_presentations references paper_title {paper_title!r}, "
+                f"but no matching bib entry exists."
+            )
+
+    for i, media in enumerate(non_scholar.get("media_appearances") or []):
+        if not isinstance(media, dict):
+            errors.append(
+                f"`media_appearances[{i}]` must be a mapping; got {type(media).__name__}"
+            )
+            continue
+        for required in ("title", "venue", "year"):
+            if not media.get(required):
+                errors.append(
+                    f"media_appearances[{i}] missing required field `{required}`"
+                )
+
+    for i, role in enumerate(non_scholar.get("leadership_roles") or []):
+        if not isinstance(role, dict):
+            errors.append(
+                f"`leadership_roles[{i}]` must be a mapping; got {type(role).__name__}"
+            )
+            continue
+        for required in ("role", "description", "society", "year"):
+            if not role.get(required):
+                errors.append(
+                    f"leadership_roles[{i}] missing required field `{required}`"
+                )
 
     for i, talk in enumerate(non_scholar.get("invited_talks") or []):
         if not isinstance(talk, dict):

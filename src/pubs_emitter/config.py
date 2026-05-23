@@ -74,6 +74,13 @@ SECTION_ORDER: list[Section] = [
     "Conferences and Workshops",
     "Other publications and products",
     "Invited Talks",
+    "Leadership Roles",
+    "Media Appearances",
+    "Conference Presentations",
+    "Grants PI",
+    "Grants Co-PI",
+    "Gifts",
+    "Internal Grants",
     "Patents",
 ]
 
@@ -84,6 +91,13 @@ SECTION_CODES: dict[Section, str] = {
     "Conferences and Workshops": "C.4",
     "Other publications and products": "C.5",
     "Invited Talks": "C.6",
+    "Leadership Roles": "C.7",
+    "Media Appearances": "C.8",
+    "Conference Presentations": "C.9",
+    "Grants PI": "C.10",
+    "Grants Co-PI": "C.11",
+    "Gifts": "C.12",
+    "Internal Grants": "C.13",
     "Patents": "C.19",
 }
 
@@ -94,7 +108,23 @@ SECTION_HEADINGS: dict[Section, str] = {
     "Conferences and Workshops": "Conferences and Workshops",
     "Other publications and products": "Other publications and products",
     "Invited Talks": "Invited external keynote/conference/symposium/colloquium/seminar presentations",
+    "Leadership Roles": "Leadership roles in government or professional organizations",
+    "Media Appearances": "Appearances in media interviews and other coverage",
+    "Conference Presentations": "Selected contributed conference/symposium presentations where the candidate was the presenter",
+    "Grants PI": "Externally sponsored grants as PI, or Purdue lead on multi-institution grants",
+    "Grants Co-PI": "Externally sponsored grants as Co-PI or Co-I",
+    "Gifts": "External gifts and voluntary support",
+    "Internal Grants": "Internal competitive grants as PI or Co-PI",
     "Patents": "Issued U.S. and International Patents",
+}
+
+# Per-section "Total amount of ... :" label rendered above the numbered list.
+# Sections not in this map don't render a total.
+GRANT_TOTAL_LABELS: dict[Section, str] = {
+    "Grants PI": "Total amount of external funding as PI",
+    "Grants Co-PI": "Total amount of external funding as Co-PI or Co-I",
+    "Gifts": "Total amount of external gifts and voluntary support",
+    "Internal Grants": "Total amount of internal funding",
 }
 
 # Sections whose entries render the tier marker with a "Venue rank: " prefix.

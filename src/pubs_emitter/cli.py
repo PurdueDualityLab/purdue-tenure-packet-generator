@@ -21,9 +21,13 @@ import bibtexparser
 from .builders import (
     build_book_chapter,
     build_citation,
+    build_conference_presentation,
     build_cve_from_yaml,
     build_disclosure_from_yaml,
+    build_grant,
     build_invited_talk,
+    build_leadership_role,
+    build_media_appearance,
     build_patent,
     build_thesis,
     load_non_scholar,
@@ -42,7 +46,10 @@ from .config import (
 from .db import LOOKUP_STATS, open_db, populate_students, seed_manual_links
 from .lookup import commit_results, dispatch_parallel, plan_lookups
 from .rtf import build_paper_index, write_rtf
-from .types import BibEntry, Citation, InvitedTalk, KeyWork, Patent, Publications
+from .types import (
+    BibEntry, Citation, ConferencePresentation, Grant, InvitedTalk, KeyWork,
+    LeadershipRole, MediaAppearance, Patent, Publications,
+)
 from .venue import (
     EntryParseError,
     MissingArxivId,
@@ -338,9 +345,32 @@ def main(argv: Optional[list[str]] = None) -> None:
             paper_cit = build_citation(conn, paper)
             key_works.append(KeyWork(citation=paper_cit, impact=kw_yaml["impact"]))
 
-        # Phase 4d: build invited-talks list from YAML.
+        # Phase 4d: build invited-talks + leadership-roles + media-appearances from YAML.
         invited_talks: list[InvitedTalk] = [
             build_invited_talk(t) for t in (non_scholar.get("invited_talks") or [])
+        ]
+        leadership_roles: list[LeadershipRole] = [
+            build_leadership_role(r) for r in (non_scholar.get("leadership_roles") or [])
+        ]
+        media_appearances: list[MediaAppearance] = [
+            build_media_appearance(m) for m in (non_scholar.get("media_appearances") or [])
+        ]
+        conference_presentations: list[ConferencePresentation] = [
+            build_conference_presentation(p)
+            for p in (non_scholar.get("conference_presentations") or [])
+        ]
+        # Phase 4e: build the 4 grant lists (C.10/C.11/C.12/C.13).
+        grants_as_pi: list[Grant] = [
+            build_grant(g) for g in (non_scholar.get("grants_as_pi") or [])
+        ]
+        grants_as_co_pi: list[Grant] = [
+            build_grant(g) for g in (non_scholar.get("grants_as_co_pi") or [])
+        ]
+        gifts: list[Grant] = [
+            build_grant(g) for g in (non_scholar.get("gifts") or [])
+        ]
+        internal_grants: list[Grant] = [
+            build_grant(g) for g in (non_scholar.get("internal_grants") or [])
         ]
 
         # Chronological order (oldest first) within each section.
@@ -349,6 +379,10 @@ def main(argv: Optional[list[str]] = None) -> None:
         patents.sort(key=lambda p: p.year)
         key_works.sort(key=lambda kw: kw.citation.year)
         invited_talks.sort(key=lambda t: t.year)
+        leadership_roles.sort(key=lambda r: r.year)
+        media_appearances.sort(key=lambda m: m.year)
+        for grant_list in (grants_as_pi, grants_as_co_pi, gifts, internal_grants):
+            grant_list.sort(key=lambda g: g.start_year)
 
         # Back-pointer index — must run AFTER chrono-sort so C.X.Y is stable.
         paper_index = build_paper_index(publications)
@@ -372,6 +406,10 @@ def main(argv: Optional[list[str]] = None) -> None:
             args.out, publications, patents, paper_index,
             key_works=key_works, key_work_index=key_work_index,
             invited_talks=invited_talks,
+            leadership_roles=leadership_roles,
+            media_appearances=media_appearances,
+            conference_presentations=conference_presentations,
+            bib_entries=entries,
         )
     finally:
         conn.close()

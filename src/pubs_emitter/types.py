@@ -22,6 +22,13 @@ Section = Literal[
     "Conferences and Workshops",
     "Other publications and products",
     "Invited Talks",
+    "Leadership Roles",
+    "Media Appearances",
+    "Conference Presentations",
+    "Grants PI",
+    "Grants Co-PI",
+    "Gifts",
+    "Internal Grants",
     "Patents",
 ]
 
@@ -60,6 +67,46 @@ class InvitedTalk(NamedTuple):
     topic: str          # main subject; e.g. "Regular Expression Denial of Service"
     subtitle: str       # optional specific talk title within that topic ("" if none)
     venue: str          # institution / forum + location
+
+
+class LeadershipRole(NamedTuple):
+    """A C.7 leadership role (workshop chair, journal editor, etc.)."""
+    year: int           # sort key
+    year_str: str       # display
+    role: str           # "Co-Chair", "Organizer", "Mentor", "Editor", etc.
+    description: str    # the event/journal/committee name + venue context
+    society: str        # affiliated professional society ("ACM SIGSOFT", "IEEE", "ASEE")
+
+
+class MediaAppearance(NamedTuple):
+    """A C.8 media interview / podcast / coverage appearance."""
+    year: int           # sort key
+    year_str: str       # display
+    title: str          # the episode/article/segment title
+    venue: str          # podcast/publication/show name
+    url: str            # optional link
+
+
+class ConferencePresentation(NamedTuple):
+    """A C.9 contributed conference talk; venue/year/code come from the linked paper."""
+    paper_title: str    # exact bib title (case+whitespace insensitive)
+
+
+class Grant(NamedTuple):
+    """A C.10/C.11/C.12/C.13 grant entry (same datatype, routed by YAML key)."""
+    start_year: int               # sort key + display
+    end_year: int                 # display
+    title: str                    # grant title (e.g. "CAREER: PTM-SEER: ...")
+    agency: str                   # full name (e.g. "US National Science Foundation")
+    agency_short: str             # short form for prefix (e.g. "NSF")
+    grant_number: str             # funder's award ID (e.g. "2541917")
+    role: str                     # "PI" / "Co-PI" / "Co-I" / "Sole PI" / etc.
+    co_pis: list[str]             # other co-PIs (when user is PI)
+    lead_pi: str                  # name of the lead PI (when user is Co-PI/Co-I)
+    responsibility_percent: int   # user's responsibility share (0 = unspecified)
+    amount: int                   # USD; enables per-section "Total amount" computation
+    activities: str               # optional multi-sentence description
+    responsibility: str           # optional free-text role/percent statement
 
 
 class KeyWork(NamedTuple):
