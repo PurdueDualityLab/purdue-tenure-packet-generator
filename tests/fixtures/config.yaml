@@ -1,0 +1,31 @@
+me:
+  - "Davis, James C"
+  - "James C. Davis"
+
+advisors:
+  - "Lee Yung-Hsiang"
+  - "Yung-Hsiang Lee"
+
+students:
+  G:
+    - "Paschal C. Amusuo"
+    - "Wenxin Jiang"
+  U:
+    - "Test Undergrad"
+
+ranks:
+  "Rank 1":
+    - ICSE
+    - JSS
+  "Rank 2":
+    - SANER
+  "Workshop":
+    - HotMobile-Poster
+  "Magazine":
+    - IEEE-Security-and-Privacy-Magazine
+
+manual_links:
+  "A Test Book Chapter": "https://example.com/book-chapter"
+  "Doctoral Dissertation Title": "https://example.com/thesis"
+
+bib_ignore: []

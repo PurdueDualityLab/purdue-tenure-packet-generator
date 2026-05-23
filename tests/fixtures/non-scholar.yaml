@@ -1,0 +1,58 @@
+key_works:
+  - paper_title: A Conference Paper
+    impact: A short impact statement explaining why this paper matters for the tenure case.
+
+cves:
+  - cve_id: CVE-2024-12345
+    organization: TestOrg
+    paper_title: A Journal Paper
+
+security_disclosures:
+  - paper_title: A Conference Paper
+    vendor: VendorTest
+    description: A test security disclosure description.
+    year: 2025
+
+invited_talks:
+  - topic: Test Topic
+    venue: Test University
+    year: 2024
+
+leadership_roles:
+  - role: Co-Chair
+    description: A Test Workshop
+    society: ACM SIGSOFT
+    year: 2023
+
+media_appearances:
+  - title: Test Episode
+    venue: Test Podcast
+    year: 2024
+    url: "https://example.com/episode"
+
+conference_presentations:
+  - paper_title: A Conference Paper
+
+grants_as_pi:
+  - title: Test CAREER Project
+    agency: National Science Foundation
+    agency_short: NSF
+    grant_number: "2025001"
+    role: PI
+    start_year: 2025
+    end_year: 2030
+    amount: 600000
+
+grants_as_co_pi: []
+gifts: []
+internal_grants: []
+
+graduate_students:
+  - name: Paschal C. Amusuo
+    degree: PhD
+    role: Chair
+    grad_year: 2025
+    graduation: 2025 Spring
+    position: Software Engineer
+
+undergraduate_students: []
