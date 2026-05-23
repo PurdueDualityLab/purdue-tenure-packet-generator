@@ -22,6 +22,7 @@ dependencies = [
 dev = [
     "pylint",
     "mypy",
+    "pytest",
     "types-PyYAML",
     "types-requests",
 ]
@@ -89,3 +90,12 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["pylatexenc", "pylatexenc.*"]
 ignore_missing_imports = true
+
+# ----- Pytest -------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    # pylatexenc emits a SyntaxWarning on Python 3.12+ for `is` on a literal.
+    # Out of our control; suppress so test output stays readable.
+    "ignore::SyntaxWarning:pylatexenc.*",
+]

@@ -17,8 +17,10 @@ from .config import (
 )
 from .types import (
     BibEntry, Citation, ConferencePresentation, Grant, InvitedTalk, KeyWork,
-    LeadershipRole, MediaAppearance, Patent, Publications,
+    LeadershipRole, MediaAppearance, Patent, Publications, Section,
+    ServiceEntry, Student,
 )
+from .authors import parse_name_parts
 from .venue import parse_venue
 from .latex import decode_latex
 from .venue import normalize_title
@@ -348,7 +350,7 @@ def _format_usd(amount: int) -> str:
 
 
 def render_grants_section(
-    section: str,
+    section: Section,
     grants: list[Grant],
     out: IO[str],
 ) -> None:
@@ -374,9 +376,20 @@ def render_grants_section(
         )
 
     for idx, grant in enumerate(grants, 1):
-        # Line 1 (hanging indent): "C.10.1\tab AGENCY-SHORT #NUM: TITLE"
-        num = f" #{grant.grant_number}" if grant.grant_number else ""
-        head = f"{escape_rtf(grant.agency_short)}{escape_rtf(num)}: {escape_rtf(grant.title)}"
+        # Line 1 (hanging indent). Head format:
+        #   "AGENCY-SHORT #NUM: TITLE"  — for sponsored grants with both fields
+        #   "AGENCY-SHORT: TITLE"       — sponsored without a grant number
+        #   "#NUM: TITLE"               — grant number without a short funder name
+        #   "TITLE"                     — neither (e.g. fellowships, internal grants)
+        prefix_parts: list[str] = []
+        if grant.agency_short:
+            prefix_parts.append(escape_rtf(grant.agency_short))
+        if grant.grant_number:
+            prefix_parts.append(f"#{escape_rtf(grant.grant_number)}")
+        prefix = " ".join(prefix_parts)
+        head = (
+            f"{prefix}: {escape_rtf(grant.title)}" if prefix else escape_rtf(grant.title)
+        )
         out.write(f"\\pard\\li720\\fi-720 {code}.{idx}.\\tab {head}\\par\n")
         # Line 2: role + optional responsibility % + optional co-PIs / lead PI
         role_bits = [escape_rtf(grant.role)]
@@ -397,7 +410,115 @@ def render_grants_section(
             out.write(f"\\pard\\li720\\fi0 {escape_rtf(grant.activities)}\\par\n")
         if grant.responsibility:
             out.write(f"\\pard\\li720\\fi0 {escape_rtf(grant.responsibility)}\\par\n")
+        # NOTE: grant.inspired_by / grant.publication_outcomes are validated +
+        # available on the Grant record but NOT emitted here. The intended
+        # consumer is the C.1 Key Works section (paper → originating grant
+        # connections render with the highlighted papers). Cross-link
+        # rendering is deferred until the linkage shape is defined.
         out.write("\\par\n")  # blank line between grants
+
+
+def _student_pub_refs(
+    student_name: str,
+    bib_entries: list[BibEntry],
+    paper_index: dict[str, str],
+) -> list[str]:
+    """Find all bib papers this student co-authored; return their C.X.Y refs.
+
+    Structural match: same algorithm as authors.lookup_student_type (last name
+    equal, bib initials a prefix of student initials).
+    """
+    from .venue import normalize_title
+    from .latex import decode_latex
+    s_last, s_firsts = parse_name_parts(student_name)
+    s_last_norm = s_last.lower()
+    s_initials = "".join(f[0].upper() for f in s_firsts if f)
+    refs: list[str] = []
+    for entry in bib_entries:
+        raw = entry.get("author", "")
+        for author in raw.split(" and "):
+            decoded = decode_latex(author.strip())
+            b_last, b_firsts = parse_name_parts(decoded)
+            if b_last.lower() != s_last_norm:
+                continue
+            b_initials = "".join(f[0].upper() for f in b_firsts if f)
+            if not b_initials or s_initials.startswith(b_initials):
+                title = entry.get("title", "")
+                ref = paper_index.get(normalize_title(title)) if title else None
+                if ref:
+                    refs.append(ref)
+                break  # this author matched; don't scan other authors of same paper
+    # Sort by section then index for stable output (C.2.* before C.4.*).
+    def _key(r: str) -> tuple[int, ...]:
+        return tuple(int(x) for x in r.replace("C.", "").split("."))
+    return sorted(set(refs), key=_key)
+
+
+# Column widths for the student tables (twips). Sum = 9360 = 6.5" usable.
+_STUDENT_TABLE_WIDTHS: list[int] = [1800, 1100, 1400, 1000, 1900, 2160]
+
+
+def render_students_section(
+    section: Section,
+    students: list[Student],
+    bib_entries: list[BibEntry],
+    paper_index: dict[str, str],
+    out: IO[str],
+) -> None:
+    """Generic student-table renderer for C.14 (graduate) and C.16 (undergraduate)."""
+    if not students:
+        return
+    code = SECTION_CODES[section]
+    heading = SECTION_HEADINGS[section]
+    _emit_section_heading(out, code, heading)
+    table = RtfTable(column_widths=_STUDENT_TABLE_WIDTHS)
+    table.add_header([
+        "Student Name", "Degree And Type", "Graduation Semester",
+        "Role", "Related Publications", "Current Position and Affiliation",
+    ])
+    for s in students:
+        pubs = _student_pub_refs(s.name, bib_entries, paper_index)
+        pubs_cell = ", ".join(pubs) if pubs else ""
+        # When co_advisor is set (typically with role "Co-Chair"), inline the
+        # partner name as "(with NAME)" so the table row carries the same info
+        # the CV format prints inline after the student's name.
+        role_cell = (
+            f"{s.role} (with {s.co_advisor})" if s.co_advisor else s.role
+        )
+        table.add_row([
+            escape_rtf(s.name),
+            escape_rtf(s.degree),
+            escape_rtf(s.grad_display),
+            escape_rtf(role_cell),
+            escape_rtf(pubs_cell),
+            escape_rtf(s.position),
+        ])
+    out.write(table.render())
+    out.write("\\pard\\par\n")
+
+
+def render_service_section(
+    section: Section,
+    entries: list[ServiceEntry],
+    out: IO[str],
+) -> None:
+    """Generic renderer for C.23 / C.24 / C.25 / C.26.
+
+    Hanging-indent numbered list: `C.X.Y\\tab description. year.`
+    When year_str is empty (ongoing service with no fixed date — typically
+    journal reviewing) the trailing year + period is suppressed.
+    """
+    if not entries:
+        return
+    code = SECTION_CODES[section]
+    heading = SECTION_HEADINGS[section]
+    _emit_section_heading(out, code, heading)
+    for idx, entry in enumerate(entries, 1):
+        body = escape_rtf(entry.description)
+        if entry.year_str:
+            body += f". {escape_rtf(entry.year_str)}"
+        body += "."
+        out.write(f"\\pard\\li720\\fi-720 {code}.{idx}.\\tab {body}\\par\\par\n")
 
 
 def render_patents_section(patents: list[Patent], out: IO[str]) -> None:
@@ -450,6 +571,12 @@ def write_rtf(
     grants_as_co_pi: Optional[list[Grant]] = None,
     gifts: Optional[list[Grant]] = None,
     internal_grants: Optional[list[Grant]] = None,
+    graduate_students: Optional[list[Student]] = None,
+    undergraduate_students: Optional[list[Student]] = None,
+    university_service: Optional[list[ServiceEntry]] = None,
+    profession_service: Optional[list[ServiceEntry]] = None,
+    national_service: Optional[list[ServiceEntry]] = None,
+    other_service: Optional[list[ServiceEntry]] = None,
 ) -> None:
     log.info("Generating RTF file: %s", path)
     paper_index = paper_index or {}
@@ -464,6 +591,12 @@ def write_rtf(
     grants_as_co_pi = grants_as_co_pi or []
     gifts = gifts or []
     internal_grants = internal_grants or []
+    graduate_students = graduate_students or []
+    undergraduate_students = undergraduate_students or []
+    university_service = university_service or []
+    profession_service = profession_service or []
+    national_service = national_service or []
+    other_service = other_service or []
     with open(path, "w", encoding="utf-8") as out:
         out.write(
             r"{\rtf1\ansi\ansicpg1252\deff0"
@@ -488,7 +621,10 @@ def write_rtf(
                 "Key Works", "Invited Talks", "Leadership Roles",
                 "Media Appearances", "Conference Presentations",
                 "Grants PI", "Grants Co-PI", "Gifts", "Internal Grants",
+                "Graduate Students", "Undergraduate Students",
                 "Patents",
+                "University Service", "Profession Service",
+                "National Service", "Other Service",
             ):
                 continue
             citations = publications.get(section, [])
@@ -516,6 +652,17 @@ def write_rtf(
         render_grants_section("Grants Co-PI", grants_as_co_pi, out)
         render_grants_section("Gifts", gifts, out)
         render_grants_section("Internal Grants", internal_grants, out)
+        render_students_section(
+            "Graduate Students", graduate_students, bib_entries, paper_index, out,
+        )
+        render_students_section(
+            "Undergraduate Students", undergraduate_students,
+            bib_entries, paper_index, out,
+        )
         render_patents_section(patents, out)
+        render_service_section("University Service", university_service, out)
+        render_service_section("Profession Service", profession_service, out)
+        render_service_section("National Service", national_service, out)
+        render_service_section("Other Service", other_service, out)
         out.write("}")
     log.info("Done. Output: %s", path)

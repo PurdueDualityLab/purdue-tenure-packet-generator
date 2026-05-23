@@ -29,7 +29,13 @@ Section = Literal[
     "Grants Co-PI",
     "Gifts",
     "Internal Grants",
+    "Graduate Students",
+    "Undergraduate Students",
     "Patents",
+    "University Service",
+    "Profession Service",
+    "National Service",
+    "Other Service",
 ]
 
 StudentType = Literal["G", "U"]
@@ -92,8 +98,23 @@ class ConferencePresentation(NamedTuple):
     paper_title: str    # exact bib title (case+whitespace insensitive)
 
 
+class Student(NamedTuple):
+    """A C.14 graduate student record. Related publications are auto-derived."""
+    grad_year: int           # sort key (use 9999 for ongoing students)
+    grad_display: str        # "2025 Spring" / "ongoing" / etc.
+    name: str
+    degree: str              # "PhD" | "PhD candidate" | "PhD student" | "MSc" | "DEng" | "MS-Thesis" | "MS-Non-Thesis"
+    role: str                # "Chair" | "Co-Chair" | "Committee member"
+    position: str            # current job + affiliation (optional)
+    co_advisor: str = ""     # set when role == "Co-Chair"; renders "(with NAME)" in Role column
+
+
 class Grant(NamedTuple):
-    """A C.10/C.11/C.12/C.13 grant entry (same datatype, routed by YAML key)."""
+    """A C.10/C.11/C.12/C.13 grant entry (same datatype, routed by YAML key).
+
+    inspired_by + publication_outcomes are paper-title lists that get
+    resolved against the bib (case+whitespace insensitive) to C.X.Y refs.
+    """
     start_year: int               # sort key + display
     end_year: int                 # display
     title: str                    # grant title (e.g. "CAREER: PTM-SEER: ...")
@@ -107,12 +128,27 @@ class Grant(NamedTuple):
     amount: int                   # USD; enables per-section "Total amount" computation
     activities: str               # optional multi-sentence description
     responsibility: str           # optional free-text role/percent statement
+    inspired_by: list[str]        # bib titles that motivated this grant → C.X.Y refs
+    publication_outcomes: list[str]  # bib titles funded by this grant → C.X.Y refs
 
 
 class KeyWork(NamedTuple):
     """A paper designated as a key/highlight scholarly publication (C.1 entry)."""
     citation: Citation   # the resolved paper's standard Citation
     impact: str          # 100-word impact statement
+
+
+class ServiceEntry(NamedTuple):
+    """A C.23–C.26 service activity (university, profession, national, other).
+
+    `description` carries the full role+venue string (e.g. "PC Member, ICSE").
+    `year_str` is the display string: "2025", "2025, 2026, 2027",
+    "2024-2025", "2023-present", or "" for ongoing service with no fixed date
+    (e.g. journal reviewing).
+    """
+    year: int            # sort key; 9999 when year_str is empty
+    year_str: str        # display
+    description: str
 
 
 class NetworkTask(NamedTuple):

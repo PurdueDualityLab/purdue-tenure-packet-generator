@@ -29,6 +29,8 @@ from .builders import (
     build_leadership_role,
     build_media_appearance,
     build_patent,
+    build_service_entry,
+    build_student,
     build_thesis,
     load_non_scholar,
     validate_non_scholar,
@@ -48,7 +50,7 @@ from .lookup import commit_results, dispatch_parallel, plan_lookups
 from .rtf import build_paper_index, write_rtf
 from .types import (
     BibEntry, Citation, ConferencePresentation, Grant, InvitedTalk, KeyWork,
-    LeadershipRole, MediaAppearance, Patent, Publications,
+    LeadershipRole, MediaAppearance, Patent, Publications, ServiceEntry, Student,
 )
 from .venue import (
     EntryParseError,
@@ -278,7 +280,6 @@ def main(argv: Optional[list[str]] = None) -> None:
     conn = open_db(args.cache)
     try:
         log_phase("init")
-        populate_students(conn, STUDENTS)
         seed_manual_links(conn, MANUAL_LINKS)
 
         log_phase("load input")
@@ -286,6 +287,18 @@ def main(argv: Optional[list[str]] = None) -> None:
         # Load + validate YAML side file (CVEs etc.) before any network work.
         non_scholar = load_non_scholar(args.non_scholar)
         validate_non_scholar(non_scholar, entries)
+
+        # Populate students AFTER loading non-scholar YAML so we can union the
+        # rich C.14 graduate_students names into STUDENTS["G"] for marker matching.
+        # Static config.yaml STUDENTS["G"] stays as a baseline; YAML graduate_students
+        # extends it. Undergrads stay in STUDENTS["U"] (config.yaml) for now.
+        merged_students = {k: list(v) for k, v in STUDENTS.items()}
+        grad_yaml_names = [
+            s.get("name", "") for s in (non_scholar.get("graduate_students") or [])
+            if s.get("name")
+        ]
+        merged_students["G"] = list({*merged_students.get("G", []), *grad_yaml_names})
+        populate_students(conn, merged_students)
 
         log_phase("lookups")
         # plan / dispatch / commit
@@ -372,6 +385,25 @@ def main(argv: Optional[list[str]] = None) -> None:
         internal_grants: list[Grant] = [
             build_grant(g) for g in (non_scholar.get("internal_grants") or [])
         ]
+        graduate_students: list[Student] = [
+            build_student(s) for s in (non_scholar.get("graduate_students") or [])
+        ]
+        undergraduate_students: list[Student] = [
+            build_student(s) for s in (non_scholar.get("undergraduate_students") or [])
+        ]
+        # Phase 4f: build the four service sections (C.23-C.26).
+        university_service: list[ServiceEntry] = [
+            build_service_entry(e) for e in (non_scholar.get("university_service") or [])
+        ]
+        profession_service: list[ServiceEntry] = [
+            build_service_entry(e) for e in (non_scholar.get("profession_service") or [])
+        ]
+        national_service: list[ServiceEntry] = [
+            build_service_entry(e) for e in (non_scholar.get("national_service") or [])
+        ]
+        other_service: list[ServiceEntry] = [
+            build_service_entry(e) for e in (non_scholar.get("other_service") or [])
+        ]
 
         # Chronological order (oldest first) within each section.
         for section in publications:
@@ -383,6 +415,12 @@ def main(argv: Optional[list[str]] = None) -> None:
         media_appearances.sort(key=lambda m: m.year)
         for grant_list in (grants_as_pi, grants_as_co_pi, gifts, internal_grants):
             grant_list.sort(key=lambda g: g.start_year)
+        graduate_students.sort(key=lambda s: s.grad_year)
+        undergraduate_students.sort(key=lambda s: s.grad_year)
+        for svc_list in (
+            university_service, profession_service, national_service, other_service,
+        ):
+            svc_list.sort(key=lambda e: e.year)
 
         # Back-pointer index — must run AFTER chrono-sort so C.X.Y is stable.
         paper_index = build_paper_index(publications)
@@ -410,6 +448,16 @@ def main(argv: Optional[list[str]] = None) -> None:
             media_appearances=media_appearances,
             conference_presentations=conference_presentations,
             bib_entries=entries,
+            grants_as_pi=grants_as_pi,
+            grants_as_co_pi=grants_as_co_pi,
+            gifts=gifts,
+            internal_grants=internal_grants,
+            graduate_students=graduate_students,
+            undergraduate_students=undergraduate_students,
+            university_service=university_service,
+            profession_service=profession_service,
+            national_service=national_service,
+            other_service=other_service,
         )
     finally:
         conn.close()

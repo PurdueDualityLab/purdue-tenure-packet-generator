@@ -27,7 +27,7 @@ from .lookup import (
 )
 from .types import (
     BibEntry, Category, Citation, ConferencePresentation, Grant, InvitedTalk,
-    LeadershipRole, MediaAppearance, Patent, Rank, Section,
+    LeadershipRole, MediaAppearance, Patent, Rank, Section, ServiceEntry, Student,
 )
 from .venue import (
     CVE_ID_RE,
@@ -198,6 +198,38 @@ def build_grant(entry: dict) -> Grant:
         amount=int(entry.get("amount", 0)),
         activities=decode_latex(entry.get("activities", "") or "").replace("\n", " "),
         responsibility=decode_latex(entry.get("responsibility", "") or "").replace("\n", " "),
+        inspired_by=list(entry.get("inspired_by") or []),
+        publication_outcomes=list(entry.get("publication_outcomes") or []),
+    )
+
+
+def build_student(entry: dict) -> Student:
+    """Build a Student record from a YAML dict (used for both C.14 and C.16)."""
+    grad_year = int(entry.get("grad_year", 9999) or 9999)
+    return Student(
+        grad_year=grad_year,
+        grad_display=str(entry.get("graduation", "") or ""),
+        name=decode_latex(entry.get("name", "")).replace("\n", " "),
+        degree=entry.get("degree", "") or "",
+        role=entry.get("role", "") or "",
+        position=decode_latex(entry.get("position", "") or "").replace("\n", " "),
+        co_advisor=decode_latex(entry.get("co_advisor", "") or "").replace("\n", " "),
+    )
+
+
+def build_service_entry(entry: dict) -> ServiceEntry:
+    """Build a ServiceEntry from a YAML dict (C.23 / C.24 / C.25 / C.26).
+
+    `year` field may be int (2025) or string ("2025, 2026, 2027" /
+    "2024-2025" / "2023-present"). Empty / missing → year_str="", which
+    suppresses the trailing year on render (used for journal reviewing).
+    """
+    year_raw = entry.get("year", "")
+    year_str = str(year_raw) if year_raw not in (None, "") else ""
+    return ServiceEntry(
+        year=parse_year(year_str) if year_str else 9999,
+        year_str=year_str,
+        description=decode_latex(entry.get("description", "")).replace("\n", " "),
     )
 
 
@@ -409,12 +441,46 @@ def validate_non_scholar(non_scholar: dict, bib_entries: list[BibEntry]) -> None
                     f"`{key}[{i}]` must be a mapping; got {type(grant).__name__}"
                 )
                 continue
+            # agency_short is optional — when empty, the head line drops the
+            # "{agency_short}: " prefix and renders just the title (used for
+            # fellowships, internal grants, and other entries with no
+            # canonical funder-name prefix).
             for required in (
-                "title", "agency", "agency_short",
-                "role", "start_year", "end_year", "amount",
+                "title", "agency", "role", "start_year", "end_year", "amount",
             ):
                 if grant.get(required) in (None, ""):
                     errors.append(f"{key}[{i}] missing required field `{required}`")
+            # inspired_by + publication_outcomes paper titles must resolve to bib entries.
+            for link_field in ("inspired_by", "publication_outcomes"):
+                for title in grant.get(link_field) or []:
+                    if normalize_title(title) not in bib_titles:
+                        errors.append(
+                            f"{key}[{i}] {link_field} references {title!r}, "
+                            f"but no matching bib entry exists."
+                        )
+
+    for key in ("graduate_students", "undergraduate_students"):
+        for i, s in enumerate(non_scholar.get(key) or []):
+            if not isinstance(s, dict):
+                errors.append(
+                    f"`{key}[{i}]` must be a mapping; got {type(s).__name__}"
+                )
+                continue
+            for required in ("name", "degree", "role", "grad_year"):
+                if s.get(required) in (None, ""):
+                    errors.append(f"{key}[{i}] missing required field `{required}`")
+
+    for key in (
+        "university_service", "profession_service", "national_service", "other_service",
+    ):
+        for i, entry in enumerate(non_scholar.get(key) or []):
+            if not isinstance(entry, dict):
+                errors.append(
+                    f"`{key}[{i}]` must be a mapping; got {type(entry).__name__}"
+                )
+                continue
+            if not entry.get("description"):
+                errors.append(f"{key}[{i}] missing required field `description`")
 
     for i, pres in enumerate(non_scholar.get("conference_presentations") or []):
         if not isinstance(pres, dict):

@@ -81,7 +81,13 @@ SECTION_ORDER: list[Section] = [
     "Grants Co-PI",
     "Gifts",
     "Internal Grants",
+    "Graduate Students",
+    "Undergraduate Students",
     "Patents",
+    "University Service",
+    "Profession Service",
+    "National Service",
+    "Other Service",
 ]
 
 SECTION_CODES: dict[Section, str] = {
@@ -98,7 +104,13 @@ SECTION_CODES: dict[Section, str] = {
     "Grants Co-PI": "C.11",
     "Gifts": "C.12",
     "Internal Grants": "C.13",
+    "Graduate Students": "C.14",
+    "Undergraduate Students": "C.16",
     "Patents": "C.19",
+    "University Service": "C.23",
+    "Profession Service": "C.24",
+    "National Service": "C.25",
+    "Other Service": "C.26",
 }
 
 SECTION_HEADINGS: dict[Section, str] = {
@@ -115,7 +127,13 @@ SECTION_HEADINGS: dict[Section, str] = {
     "Grants Co-PI": "Externally sponsored grants as Co-PI or Co-I",
     "Gifts": "External gifts and voluntary support",
     "Internal Grants": "Internal competitive grants as PI or Co-PI",
+    "Graduate Students": "Graduate students advised",
+    "Undergraduate Students": "Undergraduate students advised",
     "Patents": "Issued U.S. and International Patents",
+    "University Service": "Service to Purdue",
+    "Profession Service": "Service to the profession through professional societies",
+    "National Service": "Service to State, Nation, or International Organizations",
+    "Other Service": "Other external service activities to the profession not noted above",
 }
 
 # Per-section "Total amount of ... :" label rendered above the numbered list.

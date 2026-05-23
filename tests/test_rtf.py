@@ -17,6 +17,7 @@ from pubs_emitter.rtf import (
     render_leadership_role,
     render_link_field,
     render_media_appearance,
+    render_service_section,
     render_students_section,
 )
 from pubs_emitter.types import (
@@ -27,6 +28,7 @@ from pubs_emitter.types import (
     KeyWork,
     LeadershipRole,
     MediaAppearance,
+    ServiceEntry,
     Student,
 )
 
