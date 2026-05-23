@@ -7,6 +7,17 @@ Output is ready to paste into Word with formatting preserved: bold for you, supe
 advisor / last-author roles, italic venue + tier, clickable hyperlinks to
 DOIs / NVD / USPTO / publisher pages, and a hanging-indent layout.
 
+Input data format:
+1. For bib file, this repository supposes that you are using Google Scholar as the master reference for your publications, and that you are using the "James Davis" (TM) notation for your Scholar entries. That notation consists of prefixing paper venues with [ACRONYM'YEAR]. This assumption is necessary because Purdue wants you to list the ranking of your publication venues, and we need the acronyms to correlate with the ranking tables.
+2. You need to fill out the non-scholar-work.yaml file with your students, talks, grants, etc.
+
+Note: If you clone this repo and initialize Claude in it, it will help you populate the non-scholar-work YAML file from your CV (just give it screenshots of each part).
+
+Output data format:
+1. An RTF file with the relevant Purdue headings. You can copy into Word, then hit the "copy text only", and it should land OK.
+2. !!!Crucially, crucially!!! The inter-section references are done automatically across all lists and tables.
+
+
 ## Quick start
 
 ```bash
