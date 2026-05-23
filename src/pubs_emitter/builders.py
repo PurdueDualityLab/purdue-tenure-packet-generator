@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sqlite3
 import sys
 from datetime import datetime
@@ -17,18 +18,21 @@ import yaml
 
 from .authors import format_author, format_inventors
 from .db import LOOKUP_STATS
-from .latex import decode_latex
+from .latex import decode_latex, rtf_escape_unicode
 from .lookup import (
     extract_patent_number,
     fetch_cve_data,
     fetch_doi_or_url,
     fetch_patent_date,
 )
-from .types import BibEntry, Category, Citation, Patent, Rank, Section
+from .types import BibEntry, Category, Citation, InvitedTalk, Patent, Rank, Section
 from .venue import (
     CVE_ID_RE,
+    MissingArxivId,
+    MissingBracketTag,
     classify_entry,
     extract_arxiv_id,
+    extract_figshare_id,
     lookup_rank,
     normalize_title,
     parse_venue,
@@ -42,7 +46,9 @@ log = logging.getLogger(__name__)
 
 
 def escape_rtf(text: str) -> str:
-    return text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
+    """Escape RTF-special chars + encode non-ASCII as \\u<num>? escapes."""
+    text = text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
+    return rtf_escape_unicode(text)
 
 
 def format_details(entry: BibEntry) -> str:
@@ -56,11 +62,17 @@ def format_details(entry: BibEntry) -> str:
 
 
 def parse_year(year_str: str) -> int:
-    """Sort key for chronological order. Non-int strings sort to the end."""
+    """Sort key for chronological order.
+
+    Plain int strings parse directly. Otherwise extract the FIRST 4-digit
+    year from the string (so 'Annual, 2015-2019' sorts as 2015). Strings
+    with no parseable year sort to the end.
+    """
     try:
         return int(year_str)
     except ValueError:
-        return 9999
+        m = re.search(r"\d{4}", str(year_str))
+        return int(m.group(0)) if m else 9999
 
 
 def derive_section(category: Category, rank: Rank) -> Section:
@@ -101,15 +113,16 @@ def resolve_link(
     """arXiv: construct DOI from arXiv ID (hard-fails if missing).
     Everything else: cache-backed DOI lookup (Crossref skipped for no-DOI venues)."""
     if category == "arXiv / Preprints":
+        # Try arXiv first; fall back to figshare (m9.figshare.<id> → 10.6084/...).
         arxiv_id = extract_arxiv_id(entry)
-        if not arxiv_id:
-            log.error("arXiv entry missing arXiv ID: '%s'", title)
-            log.error(
-                "Add the ID via `eprint = {<id>}` or include `arXiv:<id>` in the journal field."
-            )
-            sys.exit(1)
-        LOOKUP_STATS["arxiv_constructed"] += 1
-        return f"https://doi.org/10.48550/arXiv.{arxiv_id}"
+        if arxiv_id:
+            LOOKUP_STATS["arxiv_constructed"] += 1
+            return f"https://doi.org/10.48550/arXiv.{arxiv_id}"
+        figshare_id = extract_figshare_id(entry)
+        if figshare_id:
+            LOOKUP_STATS["arxiv_constructed"] += 1
+            return f"https://doi.org/10.6084/{figshare_id}"
+        raise MissingArxivId(title)
     return fetch_doi_or_url(conn, title, raw_authors, acronym)
 
 
@@ -126,12 +139,7 @@ def build_citation(conn: sqlite3.Connection, entry: BibEntry) -> Citation:
     venue_str = decode_latex(venue_str)
     acronym, venue_str = parse_venue(venue_str)
     if not acronym:
-        log.error("Missing [ACRONYM'YY] tag in venue field for paper: '%s'", title)
-        log.error(
-            "Every journal/booktitle must begin with a bracketed tag, e.g. `[ICSE'25]`, "
-            "`[JSS'25]`, `[arXiv'26]`."
-        )
-        sys.exit(1)
+        raise MissingBracketTag(title)
     rank: Rank = "Preprint" if category == "arXiv / Preprints" else lookup_rank(acronym, title)
     section = derive_section(category, rank)
 
@@ -157,6 +165,60 @@ def build_citation(conn: sqlite3.Connection, entry: BibEntry) -> Citation:
 
 
 # ----- Patent builder -----------------------------------------------------
+
+
+def build_invited_talk(talk: dict) -> InvitedTalk:
+    """Build an InvitedTalk record from a YAML dict. No bib lookup needed."""
+    year_str = str(talk.get("year", ""))
+    return InvitedTalk(
+        year=parse_year(year_str),
+        year_str=year_str,
+        topic=decode_latex(talk.get("topic", "")).replace("\n", " "),
+        subtitle=decode_latex(talk.get("subtitle", "")).replace("\n", " "),
+        venue=decode_latex(talk.get("venue", "")).replace("\n", " "),
+    )
+
+
+def build_book_chapter(conn: sqlite3.Connection, entry: BibEntry) -> Citation:
+    """Assemble a Citation for an @incollection / @inbook entry.
+
+    Book chapters skip the [ACRONYM'YY] bracket-tag requirement and the
+    Crossref/DBLP lookup (book DOIs aren't in those databases). Link comes
+    from the doi_cache, normally pre-seeded via `manual_links` in
+    assets/config.yaml.
+    """
+    title = decode_latex(entry.get("title", "")).replace("\n", " ")
+    raw_authors = entry.get("author", "")
+    year_str = entry.get("year", "In Press")
+
+    booktitle = decode_latex(entry.get("booktitle", "")).replace("\n", " ")
+    publisher = decode_latex(entry.get("publisher", "")).replace("\n", " ")
+    venue = f"{booktitle} ({publisher})" if booktitle and publisher else booktitle or publisher
+
+    pages = entry.get("pages", "")
+    details = f", {pages}" if pages else ""
+
+    author_list = raw_authors.split(" and ")
+    formatted_authors = [
+        format_author(conn, a.strip(), is_last=i == len(author_list) - 1)
+        for i, a in enumerate(author_list)
+    ]
+    authors_rtf = ", ".join(formatted_authors)
+
+    from .db import cache_read_doi  # local: same pattern as build_thesis
+    link = cache_read_doi(conn, title) or ""
+
+    return Citation(
+        section="Books and Chapters",
+        rank="Book Chapter",
+        year=parse_year(year_str),
+        year_str=year_str,
+        authors_rtf=authors_rtf,
+        title=title,
+        venue=venue,
+        details=details,
+        link=link,
+    )
 
 
 def build_thesis(conn: sqlite3.Connection, entry: BibEntry) -> Citation:
@@ -256,41 +318,112 @@ def load_non_scholar(path: Optional[str]) -> dict:
 
 
 def validate_non_scholar(non_scholar: dict, bib_entries: list[BibEntry]) -> None:
-    """Enforce schema + title-resolution invariants. Crashes on any violation."""
+    """Collect ALL schema + title-resolution violations; report and exit if any."""
     bib_titles = {
         normalize_title(e.get("title", ""))
         for e in bib_entries
         if e.get("title")
     }
-    cves = non_scholar.get("cves") or []
-    for cve in cves:
+    errors: list[str] = []
+    for cve in non_scholar.get("cves") or []:
         if not isinstance(cve, dict):
-            log.error("Each `cves[]` entry must be a mapping; got %s", type(cve).__name__)
-            sys.exit(1)
+            errors.append(
+                f"Each `cves[]` entry must be a mapping; got {type(cve).__name__}"
+            )
+            continue
         cve_id = cve.get("cve_id", "")
         if not CVE_ID_RE.fullmatch(cve_id or ""):
-            log.error("CVE entry has invalid or missing `cve_id`: %r", cve_id)
-            sys.exit(1)
-        if not cve.get("organization"):
-            log.error("CVE %s missing required field `organization`", cve_id)
-            sys.exit(1)
+            errors.append(f"CVE entry has invalid or missing `cve_id`: {cve_id!r}")
+            continue
+        # `organization` is optional — auto-derived from NVD's CPE product if missing.
         paper_title = cve.get("paper_title")
         disclosers = cve.get("disclosers")
         if not paper_title and not disclosers:
-            log.error(
-                "CVE %s must specify `paper_title` and/or `disclosers`", cve_id,
+            errors.append(
+                f"CVE {cve_id} must specify `paper_title` and/or `disclosers`"
             )
-            sys.exit(1)
         if paper_title and normalize_title(paper_title) not in bib_titles:
-            log.error(
-                "CVE %s references paper_title %r, but no matching entry exists in the bib.",
-                cve_id, paper_title,
+            errors.append(
+                f"CVE {cve_id} references paper_title {paper_title!r}, "
+                f"but no matching entry exists in the bib "
+                f"(case/whitespace-insensitive match but same text required)."
             )
-            log.error(
-                "Bib title matching is case- and whitespace-insensitive but requires "
-                "same text."
+
+    for i, talk in enumerate(non_scholar.get("invited_talks") or []):
+        if not isinstance(talk, dict):
+            errors.append(
+                f"`invited_talks[{i}]` must be a mapping; got {type(talk).__name__}"
             )
-            sys.exit(1)
+            continue
+        if not talk.get("venue"):
+            errors.append(f"invited_talks[{i}] missing required field `venue`")
+        if not talk.get("year"):
+            errors.append(f"invited_talks[{i}] missing required field `year`")
+        if not talk.get("topic") and not talk.get("subtitle"):
+            errors.append(
+                f"invited_talks[{i}] must specify `topic` and/or `subtitle`"
+            )
+
+    for i, kw in enumerate(non_scholar.get("key_works") or []):
+        if not isinstance(kw, dict):
+            errors.append(
+                f"`key_works[{i}]` must be a mapping; got {type(kw).__name__}"
+            )
+            continue
+        paper_title = kw.get("paper_title")
+        if not paper_title:
+            errors.append(f"key_works[{i}] missing required field `paper_title`")
+            continue
+        if not kw.get("impact"):
+            errors.append(
+                f"key_works for paper {paper_title!r} missing `impact`"
+            )
+        if normalize_title(paper_title) not in bib_titles:
+            errors.append(
+                f"key_works references paper_title {paper_title!r}, "
+                f"but no matching bib entry exists."
+            )
+        # Soft warning: impact text > 100 words is over the recommended limit.
+        impact = kw.get("impact") or ""
+        if impact and len(impact.split()) > 100:
+            log.warning(
+                "key_works for paper %r: impact is %d words (>100 recommended).",
+                paper_title, len(impact.split()),
+            )
+
+    for i, disc in enumerate(non_scholar.get("security_disclosures") or []):
+        if not isinstance(disc, dict):
+            errors.append(
+                f"`security_disclosures[{i}]` must be a mapping; got {type(disc).__name__}"
+            )
+            continue
+        paper_title = disc.get("paper_title")
+        if not paper_title:
+            errors.append(
+                f"security_disclosure[{i}] missing required field `paper_title`"
+            )
+            continue
+        if not disc.get("vendor"):
+            errors.append(
+                f"security_disclosure for paper {paper_title!r} missing `vendor`"
+            )
+        if not disc.get("description"):
+            errors.append(
+                f"security_disclosure for paper {paper_title!r} missing `description`"
+            )
+        if normalize_title(paper_title) not in bib_titles:
+            errors.append(
+                f"security_disclosure references paper_title {paper_title!r}, "
+                f"but no matching bib entry exists."
+            )
+
+    if errors:
+        log.error(
+            "%d validation error(s) in non-Scholar YAML:", len(errors),
+        )
+        for e in errors:
+            log.error("  - %s", e)
+        sys.exit(1)
 
 
 def _cve_nvd_description(cve_data: Optional[dict]) -> str:
@@ -310,6 +443,27 @@ def _cve_nvd_year(cve_data: Optional[dict]) -> str:
     return (cve_data.get("published") or "")[:4]
 
 
+def _cve_nvd_organization(cve_data: Optional[dict]) -> str:
+    """Derive a human-readable affected-product name from NVD's CPE configs.
+
+    Returns the product name from the first CPE match (e.g. `freertos-plus-tcp`
+    from `cpe:2.3:a:amazon:freertos-plus-tcp:...`). Empty string if no CPE
+    data. CPE names are lower-kebab-case and ugly — user can override via
+    YAML `organization:` for any entry where the auto-derived name is wrong.
+    """
+    if not cve_data:
+        return ""
+    for cfg in cve_data.get("configurations") or []:
+        for node in cfg.get("nodes") or []:
+            for match in node.get("cpeMatch") or []:
+                criteria = match.get("criteria", "")
+                # cpe:2.3:a:vendor:product:version:...  → take parts[4] (product)
+                parts = criteria.split(":")
+                if len(parts) > 4 and parts[4]:
+                    return str(parts[4])
+    return ""
+
+
 def _bib_entry_by_title(
     bib_entries: list[BibEntry], paper_title: str,
 ) -> Optional[BibEntry]:
@@ -318,6 +472,49 @@ def _bib_entry_by_title(
         if normalize_title(e.get("title", "")) == target:
             return e
     return None
+
+
+def build_disclosure_from_yaml(
+    conn: sqlite3.Connection,
+    disc: dict,
+    bib_entries: list[BibEntry],
+) -> Citation:
+    """Build a C.5 Citation for a security disclosure (no CVE, vendor-acknowledged).
+
+    Always linked to a paper (no stand-alone disclosures). Authors + year
+    inherit from the linked paper; description is the user-supplied brief
+    note; vendor renders as the italicized venue.
+    """
+    paper_title = disc["paper_title"]
+    paper = _bib_entry_by_title(bib_entries, paper_title)
+    # validate_non_scholar guarantees paper exists; this is belt-and-suspenders.
+    raw_authors = paper.get("author", "") if paper else ""
+    year_str = disc.get("year") or (paper.get("year", "") if paper else "In Press")
+
+    author_list = raw_authors.split(" and ")
+    formatted = [
+        format_author(conn, a.strip(), is_last=i == len(author_list) - 1)
+        for i, a in enumerate(author_list)
+    ]
+    authors_rtf = ", ".join(formatted)
+
+    # Strip trailing period so the render's own `, venue.` doesn't double up.
+    title = decode_latex(disc["description"]).replace("\n", " ").rstrip(". ")
+    venue = disc["vendor"]
+    link = disc.get("url") or ""
+
+    return Citation(
+        section="Other publications and products",
+        rank="Disclosure",
+        year=parse_year(year_str),
+        year_str=year_str,
+        authors_rtf=authors_rtf,
+        title=title,
+        venue=venue,
+        details="",
+        link=link,
+        back_ref_title=paper_title,
+    )
 
 
 def build_cve_from_yaml(
@@ -357,7 +554,10 @@ def build_cve_from_yaml(
     authors_rtf = ", ".join(formatted)
 
     link = cve.get("url") or f"https://nvd.nist.gov/vuln/detail/{cve_id}"
-    organization = cve["organization"]
+    # YAML override wins; otherwise fall back to NVD's CPE-derived product name.
+    # NVD's name is lower-kebab-case (e.g., `freertos-plus-tcp`) — friendly forms
+    # like "AWS (FreeRTOS)" need explicit `organization:` in YAML.
+    organization = cve.get("organization") or _cve_nvd_organization(cve_data)
 
     return Citation(
         section="Other publications and products",

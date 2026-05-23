@@ -59,29 +59,49 @@ for _rank, _acronyms in (_conf.get("ranks") or {}).items():
 # at startup so the normal cache-lookup path picks them up.
 MANUAL_LINKS: dict[str, str] = dict(_conf.get("manual_links") or {})
 
+# Bib titles to drop on load (case- and whitespace-insensitive match). Scholar
+# re-exports clobber manual edits to my_papers.bib, so a config-driven filter
+# is the only durable way to suppress entries the user doesn't want in the CV.
+BIB_IGNORE: list[str] = list(_conf.get("bib_ignore") or [])
+
 
 # ----- Code-side constants (not in YAML) -----------------------------------
 
 SECTION_ORDER: list[Section] = [
+    "Key Works",
     "Journals",
+    "Books and Chapters",
     "Conferences and Workshops",
     "Other publications and products",
+    "Invited Talks",
     "Patents",
 ]
 
 SECTION_CODES: dict[Section, str] = {
+    "Key Works": "C.1",
     "Journals": "C.2",
+    "Books and Chapters": "C.3",
     "Conferences and Workshops": "C.4",
     "Other publications and products": "C.5",
+    "Invited Talks": "C.6",
     "Patents": "C.19",
 }
 
 SECTION_HEADINGS: dict[Section, str] = {
+    "Key Works": "Key Scholarly Publications or Patents",
     "Journals": "Journals",
+    "Books and Chapters": "Books and chapters in books",
     "Conferences and Workshops": "Conferences and Workshops",
     "Other publications and products": "Other publications and products",
+    "Invited Talks": "Invited external keynote/conference/symposium/colloquium/seminar presentations",
     "Patents": "Issued U.S. and International Patents",
 }
+
+# Sections whose entries render the tier marker with a "Venue rank: " prefix.
+# Limited to peer-reviewed venue categories. C.1 Key Works inherits this
+# automatically — each Key Work wraps a Journal/Conference citation whose
+# `section` field is one of these.
+RANKED_SECTIONS: set[Section] = {"Journals", "Conferences and Workshops"}
 
 TIER_LABELS: dict[Rank, str] = {
     "Rank 1": "Tier 1",
@@ -91,7 +111,9 @@ TIER_LABELS: dict[Rank, str] = {
     "Magazine": "Magazine",
     "Preprint": "Preprint",
     "CVE": "CVE",
+    "Disclosure": "Security disclosure",
     "Dissertation": "Dissertation",
+    "Book Chapter": "Book chapter",
 }
 
 # Sponsoring orgs: spell out on first occurrence per section, bare acronym after.

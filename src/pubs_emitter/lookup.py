@@ -26,7 +26,7 @@ from .db import (
 from .latex import decode_latex
 from .network import try_doi, try_nvd, try_patentsview
 from .types import BibEntry, NetworkTask
-from .venue import classify_entry, is_patent_entry, parse_venue
+from .venue import classify_entry, is_book_chapter_entry, is_patent_entry, parse_venue
 
 
 log = logging.getLogger(__name__)
@@ -63,6 +63,9 @@ def plan_lookups(
     cur = conn.cursor()
 
     for entry in entries:
+        # Book chapters bypass DOI lookup — link comes from manual_links if any.
+        if is_book_chapter_entry(entry):
+            continue
         if is_patent_entry(entry):
             _, number_clean = extract_patent_number(entry.get("note", ""))
             if number_clean:

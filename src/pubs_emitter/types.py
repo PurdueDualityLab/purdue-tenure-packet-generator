@@ -16,9 +16,12 @@ Category = Literal[
 Rank = str
 
 Section = Literal[
+    "Key Works",
     "Journals",
+    "Books and Chapters",
     "Conferences and Workshops",
     "Other publications and products",
+    "Invited Talks",
     "Patents",
 ]
 
@@ -48,6 +51,21 @@ class Patent(NamedTuple):
     date: str
     number: str
     impact: str
+
+
+class InvitedTalk(NamedTuple):
+    """A C.6 invited talk. All talks are type 'Seminar' for now."""
+    year: int           # sort key (first 4-digit year in year_str for ranges)
+    year_str: str       # display, e.g. "2024" or "Annual, 2015-2019"
+    topic: str          # main subject; e.g. "Regular Expression Denial of Service"
+    subtitle: str       # optional specific talk title within that topic ("" if none)
+    venue: str          # institution / forum + location
+
+
+class KeyWork(NamedTuple):
+    """A paper designated as a key/highlight scholarly publication (C.1 entry)."""
+    citation: Citation   # the resolved paper's standard Citation
+    impact: str          # 100-word impact statement
 
 
 class NetworkTask(NamedTuple):

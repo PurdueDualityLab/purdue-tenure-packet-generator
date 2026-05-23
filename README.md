@@ -111,9 +111,13 @@ cves:
       - Davis, James C
 ```
 
-Required: `cve_id`, `organization`. Either `paper_title` OR `disclosers`
-must be present. Unresolved `paper_title` (no exact match in the bib,
-case- and whitespace-insensitive) → fatal exit.
+Required: `cve_id`. Either `paper_title` OR `disclosers` must be present.
+Unresolved `paper_title` (no exact match in the bib, case- and
+whitespace-insensitive) → fatal exit.
+
+`organization` is optional — auto-derived from NVD's CPE product name if
+missing (e.g. `freertos-plus-tcp`). Supply explicitly when you want the
+friendly form (e.g. `"AWS (FreeRTOS)"`), which NVD doesn't carry.
 
 ## Output sections
 

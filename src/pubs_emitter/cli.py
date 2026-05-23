@@ -19,14 +19,18 @@ from typing import Optional, cast
 import bibtexparser
 
 from .builders import (
+    build_book_chapter,
     build_citation,
     build_cve_from_yaml,
+    build_disclosure_from_yaml,
+    build_invited_talk,
     build_patent,
     build_thesis,
     load_non_scholar,
     validate_non_scholar,
 )
 from .config import (
+    BIB_IGNORE,
     DEFAULT_DB_FILE,
     DEFAULT_MAX_WORKERS,
     DEFAULT_OUT_FILE,
@@ -38,11 +42,25 @@ from .config import (
 from .db import LOOKUP_STATS, open_db, populate_students, seed_manual_links
 from .lookup import commit_results, dispatch_parallel, plan_lookups
 from .rtf import build_paper_index, write_rtf
-from .types import BibEntry, Citation, Patent, Publications
-from .venue import is_patent_entry, is_thesis_entry
+from .types import BibEntry, Citation, InvitedTalk, KeyWork, Patent, Publications
+from .venue import (
+    EntryParseError,
+    MissingArxivId,
+    MissingBracketTag,
+    UnrankedVenue,
+    is_book_chapter_entry,
+    is_patent_entry,
+    is_thesis_entry,
+    normalize_title,
+)
 
 
 log = logging.getLogger("pubs-emitter")
+
+
+def log_phase(name: str) -> None:
+    """Banner to visually demarcate pipeline phases in the log."""
+    log.info("%%%%%%%% %s %%%%%%%%", name.upper())
 
 
 # ----- I/O helpers --------------------------------------------------------
@@ -54,6 +72,40 @@ def load_bib(path: str) -> list[BibEntry]:
         db = bibtexparser.load(f)
     log.info("Loaded %d entries", len(db.entries))
     return cast(list[BibEntry], db.entries)
+
+
+def filter_ignored(entries: list[BibEntry], ignore_titles: list[str]) -> list[BibEntry]:
+    """Drop bib entries whose title matches any of `ignore_titles`.
+
+    Match is case- and whitespace-insensitive (same normalization as the
+    CVE.paper_title resolver). Scholar re-exports clobber manual deletions
+    from my_papers.bib, so this config-driven filter is the durable way to
+    suppress unwanted entries.
+    """
+    if not ignore_titles:
+        return entries
+    ignore_norm = {normalize_title(t) for t in ignore_titles}
+    seen_norm: set[str] = set()
+    kept: list[BibEntry] = []
+    for e in entries:
+        norm = normalize_title(e.get("title", ""))
+        if norm in ignore_norm:
+            seen_norm.add(norm)
+            log.info("Filtered (bib_ignore): %s", e.get("title", "")[:80])
+            continue
+        kept.append(e)
+    # Surface stale `bib_ignore:` entries — titles listed but no longer in the bib.
+    unused = ignore_norm - seen_norm
+    if unused:
+        log.warning(
+            "%d `bib_ignore:` entries didn't match any bib title "
+            "(possibly Scholar renamed/removed them):",
+            len(unused),
+        )
+        for title in ignore_titles:
+            if normalize_title(title) in unused:
+                log.warning("  · %s", title)
+    return kept
 
 
 def log_section_summary(publications: Publications, patents: list[Patent]) -> None:
@@ -71,6 +123,65 @@ def log_section_summary(publications: Publications, patents: list[Patent]) -> No
                 "Section %s '%s': %d papers",
                 SECTION_CODES[section], section, len(cits),
             )
+
+
+def report_parse_errors(errors: list[EntryParseError]) -> None:
+    """Group + dedupe parse errors by class so the user sees one actionable
+    line per unique problem (one acronym, not N repeats of it)."""
+    unranked: dict[str, list[str]] = defaultdict(list)   # acronym → [titles]
+    no_arxiv: list[str] = []
+    no_bracket: list[str] = []
+    other: list[str] = []
+
+    for e in errors:
+        if isinstance(e, UnrankedVenue):
+            unranked[e.acronym].append(e.title)
+        elif isinstance(e, MissingArxivId):
+            no_arxiv.append(e.title)
+        elif isinstance(e, MissingBracketTag):
+            no_bracket.append(e.title)
+        else:
+            other.append(str(e))
+
+    total = len(errors)
+    log.error("=" * 60)
+    log.error("%d parse error(s) across %d unique problem class(es):",
+              total, sum(1 for s in (unranked, no_arxiv, no_bracket, other) if s))
+
+    if unranked:
+        n_papers = sum(len(v) for v in unranked.values())
+        log.error("")
+        log.error(
+            "[unranked venues] %d unique acronym(s), %d paper(s) total.",
+            len(unranked), n_papers,
+        )
+        log.error("Add each acronym under the appropriate rank in assets/config.yaml:")
+        for acronym in sorted(unranked, key=str.lower):
+            papers = unranked[acronym]
+            log.error("  %s  (%d)", acronym, len(papers))
+            for title in papers:
+                log.error("      · %s", title)
+
+    if no_arxiv:
+        log.error("")
+        log.error("[arxiv missing ID] %d paper(s).", len(no_arxiv))
+        log.error("Add `eprint = {<id>}` or include `arXiv:<id>` in the journal field:")
+        for title in no_arxiv:
+            log.error("  · %s", title)
+
+    if no_bracket:
+        log.error("")
+        log.error("[missing bracket tag] %d paper(s).", len(no_bracket))
+        log.error("Every journal/booktitle must begin with [ACRONYM'YY], e.g. [ICSE'25]:")
+        for title in no_bracket:
+            log.error("  · %s", title)
+
+    if other:
+        log.error("")
+        log.error("[other] %d error(s).", len(other))
+        for msg in other:
+            log.error("  · %s", msg)
+    log.error("=" * 60)
 
 
 def log_lookup_stats() -> None:
@@ -159,15 +270,18 @@ def main(argv: Optional[list[str]] = None) -> None:
     args = parse_args(argv)
     conn = open_db(args.cache)
     try:
+        log_phase("init")
         populate_students(conn, STUDENTS)
         seed_manual_links(conn, MANUAL_LINKS)
-        entries = load_bib(args.bib)
 
+        log_phase("load input")
+        entries = filter_ignored(load_bib(args.bib), BIB_IGNORE)
         # Load + validate YAML side file (CVEs etc.) before any network work.
         non_scholar = load_non_scholar(args.non_scholar)
         validate_non_scholar(non_scholar, entries)
 
-        # Phases 1-3: plan / dispatch / commit.
+        log_phase("lookups")
+        # plan / dispatch / commit
         tasks = plan_lookups(conn, entries, non_scholar)
         if tasks:
             results = dispatch_parallel(tasks, max_workers=args.workers)
@@ -175,34 +289,76 @@ def main(argv: Optional[list[str]] = None) -> None:
         else:
             log.info("Cache is fully warm; no network lookups needed.")
 
-        # Phase 4: build citations / patents / theses from bib (warm cache).
+        log_phase("build")
+        # Build citations / patents / theses from bib (warm cache).
         # Theses are built internally but NOT emitted in any section — held
         # in `theses_internal` for future cross-references.
+        # Per-entry parse errors are batched: the loop continues past each
+        # failure and ALL errors are reported together at the end.
         publications: Publications = defaultdict(list)
         patents: list[Patent] = []
         theses_internal: list[Citation] = []
+        parse_errors: list[EntryParseError] = []
         for entry in entries:
-            if is_patent_entry(entry):
-                patents.append(build_patent(conn, entry))
-            elif is_thesis_entry(entry):
-                theses_internal.append(build_thesis(conn, entry))
-            else:
-                cit = build_citation(conn, entry)
-                publications[cit.section].append(cit)
+            try:
+                if is_patent_entry(entry):
+                    patents.append(build_patent(conn, entry))
+                elif is_thesis_entry(entry):
+                    theses_internal.append(build_thesis(conn, entry))
+                elif is_book_chapter_entry(entry):
+                    cit = build_book_chapter(conn, entry)
+                    publications[cit.section].append(cit)
+                else:
+                    cit = build_citation(conn, entry)
+                    publications[cit.section].append(cit)
+            except EntryParseError as e:
+                parse_errors.append(e)
 
-        # Phase 4b: build CVE citations from YAML, route to C.5.
+        if parse_errors:
+            report_parse_errors(parse_errors)
+            sys.exit(1)
+
+        # Phase 4b: build CVE + security-disclosure citations from YAML, route to C.5.
         for cve in non_scholar.get("cves") or []:
             cit = build_cve_from_yaml(conn, cve, entries)
             publications[cit.section].append(cit)
+        for disc in non_scholar.get("security_disclosures") or []:
+            cit = build_disclosure_from_yaml(conn, disc, entries)
+            publications[cit.section].append(cit)
+
+        # Phase 4c: build key-works list (C.1 highlight section).
+        # Each key_work links to a bib paper; we re-use build_citation to
+        # produce the standard Citation, then attach the impact statement.
+        key_works: list[KeyWork] = []
+        for kw_yaml in non_scholar.get("key_works") or []:
+            from .builders import _bib_entry_by_title  # local: not a public surface
+            paper = _bib_entry_by_title(entries, kw_yaml["paper_title"])
+            # validate_non_scholar guarantees paper exists.
+            assert paper is not None
+            paper_cit = build_citation(conn, paper)
+            key_works.append(KeyWork(citation=paper_cit, impact=kw_yaml["impact"]))
+
+        # Phase 4d: build invited-talks list from YAML.
+        invited_talks: list[InvitedTalk] = [
+            build_invited_talk(t) for t in (non_scholar.get("invited_talks") or [])
+        ]
 
         # Chronological order (oldest first) within each section.
         for section in publications:
             publications[section].sort(key=lambda c: c.year)
         patents.sort(key=lambda p: p.year)
+        key_works.sort(key=lambda kw: kw.citation.year)
+        invited_talks.sort(key=lambda t: t.year)
 
         # Back-pointer index — must run AFTER chrono-sort so C.X.Y is stable.
         paper_index = build_paper_index(publications)
+        # key_work_index: title → "C.1.N". Built AFTER key_works are sorted.
+        kw_code = SECTION_CODES["Key Works"]
+        key_work_index: dict[str, str] = {}
+        for idx, kw in enumerate(key_works, 1):
+            key_work_index[normalize_title(kw.citation.title)] = f"{kw_code}.{idx}"
 
+        log_phase("summary")
         log_section_summary(publications, patents)
         if theses_internal:
             log.info(
@@ -211,8 +367,12 @@ def main(argv: Optional[list[str]] = None) -> None:
             )
         log_lookup_stats()
 
-        # Phase 5: render.
-        write_rtf(args.out, publications, patents, paper_index)
+        log_phase("render")
+        write_rtf(
+            args.out, publications, patents, paper_index,
+            key_works=key_works, key_work_index=key_work_index,
+            invited_talks=invited_talks,
+        )
     finally:
         conn.close()
 

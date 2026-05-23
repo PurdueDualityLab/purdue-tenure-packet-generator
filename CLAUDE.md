@@ -59,8 +59,11 @@ the wrong module.
    `validate_non_scholar`. Match is case-insensitive + whitespace-normalized.
    Unresolved → fatal. The bib stays Scholar-canonical; the YAML is the
    user's hand-curated side data.
-4. **YAML CVE entries MUST have `cve_id` + `organization`** and at least
-   one of (`paper_title`, `disclosers`). All checked at load time.
+4. **YAML CVE entries MUST have `cve_id`** and at least one of
+   (`paper_title`, `disclosers`). `organization` is OPTIONAL — auto-derived
+   from NVD's CPE product name if absent (e.g. `freertos-plus-tcp`); supply
+   explicitly when you want the friendly form (e.g. `"AWS (FreeRTOS)"`).
+   All checks run at load time, batched.
 
 ## Things that look weird but are intentional
 
