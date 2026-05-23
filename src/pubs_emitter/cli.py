@@ -22,6 +22,7 @@ from .builders import (
     build_citation,
     build_cve_from_yaml,
     build_patent,
+    build_thesis,
     load_non_scholar,
     validate_non_scholar,
 )
@@ -29,15 +30,16 @@ from .config import (
     DEFAULT_DB_FILE,
     DEFAULT_MAX_WORKERS,
     DEFAULT_OUT_FILE,
+    MANUAL_LINKS,
     SECTION_CODES,
     SECTION_ORDER,
     STUDENTS,
 )
-from .db import LOOKUP_STATS, open_db, populate_students
+from .db import LOOKUP_STATS, open_db, populate_students, seed_manual_links
 from .lookup import commit_results, dispatch_parallel, plan_lookups
 from .rtf import build_paper_index, write_rtf
-from .types import BibEntry, Patent, Publications
-from .venue import is_patent_entry
+from .types import BibEntry, Citation, Patent, Publications
+from .venue import is_patent_entry, is_thesis_entry
 
 
 log = logging.getLogger("pubs-emitter")
@@ -158,6 +160,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     conn = open_db(args.cache)
     try:
         populate_students(conn, STUDENTS)
+        seed_manual_links(conn, MANUAL_LINKS)
         entries = load_bib(args.bib)
 
         # Load + validate YAML side file (CVEs etc.) before any network work.
@@ -172,12 +175,17 @@ def main(argv: Optional[list[str]] = None) -> None:
         else:
             log.info("Cache is fully warm; no network lookups needed.")
 
-        # Phase 4: build citations / patents from bib (warm cache).
+        # Phase 4: build citations / patents / theses from bib (warm cache).
+        # Theses are built internally but NOT emitted in any section — held
+        # in `theses_internal` for future cross-references.
         publications: Publications = defaultdict(list)
         patents: list[Patent] = []
+        theses_internal: list[Citation] = []
         for entry in entries:
             if is_patent_entry(entry):
                 patents.append(build_patent(conn, entry))
+            elif is_thesis_entry(entry):
+                theses_internal.append(build_thesis(conn, entry))
             else:
                 cit = build_citation(conn, entry)
                 publications[cit.section].append(cit)
@@ -196,6 +204,11 @@ def main(argv: Optional[list[str]] = None) -> None:
         paper_index = build_paper_index(publications)
 
         log_section_summary(publications, patents)
+        if theses_internal:
+            log.info(
+                "Theses (held internally, not emitted): %d",
+                len(theses_internal),
+            )
         log_lookup_stats()
 
         # Phase 5: render.

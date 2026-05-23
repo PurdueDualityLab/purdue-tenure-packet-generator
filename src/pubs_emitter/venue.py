@@ -40,6 +40,11 @@ def is_patent_entry(entry: BibEntry) -> bool:
     return "patent" in publisher or "patent" in note
 
 
+def is_thesis_entry(entry: BibEntry) -> bool:
+    """Detect a thesis entry: @phdthesis (or @mastersthesis)."""
+    return entry.get("ENTRYTYPE", "").lower() in ("phdthesis", "mastersthesis")
+
+
 # ----- Venue parsing ------------------------------------------------------
 
 

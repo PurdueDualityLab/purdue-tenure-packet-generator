@@ -54,6 +54,11 @@ for _rank, _acronyms in (_conf.get("ranks") or {}).items():
     for _ac in _acronyms or []:
         RANKS[_ac] = _rank
 
+# Hand-curated {title: url} overrides for entries Scholar can't supply a link
+# for (PhD theses, some workshop papers, etc.). These are seeded into doi_cache
+# at startup so the normal cache-lookup path picks them up.
+MANUAL_LINKS: dict[str, str] = dict(_conf.get("manual_links") or {})
+
 
 # ----- Code-side constants (not in YAML) -----------------------------------
 
@@ -86,6 +91,7 @@ TIER_LABELS: dict[Rank, str] = {
     "Magazine": "Magazine",
     "Preprint": "Preprint",
     "CVE": "CVE",
+    "Dissertation": "Dissertation",
 }
 
 # Sponsoring orgs: spell out on first occurrence per section, bare acronym after.

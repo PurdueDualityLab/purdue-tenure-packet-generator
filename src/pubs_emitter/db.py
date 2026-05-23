@@ -48,6 +48,26 @@ def open_db(path: str) -> sqlite3.Connection:
     return conn
 
 
+def seed_manual_links(conn: sqlite3.Connection, manual_links: dict[str, str]) -> None:
+    """Pre-seed the doi_cache with hand-curated {title: url} overrides.
+
+    Idempotent (INSERT OR REPLACE) so re-runs converge. Used for entries
+    Scholar can't supply a link for (theses, some workshop papers, etc.) —
+    saves the user from having to edit lookup_cache.sqlite by hand every
+    time it gets regenerated.
+    """
+    if not manual_links:
+        return
+    cur = conn.cursor()
+    for title, url in manual_links.items():
+        cur.execute(
+            "INSERT OR REPLACE INTO doi_cache (title, doi_or_url) VALUES (?, ?)",
+            (title.lower(), url),
+        )
+    conn.commit()
+    log.info("Seeded %d manual link override(s) into doi_cache", len(manual_links))
+
+
 def populate_students(
     conn: sqlite3.Connection,
     students: dict[StudentType, list[str]],

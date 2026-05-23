@@ -159,6 +159,55 @@ def build_citation(conn: sqlite3.Connection, entry: BibEntry) -> Citation:
 # ----- Patent builder -----------------------------------------------------
 
 
+def build_thesis(conn: sqlite3.Connection, entry: BibEntry) -> Citation:
+    """Assemble a Citation for an @phdthesis / @mastersthesis entry.
+
+    Theses are exempt from the [ACRONYM'YY] bracket-tag requirement (no venue
+    field for it to live on). The link comes from the doi_cache, normally
+    pre-seeded via `manual_links` in assets/config.yaml since Scholar exports
+    don't carry a DOI for theses.
+
+    Currently built but NOT emitted in any section — held for future cross-
+    references (e.g. CVE → thesis back-pointer).
+    """
+    title = decode_latex(entry.get("title", "")).replace("\n", " ")
+    raw_authors = entry.get("author", "")
+    year_str = entry.get("year", "In Press")
+    school = decode_latex(entry.get("school", "")).replace("\n", " ")
+
+    author_list = raw_authors.split(" and ")
+    formatted_authors = [
+        format_author(conn, a.strip(), is_last=i == len(author_list) - 1)
+        for i, a in enumerate(author_list)
+    ]
+    authors_rtf = ", ".join(formatted_authors)
+
+    # Link comes from the cache (which `seed_manual_links` populates from
+    # assets/config.yaml's `manual_links:` block). Cache miss = no link.
+    from .db import cache_read_doi  # local import to avoid widening module surface
+    link = cache_read_doi(conn, title) or ""
+    if not link:
+        log.warning(
+            "Thesis '%s' has no link. Add an entry under `manual_links:` "
+            "in assets/config.yaml.", title[:60],
+        )
+
+    # Use Other-publications-and-products as the placeholder section: never
+    # iterated for theses (cli routes them to a separate list) but a valid
+    # value for type-checking + future-emission flexibility.
+    return Citation(
+        section="Other publications and products",
+        rank="Dissertation",
+        year=parse_year(year_str),
+        year_str=year_str,
+        authors_rtf=authors_rtf,
+        title=title,
+        venue=school,
+        details="",
+        link=link,
+    )
+
+
 def build_patent(conn: sqlite3.Connection, entry: BibEntry) -> Patent:
     title = decode_latex(entry.get("title", "")).replace("\n", " ")
     inventors = format_inventors(entry.get("author", ""))
