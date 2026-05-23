@@ -1,8 +1,9 @@
 # pubs-emitter
 
 Generates a formatted RTF publication list from a BibTeX file and an optional
-YAML side file for non-Scholar work (CVEs, etc.). Output is ready to paste
-into Word with formatting preserved: bold for me, superscripts for student /
+YAML side file for non-Scholar work (CVEs, talks, grants, etc.).
+
+Output is ready to paste into Word with formatting preserved: bold for you, superscripts for student /
 advisor / last-author roles, italic venue + tier, clickable hyperlinks to
 DOIs / NVD / USPTO / publisher pages, and a hanging-indent layout.
 
