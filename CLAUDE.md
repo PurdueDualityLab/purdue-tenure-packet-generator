@@ -29,7 +29,7 @@ editing.
 
 | File | What lives there |
 |------|------------------|
-| `types.py` | `Citation`, `Patent`, `KeyWork`, `InvitedTalk`, `LeadershipRole`, `MediaAppearance`, `ConferencePresentation`, `Grant`, `Student`, `NetworkTask`, type aliases (`Category`, `Rank`, `Section`, `BibEntry`, `Publications`, `StudentType`) |
+| `types.py` | `Citation`, `Patent`, `KeyWork`, `InvitedTalk`, `LeadershipRole`, `MediaAppearance`, `ConferencePresentation`, `Grant`, `Student`, `ServiceEntry`, `NetworkTask`, type aliases (`Category`, `Rank`, `Section`, `BibEntry`, `Publications`, `StudentType`) |
 | `config.py` | Loads `assets/config.yaml` (ME, ADVISORS, STUDENTS, RANKS, MANUAL_LINKS, BIB_IGNORE) + code-side constants (SECTION_*, TIER_LABELS, ORG_EXPANSIONS, GRANT_TOTAL_LABELS, RANKED_SECTIONS, PATENT_TABLE_WIDTHS, API URLs, etc.) |
 | `latex.py` | `decode_latex` (LaTeX → Unicode via pylatexenc, with bare-`&` sentinel-wrap) + `rtf_escape_unicode` (Unicode → RTF `\\u<signed16>?` escape, with surrogate-pair handling) |
 | `db.py` | SQLite cache schema + read-only accessors + `seed_manual_links` + `populate_students` + `LOOKUP_STATS` counter dict |
@@ -37,8 +37,8 @@ editing.
 | `authors.py` | Name parsing + `format_author` (citation form: bold-for-me, role markers) + `format_inventors` (patent-table form: bold-for-me, NO role markers) + structural `lookup_student_type` |
 | `venue.py` | `parse_venue`, `lookup_rank`, `classify_entry`, `is_patent_entry`/`is_thesis_entry`/`is_book_chapter_entry`, `extract_arxiv_id`, `extract_figshare_id`, `extract_cve_id`, `normalize_title` |
 | `lookup.py` | `NetworkTask` planning, parallel dispatch, result commit, cache-aware fetchers (`fetch_doi_or_url`, `fetch_patent_date`, `fetch_cve_data`); also `extract_patent_number` |
-| `builders.py` | `build_citation` / `build_book_chapter` / `build_thesis` / `build_patent` / `build_cve_from_yaml` / `build_disclosure_from_yaml` / `build_invited_talk` / `build_leadership_role` / `build_media_appearance` / `build_conference_presentation` / `build_grant` / `build_student`; also `escape_rtf`, `parse_year`, `derive_section`, `load_non_scholar`, `validate_non_scholar` |
-| `rtf.py` | `RtfTable` class, `render_citation`, `render_key_works_section`, `render_invited_talks_section`, `render_leadership_section`, `render_media_appearances_section`, `render_conference_presentations_section`, `render_grants_section`, `render_students_section`, `render_patents_section`, `build_paper_index`, `write_rtf` |
+| `builders.py` | `build_citation` / `build_book_chapter` / `build_thesis` / `build_patent` / `build_cve_from_yaml` / `build_disclosure_from_yaml` / `build_invited_talk` / `build_leadership_role` / `build_media_appearance` / `build_conference_presentation` / `build_grant` / `build_student` / `build_service_entry`; also `escape_rtf`, `parse_year`, `derive_section`, `load_non_scholar`, `validate_non_scholar` |
+| `rtf.py` | `RtfTable` class, `render_citation`, `render_key_works_section`, `render_invited_talks_section`, `render_leadership_section`, `render_media_appearances_section`, `render_conference_presentations_section`, `render_grants_section`, `render_students_section`, `render_service_section`, `render_patents_section`, `build_paper_index`, `write_rtf` |
 | `cli.py` | `parse_args` + `main` (the 5-phase orchestrator) |
 
 Dependency direction: everything depends on `types` + `config`. `db` depends
@@ -82,6 +82,11 @@ the wrong module.
    programs, and other entries with no canonical funder-name prefix.
 6. **YAML student entries MUST have `name`, `degree`, `role`, `grad_year`**.
    Use `grad_year: 9999` and `graduation: ongoing` for in-flight students.
+7. **YAML service entries (C.23–C.26) MUST have `description`**. `year` is
+   OPTIONAL — accepts int (`2025`), multi-year string (`"2025, 2026, 2027"`),
+   or range (`"2024-2025"` / `"2023-present"`). Omit entirely for ongoing
+   service with no fixed date (e.g. journal reviewing); the renderer
+   suppresses the year and sorts such entries to the end of the list.
    All checks run at load time, batched.
 
 ## Section-by-section emission
@@ -107,6 +112,10 @@ that lives in `rtf.py` and a YAML key it consumes:
 | C.14 | Graduate Students | `graduate_students` | `render_students_section` |
 | C.16 | Undergraduate Students | `undergraduate_students` | `render_students_section` |
 | C.19 | Issued Patents | (bib `@misc` with `note = US Patent ...`) | `render_patents_section` |
+| C.23 | Service to Purdue | `university_service` | `render_service_section` |
+| C.24 | Service through professional societies | `profession_service` | `render_service_section` |
+| C.25 | National / International service | `national_service` | `render_service_section` |
+| C.26 | Other external service (journal reviewing etc.) | `other_service` | `render_service_section` |
 
 C.14 and C.19 use `RtfTable`; everything else is paragraph-based.
 `GRANT_TOTAL_LABELS` (in `config.py`) determines which grant sections render

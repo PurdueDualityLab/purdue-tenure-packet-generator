@@ -159,6 +159,10 @@ corresponding YAML / bib source is empty):
 | C.14 | Graduate students advised | `graduate_students:` (RTF table) |
 | C.16 | Undergraduate students advised | `undergraduate_students:` (RTF table) |
 | C.19 | Issued U.S. and International Patents | bib `@misc` with `note = US Patent ...` (RTF table) |
+| C.23 | Service to Purdue | `university_service:` |
+| C.24 | Service to the profession through professional societies | `profession_service:` |
+| C.25 | Service to State, Nation, or International Organizations | `national_service:` |
+| C.26 | Other external service activities to the profession not noted above | `other_service:` |
 
 Within each section, entries are sorted chronologically (oldest first).
 For peer-reviewed venues (C.2, C.4), the tier marker renders inline as
@@ -253,6 +257,29 @@ graduate_students:
     position: Software Engineer @ Some Co.               # optional
 
 undergraduate_students: []
+
+# C.23-C.26 service entries. Same shape across all four sections:
+# a free-form description (full role + venue string) and an optional year.
+# Year may be int (2025), string for multi-year ("2025, 2026, 2027"), or
+# range ("2024-2025" / "2023-present"). Omit `year:` entirely for ongoing
+# service with no fixed date (typically journal reviewing) — the renderer
+# emits description only and sorts such entries to the bottom.
+university_service:
+  - description: "Member, Purdue ECE ABET Committee"
+    year: "2023-present"
+
+profession_service:                                       # conference PC roles
+  - description: "PC Member, ICSE"
+    year: "2025, 2026, 2027"
+
+national_service:
+  - description: "US National Science Foundation, Panelist"
+    year: 2025
+
+other_service:
+  - description: "Reviewer, IEEE Transactions on Software Engineering (TSE)"  # journal, no year
+  - description: "PC Member, EuroSec"
+    year: "2024, 2025, 2026"
 ```
 
 **Validation rules** (all checked at YAML load time, batched into one report):
@@ -269,6 +296,8 @@ undergraduate_students: []
   the head renders as just the title (use this for fellowships and internal
   Purdue programs that don't carry a canonical funder-name prefix).
 - Students must have `name`, `degree`, `role`, `grad_year`.
+- Service entries (C.23–C.26) must have `description`. `year` is optional —
+  when omitted, only the description is rendered (used for journal reviewing).
 - Invited talks must have `venue`, `year`, and at least one of `topic` /
   `subtitle`.
 
