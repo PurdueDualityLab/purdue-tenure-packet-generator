@@ -1,0 +1,123 @@
+# pubs-emitter user config — schema + starter data.
+#
+# How this file is used:
+#   - `assets/config.yaml` is the LIVE config the tool loads (gitignored —
+#     your personal data lives there).
+#   - This file (`assets/config.example.yaml`) is the COMMITTED template +
+#     schema documentation. `setup.sh` copies this → `config.yaml` on first
+#     run if `config.yaml` is missing.
+#   - Override the config path via the PUBS_EMITTER_CONFIG env var.
+
+# Author identity — name variants that get bolded in citations.
+# Include every spelling that may appear in your BibTeX (Scholar exports
+# vary across runs, so list a few forms).
+me:
+  - "Lastname, Firstname M"
+  - "Lastname, F."
+
+# Senior co-authors — get a `#` superscript marker after their name.
+# Typically your PhD advisor and similar senior collaborators.
+advisors:
+  - "Advisor, A. B."
+
+# Students get a `G` (graduate) or `U` (undergraduate) superscript marker.
+# The loader auto-generates "Last, First" reverse forms, so either name
+# shape in BibTeX ("Last, F" or "Firstname M Last") matches against the
+# students table.
+students:
+  G:  # Graduate students + alumni
+    - "Graduate Student One"
+    - "Graduate Student Two"
+
+  U:  # Undergraduate students + alumni
+    - "Undergraduate Student One"
+    - "Undergraduate Student Two"
+
+# Venue acronym → rank. The bracket-tag prefix in your bib's
+# `journal` / `booktitle` field (e.g. `[ICSE'25] Proceedings of...`)
+# is matched against the acronyms below. Unknown acronym → fatal error
+# so you notice immediately, not after silently mis-categorizing.
+#
+# Customize for your field. Starter set below reflects mainstream
+# software-engineering / security / systems venues — keep, prune, or
+# replace as fits.
+ranks:
+  "Rank 1":
+    - ICSE
+    - FSE
+    - ESEC/FSE
+    - ASE
+    - ISSTA
+    - JSS
+    - EMSE
+    - S&P
+    - USENIX Security
+    - CCS
+    - NDSS
+    - VLDB
+    - WWW
+    - EuroSys
+    - USENIX ATC
+    - CVPR
+    - ICLR
+    - AAAI
+    - WACV
+    - EJEE
+
+  "Rank 2":
+    - SANER
+    - MSR
+    - ESEM
+    - AsiaCCS
+    - EuroS&P
+    - ICSOC
+    - ISLPED
+    - CVPR-Findings
+    - Frontiers
+    - JIEE
+
+  "Rank 3":
+    - ASEE
+
+  Workshop:
+    - SERP4IoT
+    - ASE-Demos
+    - MSR-MiningChallenge
+    - FSE-Artifacts
+    - JAWs
+    - EuroSec
+    - SCORED
+    - SIGMOD-Demos
+    - DSN-Disrupt
+    - LCTES-WIP
+    - ACIEE
+    - ICSE-DREE
+
+  Magazine:
+    - IEEE Design&Test
+    - Computer
+
+# Hand-curated {title: url} overrides for entries Scholar can't supply a
+# link for (PhD theses, some workshop papers, etc.). At startup, these are
+# seeded into the DOI cache via INSERT OR REPLACE so the normal lookup
+# path picks them up — no special-case code per entry.
+#
+# Title match is case-insensitive and uses the bib's exact title text.
+# Common use cases:
+#   - PhD theses (Scholar bib has no `doi`/`url` field; the institutional
+#     repository's Handle URL goes here).
+#   - Workshop papers Crossref + DBLP both miss.
+#   - Any time you want to override a Crossref fuzzy-match.
+manual_links:
+  # "Example Thesis Title": "http://hdl.handle.net/<your-handle>"
+  # "Some Workshop Paper": "https://example.com/paper.pdf"
+
+
+# Bib titles to drop on load (case- and whitespace-insensitive). Scholar
+# re-exports clobber manual deletions from my_papers.bib, so this filter
+# is the durable way to suppress entries that keep coming back.
+#
+# Stale entries (titles listed here but no longer present in the bib) are
+# surfaced as warnings — Scholar may have renamed/removed them.
+bib_ignore:
+  # - "Some Junk Entry Scholar Keeps Re-Exporting"

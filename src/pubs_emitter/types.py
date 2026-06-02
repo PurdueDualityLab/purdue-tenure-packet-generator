@@ -16,6 +16,7 @@ Category = Literal[
 Rank = str
 
 Section = Literal[
+    "Under Review",
     "Key Works",
     "Journals",
     "Books and Chapters",
@@ -30,6 +31,7 @@ Section = Literal[
     "Gifts",
     "Internal Grants",
     "Graduate Students",
+    "Postdocs and Visiting Scholars",
     "Undergraduate Students",
     "Patents",
     "University Service",
@@ -112,6 +114,19 @@ class Student(NamedTuple):
 class Grant(NamedTuple):
     """A C.10/C.11/C.12/C.13 grant entry (same datatype, routed by YAML key).
 
+    Three explicit USD fields capture the full structure of a grant in the
+    tenure-packet sense:
+      * `total_amount`   — whole award across all institutions (matters for
+                            multi-institution NSF Collab and similar)
+      * `purdue_amount`  — Purdue's share of the award (== total for
+                            single-institution grants)
+      * `my_amount`      — your credited share (== purdue when sole Purdue
+                            PI; smaller when multiple Purdue PIs split credit)
+
+    For sole-PI single-institution grants all three are equal; the YAML
+    only needs to set `purdue_amount` and the builder defaults the other
+    two. Section totals sum `my_amount` (the tenure-credited figure).
+
     inspired_by + publication_outcomes are paper-title lists that get
     resolved against the bib (case+whitespace insensitive) to C.X.Y refs.
     """
@@ -124,18 +139,51 @@ class Grant(NamedTuple):
     role: str                     # "PI" / "Co-PI" / "Co-I" / "Sole PI" / etc.
     co_pis: list[str]             # other co-PIs (when user is PI)
     lead_pi: str                  # name of the lead PI (when user is Co-PI/Co-I)
-    responsibility_percent: int   # user's responsibility share (0 = unspecified)
-    amount: int                   # USD; enables per-section "Total amount" computation
+    responsibility_percent: int   # user's responsibility share % (0 = unspecified)
+    total_amount: int             # full award across institutions (USD)
+    purdue_amount: int            # Purdue's share (USD)
+    my_amount: int                # user's credited share (USD)
     activities: str               # optional multi-sentence description
     responsibility: str           # optional free-text role/percent statement
     inspired_by: list[str]        # bib titles that motivated this grant → C.X.Y refs
     publication_outcomes: list[str]  # bib titles funded by this grant → C.X.Y refs
 
 
+class UnderReview(NamedTuple):
+    """An A.1 in-flight submission (paper / book / software under review).
+
+    `due_date` is the review-deadline ISO date used as the sort key; entries
+    with no known date use "9999-99-99" so they sort to the bottom.
+    `authors_rtf` carries the per-author RTF markup (bold-for-me, G / # / *
+    role markers) from `format_author`; YAML stores raw author names.
+    """
+    due_date: str        # YYYY-MM-DD; sort key
+    title: str
+    authors_rtf: str
+    venue: str
+    pages: str           # e.g., "30 pages"
+
+
 class KeyWork(NamedTuple):
     """A paper designated as a key/highlight scholarly publication (C.1 entry)."""
     citation: Citation   # the resolved paper's standard Citation
     impact: str          # 100-word impact statement
+
+
+class PostdocVisiting(NamedTuple):
+    """A C.15 postdoc / visiting-scholar record (Purdue mentoring section).
+
+    Auto-derived Related Publications uses the same `_student_pub_refs`
+    structural matcher as students. Field shape mirrors Purdue's mandated
+    C.15 columns: Name | Last Degree/Date | Prior Affiliation | Position
+    Title/Dates | Related Publications | Current Position and Affiliation.
+    """
+    year: int                       # sort key (start year)
+    name: str
+    last_degree_date: str           # e.g., "PhD/2010"
+    prior_affiliation: str          # e.g., "University X"
+    position_title_dates: str       # e.g., "Postdoc, 03/01/10 - present"
+    current_position: str           # optional
 
 
 class ServiceEntry(NamedTuple):

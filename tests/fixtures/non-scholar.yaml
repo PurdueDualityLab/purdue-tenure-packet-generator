@@ -41,7 +41,7 @@ grants_as_pi:
     role: PI
     start_year: 2025
     end_year: 2030
-    amount: 600000
+    purdue_amount: 600000
 
 grants_as_co_pi: []
 gifts: []

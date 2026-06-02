@@ -7,6 +7,7 @@ import pytest
 
 from pubs_emitter.rtf import (
     RtfTable,
+    _student_tier,
     apply_acronym_expansions,
     build_paper_index,
     render_citation,
@@ -17,8 +18,10 @@ from pubs_emitter.rtf import (
     render_leadership_role,
     render_link_field,
     render_media_appearance,
+    render_postdocs_section,
     render_service_section,
     render_students_section,
+    render_under_review_section,
 )
 from pubs_emitter.types import (
     Citation,
@@ -28,8 +31,10 @@ from pubs_emitter.types import (
     KeyWork,
     LeadershipRole,
     MediaAppearance,
+    PostdocVisiting,
     ServiceEntry,
     Student,
+    UnderReview,
 )
 
 
@@ -305,12 +310,20 @@ class TestBuildPaperIndex:
 
 
 def _grant(**overrides) -> Grant:
+    """Test-helper Grant factory.
+
+    Convenience: pass `amount=X` to set all three 3-way fields to the same
+    value (the sole-PI single-institution case). Pass any of `total_amount`,
+    `purdue_amount`, `my_amount` individually to override only that field.
+    """
+    amount = overrides.pop("amount", 600000)
     base = dict(
         start_year=2025, end_year=2030,
         title="Test Project", agency="National Science Foundation",
         agency_short="NSF", grant_number="2025001",
         role="PI", co_pis=[], lead_pi="",
-        responsibility_percent=0, amount=600000,
+        responsibility_percent=0,
+        total_amount=amount, purdue_amount=amount, my_amount=amount,
         activities="", responsibility="",
         inspired_by=[], publication_outcomes=[],
     )
@@ -350,59 +363,371 @@ class TestRenderGrantsSection:
 
 
 class TestGrantHeadShape:
-    """The first line of each grant entry — `agency_short` + `grant_number` +
-    `title` — has four shapes; pin them so future renderer refactors can't
-    drop a case."""
+    """Row 1 of each grant table — `{N}. [{grant_number}] {agency} / {title}`.
+    Pins the two shapes (with / without grant_number) and the no-grant_number
+    regression guard (no orphan leading space before the agency name)."""
 
-    def test_full_shape_short_plus_number_plus_title(self) -> None:
+    def test_grant_number_present(self) -> None:
+        # _grant's default agency_short="NSF" routes Row 1 through the
+        # NSF auto-link path, so the grant_number gets wrapped in an RTF
+        # HYPERLINK field. Assert the visible tokens separately.
         buf = io.StringIO()
         render_grants_section(
             "Grants PI",
-            [_grant(agency_short="NSF", grant_number="2541917", title="CAREER")],
-            buf,
-        )
-        assert "NSF #2541917: CAREER" in buf.getvalue()
-
-    def test_short_only_no_number(self) -> None:
-        buf = io.StringIO()
-        render_grants_section(
-            "Grants PI",
-            [_grant(agency_short="Cisco", grant_number="", title="Trustworthy ML")],
-            buf,
-        )
-        assert "Cisco: Trustworthy ML" in buf.getvalue()
-
-    def test_number_only_no_short(self) -> None:
-        # Rare but plausible: someone files a grant_number with no funder prefix.
-        buf = io.StringIO()
-        render_grants_section(
-            "Grants PI",
-            [_grant(agency_short="", grant_number="X-1", title="Mystery Grant")],
-            buf,
-        )
-        assert "#X-1: Mystery Grant" in buf.getvalue()
-
-    def test_title_only_no_prefix(self) -> None:
-        # The new case enabled by making agency_short optional. Internal
-        # grants + fellowships render as just the bolded title with no
-        # "FUNDER: " prefix.
-        buf = io.StringIO()
-        render_grants_section(
-            "Internal Grants",
-            [_grant(agency_short="", grant_number="", title="Bare Title Grant")],
+            [_grant(
+                agency="US National Science Foundation",
+                grant_number="2541917", title="CAREER",
+            )],
             buf,
         )
         out = buf.getvalue()
-        assert "Bare Title Grant" in out
-        # And critically: no leading colon (regression guard — the prior
-        # renderer would have emitted ": Bare Title Grant").
-        assert ": Bare Title Grant" not in out
+        assert "2541917" in out
+        assert "US National Science Foundation / CAREER" in out
+        assert "fldinst HYPERLINK" in out
+
+    def test_grant_number_absent(self) -> None:
+        # Sponsored contract with no funder-side award number (e.g. Cisco).
+        buf = io.StringIO()
+        render_grants_section(
+            "Grants PI",
+            [_grant(
+                agency="Contract with Cisco",
+                grant_number="", title="Trustworthy ML",
+            )],
+            buf,
+        )
+        out = buf.getvalue()
+        assert "Contract with Cisco / Trustworthy ML" in out
+        # Regression guard: no double-space, no orphan "/ " at start.
+        assert "  /" not in out
+
+    def test_first_row_carries_bold_index_only(self) -> None:
+        # The "C.X.Y" prefix is intentionally not in the table; the section
+        # heading above the tables already carries the section code.
+        buf = io.StringIO()
+        render_grants_section(
+            "Grants PI",
+            [_grant(title="First"), _grant(title="Second"), _grant(title="Third")],
+            buf,
+        )
+        out = buf.getvalue()
+        # Each grant numbered "{N}." in bold; not "C.10.{N}."
+        assert "\\b 1.\\b0" in out
+        assert "\\b 2.\\b0" in out
+        assert "\\b 3.\\b0" in out
+        assert "C.10.1.\\tab" not in out
+
+    def test_internal_grant_no_funder_prefix(self) -> None:
+        # Internal grants typically have a long agency string ("Office of the
+        # Provost, through the program ...") but no grant_number. Row 1 should
+        # carry just "{N}. {agency} / {title}" with no orphan markers.
+        buf = io.StringIO()
+        render_grants_section(
+            "Internal Grants",
+            [_grant(
+                agency="Purdue VEIL Program", agency_short="",
+                grant_number="", title="Intercultural Engineering",
+            )],
+            buf,
+        )
+        out = buf.getvalue()
+        assert "Purdue VEIL Program / Intercultural Engineering" in out
+
+
+class TestGrantTableStructure:
+    """Pins the 4-row table layout so renderer refactors can't silently
+    collapse to paragraphs or drop a row."""
+
+    def test_table_emits_exactly_three_rows_for_solo_pi(self) -> None:
+        # Sole PI, no other personnel → row 4 (personnel) skipped.
+        buf = io.StringIO()
+        render_grants_section(
+            "Grants PI",
+            [_grant(role="PI", co_pis=[], lead_pi="")],
+            buf,
+        )
+        # Each row ends with \row; count them.
+        assert buf.getvalue().count("\\row") == 3
+
+    def test_table_emits_four_rows_when_co_pi_present(self) -> None:
+        buf = io.StringIO()
+        render_grants_section(
+            "Grants PI",
+            [_grant(role="PI", co_pis=["Yung-Hsiang Lu"])],
+            buf,
+        )
+        assert buf.getvalue().count("\\row") == 4
+
+    def test_amount_right_aligned_in_row_2(self) -> None:
+        # Use a distinctive amount that won't collide with the section total
+        # line (which also formats with the same `$N,NNN` helper).
+        buf = io.StringIO()
+        render_grants_section("Grants PI", [_grant(amount=123456)], buf)
+        out = buf.getvalue()
+        # Right-align directive opens the cell, formatted amount is the
+        # first token inside, and `\ql\cell` closes. Use prefix + presence
+        # checks so the test stays correct after the renderer started
+        # emitting "my share" inline in the same cell.
+        assert "\\qr $123,456" in out
+        assert "; my share: $123,456\\ql\\cell" in out
+
+    def test_borders_on_every_cell(self) -> None:
+        buf = io.StringIO()
+        render_grants_section("Grants PI", [_grant()], buf)
+        out = buf.getvalue()
+        # Top + bottom + left + right borders all appear at least once per cell.
+        assert out.count("\\clbrdrt\\brdrs\\brdrw15") >= 4  # one per cell
+        assert out.count("\\clbrdrb\\brdrs\\brdrw15") >= 4
+
+
+class TestGrantTablePersonnelRow:
+    """Row 4 (personnel-other-than-candidate): each person rendered as
+    `Label: Name[, Department[, Institution]]`, joined with "; ". Per-person
+    labels (not collective "Co-PIs: A, B") so different affiliations don't
+    collide with the "Name, Dept" comma."""
+
+    def test_pi_with_single_co_pi(self) -> None:
+        buf = io.StringIO()
+        render_grants_section(
+            "Grants PI",
+            [_grant(role="PI", co_pis=["Yung-Hsiang Lu"])],
+            buf,
+        )
+        assert "Co-PI: Yung-Hsiang Lu" in buf.getvalue()
+
+    def test_pi_with_multiple_co_pis_each_labeled(self) -> None:
+        buf = io.StringIO()
+        render_grants_section(
+            "Grants PI",
+            [_grant(role="PI", co_pis=["A", "B", "C"])],
+            buf,
+        )
+        out = buf.getvalue()
+        # Per-person labels, not collective "Co-PIs: A, B, C".
+        assert "Co-PI: A; Co-PI: B; Co-PI: C" in out
+        assert "Co-PIs:" not in out
+
+    def test_co_pi_with_lead_pi(self) -> None:
+        buf = io.StringIO()
+        render_grants_section(
+            "Grants Co-PI",
+            [_grant(role="Co-PI", co_pis=[], lead_pi="Aravind Machiry")],
+            buf,
+        )
+        assert "PI: Aravind Machiry" in buf.getvalue()
+
+    def test_co_pi_with_lead_pi_and_other_co_pis(self) -> None:
+        # Davis-as-Co-PI on a multi-PI internal grant: lead PI + per-person
+        # Co-PI labels.
+        buf = io.StringIO()
+        render_grants_section(
+            "Internal Grants",
+            [_grant(
+                role="Co-PI",
+                lead_pi="Aravind Machiry",
+                co_pis=["Carla Zoltowski", "Justin Hess"],
+            )],
+            buf,
+        )
+        out = buf.getvalue()
+        assert "PI: Aravind Machiry; Co-PI: Carla Zoltowski; Co-PI: Justin Hess" in out
+
+    def test_sole_pi_omits_personnel_row(self) -> None:
+        # No lead_pi, no co_pis → no other personnel → row 4 not emitted.
+        buf = io.StringIO()
+        render_grants_section(
+            "Grants PI",
+            [_grant(role="PI", co_pis=[], lead_pi="")],
+            buf,
+        )
+        out = buf.getvalue()
+        # Absence of "PI:" / "Co-PI:" labels (the role line is just "PI", not "PI:").
+        assert "PI: " not in out
+        assert "Co-PI: " not in out
+
+
+class TestGrantPersonnelAffiliations:
+    """Personnel-row name lookup against the YAML `people:` registry —
+    appends department + (optional) institution to each name."""
+
+    def _registry(self) -> dict[str, dict[str, str]]:
+        return {
+            "Aravind Machiry": {"department": "Electrical & Computer Engineering"},
+            "Yung-Hsiang Lu": {"department": "Electrical & Computer Engineering"},
+            "Kirsten Davis": {"department": "Engineering Education"},
+            "External Person": {
+                "department": "Civil Engineering",
+                "institution": "University of Maine",
+            },
+        }
+
+    def test_co_pi_with_department(self) -> None:
+        buf = io.StringIO()
+        render_grants_section(
+            "Grants PI",
+            [_grant(role="PI", co_pis=["Yung-Hsiang Lu"])],
+            buf, self._registry(),
+        )
+        assert "Co-PI: Yung-Hsiang Lu, Electrical & Computer Engineering" in buf.getvalue()
+
+    def test_lead_pi_with_department(self) -> None:
+        buf = io.StringIO()
+        render_grants_section(
+            "Grants Co-PI",
+            [_grant(role="Co-PI", co_pis=[], lead_pi="Kirsten Davis")],
+            buf, self._registry(),
+        )
+        assert "PI: Kirsten Davis, Engineering Education" in buf.getvalue()
+
+    def test_external_institution_appended(self) -> None:
+        buf = io.StringIO()
+        render_grants_section(
+            "Grants Co-PI",
+            [_grant(role="Co-PI", co_pis=["External Person"], lead_pi="Aravind Machiry")],
+            buf, self._registry(),
+        )
+        out = buf.getvalue()
+        assert "PI: Aravind Machiry, Electrical & Computer Engineering" in out
+        assert "Co-PI: External Person, Civil Engineering, University of Maine" in out
+
+    def test_missing_registry_entry_renders_bare_name(self) -> None:
+        # Graceful degradation: unknown name → just the name, no affiliation,
+        # no error. The registry is opt-in.
+        buf = io.StringIO()
+        render_grants_section(
+            "Grants PI",
+            [_grant(role="PI", co_pis=["Unknown Person"])],
+            buf, self._registry(),
+        )
+        out = buf.getvalue()
+        assert "Co-PI: Unknown Person" in out
+        # Make sure we didn't append a stray comma or trailing whitespace.
+        assert "Co-PI: Unknown Person," not in out
+
+    def test_empty_registry_falls_back_to_names(self) -> None:
+        # Default registry (None / empty) — no affiliation rendering.
+        buf = io.StringIO()
+        render_grants_section(
+            "Grants PI",
+            [_grant(role="PI", co_pis=["Yung-Hsiang Lu"])],
+            buf,  # no people arg
+        )
+        out = buf.getvalue()
+        assert "Co-PI: Yung-Hsiang Lu" in out
+        assert "Engineering" not in out  # no department leaked from a stale state
+
+
+class TestGrantNumberNsfHyperlink:
+    """Row 1 grant_number rendering: NSF awards get a hyperlink to the
+    official award-search page; other agencies render as plain text."""
+
+    def test_nsf_grant_emits_hyperlink_field(self) -> None:
+        buf = io.StringIO()
+        render_grants_section(
+            "Grants PI",
+            [_grant(
+                agency="US National Science Foundation",
+                agency_short="NSF",
+                grant_number="2541917",
+                title="CAREER",
+            )],
+            buf,
+        )
+        out = buf.getvalue()
+        # RTF hyperlink field with the deterministic NSF URL + visible text.
+        assert (
+            "\\field{\\*\\fldinst HYPERLINK "
+            "\"https://www.nsf.gov/awardsearch/showAward?AWD_ID=2541917\"}"
+            "{\\fldrslt 2541917}"
+        ) in out
+
+    def test_non_nsf_grant_plain_text(self) -> None:
+        # Rolls Royce contract has a grant_number-like field but no auto-link.
+        buf = io.StringIO()
+        render_grants_section(
+            "Grants PI",
+            [_grant(
+                agency="Contract with Rolls Royce",
+                agency_short="Rolls Royce",
+                grant_number="RR-12345",
+                title="Securing Software",
+            )],
+            buf,
+        )
+        out = buf.getvalue()
+        assert "RR-12345 Contract with Rolls Royce" in out
+        # No HYPERLINK field for non-NSF grants.
+        assert "fldinst HYPERLINK" not in out
+
+    def test_nsf_grant_without_number_no_hyperlink(self) -> None:
+        # No grant_number → no field at all (head row carries just agency + title).
+        buf = io.StringIO()
+        render_grants_section(
+            "Grants PI",
+            [_grant(
+                agency="US National Science Foundation",
+                agency_short="NSF",
+                grant_number="",
+                title="Some Award",
+            )],
+            buf,
+        )
+        out = buf.getvalue()
+        assert "fldinst HYPERLINK" not in out
+
+
+class TestGrantThreeWayAmountFormat:
+    """`_format_grant_amounts` always renders `my_amount` (no conditional
+    collapse) per the CV convention. Single-inst grants get `"$X; my share:
+    $Y"`; multi-inst grants get `"$T total; $P Purdue; $M my share"`."""
+
+    def _fmt(self, total: int, purdue: int, mine: int) -> str:
+        from pubs_emitter.rtf import _format_grant_amounts
+        g = _grant(total_amount=total, purdue_amount=purdue, my_amount=mine)
+        return _format_grant_amounts(g)
+
+    def test_sole_pi_single_inst_still_shows_my_share(self) -> None:
+        # Even when all three are equal, my_share is rendered (no collapse).
+        assert self._fmt(600000, 600000, 600000) == "$600,000; my share: $600,000"
+
+    def test_single_inst_multi_pi_split(self) -> None:
+        # total == purdue, mine smaller.
+        assert self._fmt(500000, 500000, 125000) == "$500,000; my share: $125,000"
+
+    def test_collab_sole_purdue_pi(self) -> None:
+        # total > purdue, purdue == mine — multi-inst form still includes
+        # the "my share" component.
+        out = self._fmt(1000000, 400000, 400000)
+        assert "$1,000,000 total" in out
+        assert "$400,000 Purdue" in out
+        assert "$400,000 my share" in out
+
+    def test_collab_multi_pi(self) -> None:
+        # All three differ.
+        out = self._fmt(2000000, 800000, 200000)
+        assert "$2,000,000 total" in out
+        assert "$800,000 Purdue" in out
+        assert "$200,000 my share" in out
+
+    def test_amounts_render_in_row_2(self) -> None:
+        # End-to-end: Row 2 of the grant table picks up the new format helper.
+        buf = io.StringIO()
+        render_grants_section(
+            "Grants PI",
+            [_grant(total_amount=1000000, purdue_amount=400000, my_amount=400000)],
+            buf,
+        )
+        out = buf.getvalue()
+        assert "$1,000,000 total" in out
+        assert "$400,000 Purdue" in out
+        assert "$400,000 my share" in out
 
 
 class TestGrantTotalsMath:
     """Per-section total computation. Each grant section can declare a
     `Total amount of ...: $X` line via GRANT_TOTAL_LABELS; the value must
-    be `sum(g.amount for g in grants)` formatted with thousands separators."""
+    be `sum(g.my_amount for g in grants)` (the tenure-credited share)
+    formatted with thousands separators."""
 
     def _render(self, section, grants):
         buf = io.StringIO()
@@ -457,6 +782,25 @@ class TestGrantTotalsMath:
         # is skipped, no total is possible).
         out = self._render("Grants PI", [])
         assert "Total amount" not in out
+
+    def test_section_total_sums_my_amount_not_purdue(self) -> None:
+        # Renderer must use `my_amount` for the headline total, not
+        # `purdue_amount`. Demonstrate with a Co-PI split where my_amount
+        # is smaller than purdue_amount.
+        out = self._render(
+            "Grants PI",
+            [
+                _grant(total_amount=500000, purdue_amount=500000, my_amount=100000),
+                _grant(total_amount=300000, purdue_amount=300000, my_amount=60000),
+            ],
+        )
+        # Should sum my_amount → $160,000, NOT purdue → $800,000.
+        assert "$160,000" in out
+        # Sanity guard: the headline doesn't accidentally sum purdue.
+        # Note: $500,000 / $300,000 / $100,000 / $60,000 also appear in the
+        # individual amount cells of each grant; the regression-sensitive
+        # token is the TOTAL line carrying $160,000.
+        assert "external funding as PI:\\b0 $160,000" in out
 
 
 # ----- Student helpers ----------------------------------------------------
@@ -653,6 +997,255 @@ class TestRenderServiceSection:
         assert "C.24.1." in out
         assert "C.24.2." in out
         assert "C.24.3." in out
+
+
+class TestRenderUnderReviewSection:
+    """A.1 numbered list — authors. title. /italic venue/, pages.
+    Optional 'Due: …' suffix when the due_date isn't the 9999 sentinel."""
+
+    def _ur(self, **overrides):
+        base = dict(
+            due_date="9999-99-99",
+            title="Some Under-Review Paper",
+            authors_rtf="\\b Davis, J.C.\\b0",
+            venue="ACM Digital Governance (ACM DGOV)",
+            pages="30 pages",
+        )
+        base.update(overrides)
+        return UnderReview(**base)
+
+    def test_emits_section_heading_and_a1_code(self) -> None:
+        buf = io.StringIO()
+        render_under_review_section([self._ur()], buf)
+        out = buf.getvalue()
+        assert "A.1 Products under review" in out
+        # Numbered list cross-ref form: A.1.1.\tab
+        assert "A.1.1.\\tab" in out
+
+    def test_multiple_entries_increment_index(self) -> None:
+        buf = io.StringIO()
+        render_under_review_section(
+            [self._ur(title="One"), self._ur(title="Two"), self._ur(title="Three")],
+            buf,
+        )
+        out = buf.getvalue()
+        assert "A.1.1." in out and "A.1.2." in out and "A.1.3." in out
+
+    def test_body_shape(self) -> None:
+        buf = io.StringIO()
+        render_under_review_section([self._ur()], buf)
+        out = buf.getvalue()
+        # Authors, then title, then italic venue, then comma + pages, then period.
+        assert "\\b Davis, J.C.\\b0. Some Under-Review Paper. " in out
+        assert "\\i ACM Digital Governance (ACM DGOV)\\i0" in out
+        assert "30 pages." in out
+
+    def test_due_date_suppressed_for_sentinel(self) -> None:
+        buf = io.StringIO()
+        render_under_review_section([self._ur(due_date="9999-99-99")], buf)
+        assert "Due:" not in buf.getvalue()
+
+    def test_due_date_suppressed_for_empty(self) -> None:
+        buf = io.StringIO()
+        render_under_review_section([self._ur(due_date="")], buf)
+        assert "Due:" not in buf.getvalue()
+
+    def test_due_date_emitted_when_known(self) -> None:
+        buf = io.StringIO()
+        render_under_review_section([self._ur(due_date="2026-03-15")], buf)
+        out = buf.getvalue()
+        assert "\\ul Due: 2026-03-15\\ulnone." in out
+
+    def test_empty_list_writes_nothing(self) -> None:
+        buf = io.StringIO()
+        render_under_review_section([], buf)
+        assert buf.getvalue() == ""
+
+
+class TestStudentTier:
+    """`_student_tier` maps (degree, role) → Purdue's mandated 1-7 subsection
+    order. Tier-based sort is the load-bearing C.14 invariant."""
+
+    def _student(self, degree: str, role: str) -> Student:
+        return Student(
+            grad_year=2025, grad_display="Graduated 2025",
+            name="X", degree=degree, role=role, position="",
+        )
+
+    def test_phd_chair_tier_1(self) -> None:
+        assert _student_tier(self._student("PhD", "Chair")) == 1
+
+    def test_phd_co_chair_tier_2(self) -> None:
+        assert _student_tier(self._student("PhD", "Co-Chair")) == 2
+
+    def test_deng_tier_3(self) -> None:
+        assert _student_tier(self._student("D.Eng", "Chair")) == 3
+        assert _student_tier(self._student("D.Eng", "Co-Chair")) == 3
+
+    def test_ms_thesis_chair_tier_4(self) -> None:
+        assert _student_tier(self._student("MS Thesis", "Chair")) == 4
+
+    def test_ms_thesis_co_chair_tier_5(self) -> None:
+        assert _student_tier(self._student("MS Thesis", "Co-Chair")) == 5
+
+    def test_ms_non_thesis_tier_6(self) -> None:
+        assert _student_tier(self._student("MS Non-Thesis", "Chair")) == 6
+
+    def test_committee_member_tier_7_regardless_of_degree(self) -> None:
+        # Committee member overrides degree for tier purposes.
+        assert _student_tier(self._student("PhD", "Committee member")) == 7
+        assert _student_tier(self._student("MS Thesis", "Committee member")) == 7
+        assert _student_tier(self._student("MS Non-Thesis", "Committee member")) == 7
+
+    def test_unrecognized_degree_falls_through_to_tier_7(self) -> None:
+        assert _student_tier(self._student("PhD candidate", "Chair")) == 7
+        assert _student_tier(self._student("MSc", "Chair")) == 7
+
+
+class TestStudentSectionTierSort:
+    """C.14 must sort by (tier, grad_year). Pin the sort order so renderer
+    refactors can't silently flatten back to chronological-only."""
+
+    def test_tier_sort_dominates_grad_year(self) -> None:
+        # A PhD Chair student graduating LATER (2030) must still come BEFORE
+        # an MS Thesis Chair graduating EARLIER (2020), because PhD Chair is
+        # tier 1 and MS Thesis Chair is tier 4.
+        buf = io.StringIO()
+        render_students_section(
+            "Graduate Students",
+            [
+                Student(grad_year=2020, grad_display="2020", name="MS Earlier",
+                        degree="MS Thesis", role="Chair", position=""),
+                Student(grad_year=2030, grad_display="2030", name="PhD Later",
+                        degree="PhD", role="Chair", position=""),
+            ],
+            bib_entries=[], paper_index={}, out=buf,
+        )
+        out = buf.getvalue()
+        assert out.index("PhD Later") < out.index("MS Earlier")
+
+    def test_grad_year_sort_within_tier(self) -> None:
+        # Two PhD Chair students sort by grad_year ascending.
+        buf = io.StringIO()
+        render_students_section(
+            "Graduate Students",
+            [
+                Student(grad_year=2026, grad_display="2026", name="Later",
+                        degree="PhD", role="Chair", position=""),
+                Student(grad_year=2024, grad_display="2024", name="Earlier",
+                        degree="PhD", role="Chair", position=""),
+            ],
+            bib_entries=[], paper_index={}, out=buf,
+        )
+        out = buf.getvalue()
+        assert out.index("Earlier") < out.index("Later")
+
+    def test_tier_divider_emitted_at_each_tier_change(self) -> None:
+        # One student per tier 1, 4, 7 → three dividers + three data rows.
+        buf = io.StringIO()
+        render_students_section(
+            "Graduate Students",
+            [
+                Student(grad_year=2025, grad_display="x", name="PhDChair",
+                        degree="PhD", role="Chair", position=""),
+                Student(grad_year=2025, grad_display="x", name="MSChair",
+                        degree="MS Thesis", role="Chair", position=""),
+                Student(grad_year=2025, grad_display="x", name="MemberX",
+                        degree="PhD", role="Committee member", position=""),
+            ],
+            bib_entries=[], paper_index={}, out=buf,
+        )
+        out = buf.getvalue()
+        # Each tier divider uses the grey-background marker (\clcbpat2).
+        assert out.count("\\clcbpat2") == 3
+        # Labels appear in tier order. Em-dash in the labels is RTF-escaped
+        # to 舒? per the cp1252 discipline, so check head + tail substrings
+        # of each label separately rather than the full literal.
+        assert "PhD students" in out and "Committee Chair" in out
+        assert "MS Thesis students" in out
+        assert "Other supervision and mentoring" in out
+
+    def test_no_divider_when_only_one_tier(self) -> None:
+        # Single tier still emits ONE divider at the top (before the first
+        # row of that tier). Pin so the "no-op" tier-change case is explicit.
+        buf = io.StringIO()
+        render_students_section(
+            "Graduate Students",
+            [
+                Student(grad_year=2025, grad_display="x", name="A",
+                        degree="PhD", role="Chair", position=""),
+                Student(grad_year=2026, grad_display="x", name="B",
+                        degree="PhD", role="Chair", position=""),
+            ],
+            bib_entries=[], paper_index={}, out=buf,
+        )
+        # Exactly one divider (between header and first row), no
+        # mid-tier dividers.
+        assert buf.getvalue().count("\\clcbpat2") == 1
+
+
+class TestRenderPostdocsSection:
+    """C.15: empty list emits the section heading + indented 'N/A'.
+    Populated list renders a table parallel to C.14."""
+
+    def test_empty_emits_na(self) -> None:
+        buf = io.StringIO()
+        render_postdocs_section([], bib_entries=[], paper_index={}, out=buf)
+        out = buf.getvalue()
+        assert "C.15" in out
+        assert (
+            "Mentoring of postdoctoral and visiting faculty scholars "
+            "the candidate has directly supervised"
+        ) in out
+        # Indented N/A paragraph; not a table.
+        assert "\\pard\\li720 N/A\\par" in out
+        # No \trowd because there's no table for empty C.15.
+        assert "\\trowd" not in out
+
+    def test_populated_emits_table(self) -> None:
+        buf = io.StringIO()
+        render_postdocs_section(
+            [
+                PostdocVisiting(
+                    year=2025, name="Test Scholar",
+                    last_degree_date="PhD/2024",
+                    prior_affiliation="University X",
+                    position_title_dates="Postdoc, 09/01/24 – present",
+                    current_position="",
+                )
+            ],
+            bib_entries=[], paper_index={}, out=buf,
+        )
+        out = buf.getvalue()
+        assert "Test Scholar" in out
+        assert "PhD/2024" in out
+        assert "University X" in out
+        # No N/A when populated.
+        assert "N/A" not in out
+
+
+class TestPatentImpactWiring:
+    """build_patent looks up impact text from a number → impact map. Tested
+    in test_builders.py — this anchor confirms the renderer surfaces it in
+    the C.19 patent table when populated."""
+
+    def test_renders_impact_text_in_table(self) -> None:
+        from pubs_emitter.rtf import render_patents_section
+        from pubs_emitter.types import Patent
+        buf = io.StringIO()
+        render_patents_section(
+            [Patent(
+                year=2024, year_str="2024",
+                title="Test Patent",
+                co_inventors="X",
+                date="Jan 1, 2024",
+                number="11875185",
+                impact="Resulted from pre-Purdue work. Incorporated into IBM Spectrum Scale.",
+            )],
+            buf,
+        )
+        out = buf.getvalue()
+        assert "Incorporated into IBM Spectrum Scale" in out
 
 
 class TestRenderKeyWorksSection:

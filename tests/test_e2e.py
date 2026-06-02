@@ -128,7 +128,10 @@ class TestE2eSectionHeadings:
     def test_grants_pi_emitted(self, e2e_outputs: tuple[str, pathlib.Path]) -> None:
         rtf, _ = e2e_outputs
         assert "C.10" in rtf
-        assert "NSF" in rtf
+        # Head row is now "{N}. [{grant_number}] {agency} / {title}", with
+        # agency rendering the full funder name (not agency_short).
+        assert "National Science Foundation" in rtf
+        assert "2025001" in rtf  # fixture grant_number
         assert "$600,000" in rtf
 
     def test_grad_students_emitted(
@@ -240,8 +243,14 @@ class TestE2eGrantMath:
             return yaml.safe_load(f)
 
     def _section_total_usd(self, yaml_data: dict, key: str) -> str:
-        """Sum the `amount:` fields under `key` and format as $N,NNN."""
-        total = sum(int(g.get("amount", 0) or 0) for g in (yaml_data.get(key) or []))
+        """Sum the `my_amount` fields under `key` (with `purdue_amount` as
+        default when `my_amount` isn't set) and format as $N,NNN. Mirrors the
+        renderer's section-total computation."""
+        total = 0
+        for g in (yaml_data.get(key) or []):
+            purdue = int(g.get("purdue_amount", 0) or 0)
+            mine = int(g.get("my_amount", purdue) or purdue)
+            total += mine
         return f"${total:,}"
 
     def test_pi_total_matches_yaml_sum(
@@ -293,17 +302,17 @@ class TestE2eGrantTotalsExtended:
             {
                 "title": "Grant A", "agency": "X", "agency_short": "X",
                 "role": "PI", "start_year": 2022, "end_year": 2023,
-                "amount": 123456,
+                "purdue_amount": 123456,
             },
             {
                 "title": "Grant B", "agency": "Y", "agency_short": "Y",
                 "role": "PI", "start_year": 2023, "end_year": 2024,
-                "amount": 654321,
+                "purdue_amount": 654321,
             },
             {
                 "title": "Grant C", "agency": "Z", "agency_short": "Z",
                 "role": "PI", "start_year": 2024, "end_year": 2025,
-                "amount": 1000000,
+                "purdue_amount": 1000000,
             },
         ]
         custom_yaml = tmp_path / "custom.yaml"

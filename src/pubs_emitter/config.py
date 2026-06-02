@@ -68,6 +68,7 @@ BIB_IGNORE: list[str] = list(_conf.get("bib_ignore") or [])
 # ----- Code-side constants (not in YAML) -----------------------------------
 
 SECTION_ORDER: list[Section] = [
+    "Under Review",
     "Key Works",
     "Journals",
     "Books and Chapters",
@@ -82,6 +83,7 @@ SECTION_ORDER: list[Section] = [
     "Gifts",
     "Internal Grants",
     "Graduate Students",
+    "Postdocs and Visiting Scholars",
     "Undergraduate Students",
     "Patents",
     "University Service",
@@ -91,6 +93,7 @@ SECTION_ORDER: list[Section] = [
 ]
 
 SECTION_CODES: dict[Section, str] = {
+    "Under Review": "A.1",
     "Key Works": "C.1",
     "Journals": "C.2",
     "Books and Chapters": "C.3",
@@ -105,6 +108,7 @@ SECTION_CODES: dict[Section, str] = {
     "Gifts": "C.12",
     "Internal Grants": "C.13",
     "Graduate Students": "C.14",
+    "Postdocs and Visiting Scholars": "C.15",
     "Undergraduate Students": "C.16",
     "Patents": "C.19",
     "University Service": "C.23",
@@ -114,6 +118,7 @@ SECTION_CODES: dict[Section, str] = {
 }
 
 SECTION_HEADINGS: dict[Section, str] = {
+    "Under Review": "Products under review (e.g. papers, books, software)",
     "Key Works": "Key Scholarly Publications or Patents",
     "Journals": "Journals",
     "Books and Chapters": "Books and chapters in books",
@@ -128,6 +133,7 @@ SECTION_HEADINGS: dict[Section, str] = {
     "Gifts": "External gifts and voluntary support",
     "Internal Grants": "Internal competitive grants as PI or Co-PI",
     "Graduate Students": "Graduate students advised",
+    "Postdocs and Visiting Scholars": "Mentoring of postdoctoral and visiting faculty scholars the candidate has directly supervised",
     "Undergraduate Students": "Undergraduate students advised",
     "Patents": "Issued U.S. and International Patents",
     "University Service": "Service to Purdue",

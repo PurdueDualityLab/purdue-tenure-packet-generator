@@ -17,8 +17,8 @@ from .config import (
 )
 from .types import (
     BibEntry, Citation, ConferencePresentation, Grant, InvitedTalk, KeyWork,
-    LeadershipRole, MediaAppearance, Patent, Publications, Section,
-    ServiceEntry, Student,
+    LeadershipRole, MediaAppearance, Patent, PostdocVisiting, Publications,
+    Section, ServiceEntry, Student, UnderReview,
 )
 from .authors import parse_name_parts
 from .venue import parse_venue
@@ -216,6 +216,38 @@ def build_paper_index(publications: Publications) -> dict[str, str]:
     return index
 
 
+def render_under_review_section(
+    under_review: list[UnderReview], out: IO[str],
+) -> None:
+    """A.1: numbered list of in-flight submissions.
+
+    Body shape per entry: `Authors. Title. /italic Venue/, NN pages.
+    [Due: YYYY-MM-DD]`. The "Due" suffix only appears when the YAML
+    entry carries a known `due_date`; entries without one render
+    without a deadline marker. Sorted by `due_date` ascending so
+    near-deadline submissions surface first.
+    """
+    if not under_review:
+        return
+    code = SECTION_CODES["Under Review"]
+    heading = SECTION_HEADINGS["Under Review"]
+    _emit_section_heading(out, code, heading)
+    for idx, ur in enumerate(under_review, 1):
+        body = (
+            f"{ur.authors_rtf}. {escape_rtf(ur.title)}. "
+            f"\\i {escape_rtf(ur.venue)}\\i0"
+        )
+        if ur.pages:
+            body += f", {escape_rtf(ur.pages)}"
+        body += "."
+        # Sentinel "9999-99-99" means no known deadline → suppress the marker.
+        if ur.due_date and ur.due_date != "9999-99-99":
+            body += f" \\ul Due: {escape_rtf(ur.due_date)}\\ulnone."
+        out.write(
+            f"\\pard\\li720\\fi-720 {code}.{idx}.\\tab {body}\\par\\par\n"
+        )
+
+
 def render_invited_talk(talk: InvitedTalk) -> str:
     """Format per spec: 'Seminar on {topic}[: {subtitle}]. {venue}, {year_str}.'"""
     if talk.topic and talk.subtitle:
@@ -349,19 +381,194 @@ def _format_usd(amount: int) -> str:
     return f"${amount:,}"
 
 
+_GRANT_TABLE_TOTAL_TWIPS = 9360       # 6.5" usable width on US Letter.
+_GRANT_TABLE_SPLIT_TWIPS = 6000       # date column ends here; amount starts.
+
+# Single-line border on every side of every cell, 15-twip stroke.
+_GRANT_CELL_BORDER = (
+    "\\clbrdrt\\brdrs\\brdrw15"
+    "\\clbrdrb\\brdrs\\brdrw15"
+    "\\clbrdrl\\brdrs\\brdrw15"
+    "\\clbrdrr\\brdrs\\brdrw15"
+)
+
+
+_NSF_AWARD_URL_TEMPLATE = "https://www.nsf.gov/awardsearch/showAward?AWD_ID={}"
+
+
+def _format_grant_amounts(grant: Grant) -> str:
+    """Render the Row 2 amount cell — `my_amount` is ALWAYS shown.
+
+    Single-inst (total == purdue):  "$X; my share: $Y"
+    Multi-inst  (total != purdue):  "$T total; $P Purdue; $M my share"
+
+    The single-inst form repeats the number when sole-PI (e.g.,
+    "$500,000; my share: $500,000"); that's intentional, per the
+    "list my share always — don't collapse it" CV convention. Mirrors
+    the LaTeX `\\SingleInstitutionGrant` and `\\MultiInstitutionGrant` macros.
+    """
+    total = grant.total_amount
+    purdue = grant.purdue_amount
+    mine = grant.my_amount
+    if total == purdue:
+        return f"{_format_usd(purdue)}; my share: {_format_usd(mine)}"
+    return (
+        f"{_format_usd(total)} total; "
+        f"{_format_usd(purdue)} Purdue; "
+        f"{_format_usd(mine)} my share"
+    )
+
+
+def _format_grant_number_field(grant: Grant) -> str:
+    """Row 1 grant_number field. NSF grants render as an RTF hyperlink to
+    the official award page; other agencies render as plain text. Returns
+    "" when grant has no `grant_number` (caller skips the field).
+    """
+    if not grant.grant_number:
+        return ""
+    display = escape_rtf(grant.grant_number)
+    if grant.agency_short == "NSF":
+        url = _NSF_AWARD_URL_TEMPLATE.format(grant.grant_number)
+        return (
+            f"{{\\field{{\\*\\fldinst HYPERLINK \"{url}\"}}"
+            f"{{\\fldrslt {display}}}}}"
+        )
+    return display
+
+
+def _format_person(name: str, people: dict[str, dict[str, str]]) -> str:
+    """Format a person's name with departmental affiliation (and institution
+    if external), looked up in the YAML `people:` registry.
+
+    Falls back to the bare name when the person isn't in the registry — the
+    registry is opt-in; missing entries don't fail the render. External
+    personnel (different institution from the candidate) include the
+    `institution` field after the department.
+    """
+    info = people.get(name) or {}
+    parts: list[str] = [escape_rtf(name)]
+    if info.get("department"):
+        parts.append(escape_rtf(info["department"]))
+    if info.get("institution"):
+        parts.append(escape_rtf(info["institution"]))
+    return ", ".join(parts)
+
+
+def _format_other_personnel(
+    grant: Grant, people: dict[str, dict[str, str]],
+) -> str:
+    """Row 4 content: PI + Co-PI(s) OTHER than the candidate, each rendered
+    as a standalone "Label: Name[, Department[, Institution]]" entry joined
+    with "; ".
+
+    Per-person labels (not collective "Co-PIs: A, B, C") because each person
+    may have a different affiliation — comma-separated "A, B, C" collides
+    with the "Name, Dept" comma. Returns "" when there's no other personnel
+    so the caller can skip row 4 entirely.
+    """
+    entries: list[str] = []
+    if grant.lead_pi:
+        entries.append(f"PI: {_format_person(grant.lead_pi, people)}")
+    for co_pi in grant.co_pis:
+        entries.append(f"Co-PI: {_format_person(co_pi, people)}")
+    return "; ".join(entries)
+
+
+def _format_grant_table(
+    grant: Grant, idx: int, people: dict[str, dict[str, str]],
+) -> str:
+    """Render one grant as a 4-row RTF table matching the Purdue CV format.
+
+    Layout (each row in its own `\\trowd`, borders on all sides):
+      Row 1 (full width):  "{N}. [{grant_number-link}] {agency} / {title}"
+      Row 2 (split):       "{start}-{end}."     |     "${amount}"  (right-aligned)
+      Row 3 (full width):  "{role}[ - %{pct}][, {responsibility|activities}]"
+      Row 4 (full width):  "{personnel}"   (omitted when no other personnel)
+
+    `people` is the YAML `people:` registry; used by row-4 personnel lookup
+    to append department + institution to each name.
+    """
+    # --- Row 1: numbered head ---
+    head_bits: list[str] = [f"\\b {idx}.\\b0 "]
+    gn_field = _format_grant_number_field(grant)
+    if gn_field:
+        head_bits.append(f"{gn_field} ")
+    head_bits.append(escape_rtf(grant.agency))
+    head_bits.append(" / ")
+    head_bits.append(escape_rtf(grant.title))
+    head = "".join(head_bits)
+
+    # --- Row 2: duration + amount ---
+    # En-dash (U+2013) is the conventional separator for date ranges; escape_rtf
+    # converts it to the cp1252-safe 舑? form.
+    duration = escape_rtf(f"{grant.start_year}–{grant.end_year}.")
+    # `_format_grant_amounts` collapses to a single "$X" when total/purdue/my
+    # are equal (sole-PI single-institution case) and expands to a verbose
+    # breakdown otherwise. The cell may wrap to multiple lines in Word when
+    # the breakdown is used; that's intentional.
+    amount = escape_rtf(_format_grant_amounts(grant))
+
+    # --- Row 3: role + responsibility ---
+    role_pct = escape_rtf(grant.role)
+    if grant.responsibility_percent:
+        role_pct += f" - %{grant.responsibility_percent}"
+    # Prefer `responsibility` (the user's explicit role statement); fall back
+    # to `activities` (project description). Either can be empty.
+    description = escape_rtf(grant.responsibility or grant.activities or "")
+    role_line = f"{role_pct}, {description}" if description else role_pct
+
+    # --- Row 4: other personnel ---
+    other_personnel = _format_other_personnel(grant, people)
+
+    out: list[str] = []
+    out.append(
+        f"\\trowd\\trgaph108\\trleft0 "
+        f"{_GRANT_CELL_BORDER}\\cellx{_GRANT_TABLE_TOTAL_TWIPS}\n"
+        f" {head}\\cell\\row\n"
+    )
+    out.append(
+        f"\\trowd\\trgaph108\\trleft0 "
+        f"{_GRANT_CELL_BORDER}\\cellx{_GRANT_TABLE_SPLIT_TWIPS}"
+        f"{_GRANT_CELL_BORDER}\\cellx{_GRANT_TABLE_TOTAL_TWIPS}\n"
+        f" {duration}\\cell"
+        f"\\qr {amount}\\ql\\cell\\row\n"
+    )
+    out.append(
+        f"\\trowd\\trgaph108\\trleft0 "
+        f"{_GRANT_CELL_BORDER}\\cellx{_GRANT_TABLE_TOTAL_TWIPS}\n"
+        f" {role_line}\\cell\\row\n"
+    )
+    if other_personnel:
+        out.append(
+            f"\\trowd\\trgaph108\\trleft0 "
+            f"{_GRANT_CELL_BORDER}\\cellx{_GRANT_TABLE_TOTAL_TWIPS}\n"
+            f" {other_personnel}\\cell\\row\n"
+        )
+    return "".join(out)
+
+
 def render_grants_section(
     section: Section,
     grants: list[Grant],
     out: IO[str],
+    people: Optional[dict[str, dict[str, str]]] = None,
 ) -> None:
     """Generic renderer for any of C.10 / C.11 / C.12 / C.13.
 
-    Section heading + optional 'Total amount of ...: $X' line (per
-    GRANT_TOTAL_LABELS) + one multi-paragraph entry per grant. Uses real
-    `\\par` paragraph breaks so Word paste preserves layout.
+    Emits: section heading + optional `Total amount of ...: $X` line (per
+    GRANT_TOTAL_LABELS) + one 4-row table per grant (see _format_grant_table
+    for the row layout). Tables are separated by blank paragraphs so Word
+    paste preserves spacing.
+
+    `grant.inspired_by` / `grant.publication_outcomes` are validated +
+    available on the Grant record but NOT emitted here. The intended consumer
+    is the C.1 Key Works section (paper → originating grant connections
+    render with the highlighted papers); cross-link rendering is deferred
+    until that linkage shape is defined.
     """
     if not grants:
         return
+    people = people or {}
     from .config import GRANT_TOTAL_LABELS  # local: limit import surface
     code = SECTION_CODES[section]
     heading = SECTION_HEADINGS[section]
@@ -369,53 +576,19 @@ def render_grants_section(
 
     total_label = GRANT_TOTAL_LABELS.get(section)
     if total_label:
-        total_amount = sum(g.amount for g in grants)
+        # Section total sums `my_amount` — the tenure-credited share, which
+        # is what the "Total amount of external funding as PI" line is meant
+        # to represent. (Sole-PI single-institution grants have my == purdue
+        # == total, so this collapses to the headline figure anyway.)
+        total_amount = sum(g.my_amount for g in grants)
         out.write(
             f"\\pard \\b {escape_rtf(total_label)}:\\b0 "
             f"{escape_rtf(_format_usd(total_amount))}\\par\\par\n"
         )
 
     for idx, grant in enumerate(grants, 1):
-        # Line 1 (hanging indent). Head format:
-        #   "AGENCY-SHORT #NUM: TITLE"  — for sponsored grants with both fields
-        #   "AGENCY-SHORT: TITLE"       — sponsored without a grant number
-        #   "#NUM: TITLE"               — grant number without a short funder name
-        #   "TITLE"                     — neither (e.g. fellowships, internal grants)
-        prefix_parts: list[str] = []
-        if grant.agency_short:
-            prefix_parts.append(escape_rtf(grant.agency_short))
-        if grant.grant_number:
-            prefix_parts.append(f"#{escape_rtf(grant.grant_number)}")
-        prefix = " ".join(prefix_parts)
-        head = (
-            f"{prefix}: {escape_rtf(grant.title)}" if prefix else escape_rtf(grant.title)
-        )
-        out.write(f"\\pard\\li720\\fi-720 {code}.{idx}.\\tab {head}\\par\n")
-        # Line 2: role + optional responsibility % + optional co-PIs / lead PI
-        role_bits = [escape_rtf(grant.role)]
-        if grant.responsibility_percent:
-            role_bits.append(f"{grant.responsibility_percent}%")
-        if grant.co_pis:
-            role_bits.append(f"with {escape_rtf(', '.join(grant.co_pis))}")
-        if grant.lead_pi:
-            role_bits.append(f"PI: {escape_rtf(grant.lead_pi)}")
-        out.write(f"\\pard\\li720\\fi0 {', '.join(role_bits)}\\par\n")
-        # Line 3: agency (italic)
-        out.write(f"\\pard\\li720\\fi0 \\i {escape_rtf(grant.agency)}\\i0\\par\n")
-        # Line 4: duration + amount
-        dur = f"{grant.start_year}-{grant.end_year}"
-        amt = _format_usd(grant.amount)
-        out.write(f"\\pard\\li720\\fi0 {escape_rtf(dur)}. {escape_rtf(amt)}.\\par\n")
-        if grant.activities:
-            out.write(f"\\pard\\li720\\fi0 {escape_rtf(grant.activities)}\\par\n")
-        if grant.responsibility:
-            out.write(f"\\pard\\li720\\fi0 {escape_rtf(grant.responsibility)}\\par\n")
-        # NOTE: grant.inspired_by / grant.publication_outcomes are validated +
-        # available on the Grant record but NOT emitted here. The intended
-        # consumer is the C.1 Key Works section (paper → originating grant
-        # connections render with the highlighted papers). Cross-link
-        # rendering is deferred until the linkage shape is defined.
-        out.write("\\par\n")  # blank line between grants
+        out.write(_format_grant_table(grant, idx, people))
+        out.write("\\pard\\par\n")  # blank paragraph between grant tables
 
 
 def _student_pub_refs(
@@ -457,6 +630,116 @@ def _student_pub_refs(
 # Column widths for the student tables (twips). Sum = 9360 = 6.5" usable.
 _STUDENT_TABLE_WIDTHS: list[int] = [1800, 1100, 1400, 1000, 1900, 2160]
 
+# Single-line border on every side, same stroke as the grant tables.
+_STUDENT_CELL_BORDER = _GRANT_CELL_BORDER
+
+# Purdue's mandated C.14 subsection order. Sort students by (tier, grad_year),
+# then emit a short grey divider row at each tier transition so the reader
+# can scan by group at a glance.
+_STUDENT_TIER_LABELS: dict[int, str] = {
+    1: "PhD students — Committee Chair",
+    2: "PhD students — Committee Co-Chair",
+    3: "D.Eng students",
+    4: "MS Thesis students — Committee Chair",
+    5: "MS Thesis students — Committee Co-Chair",
+    6: "MS Non-Thesis students",
+    7: "Other supervision and mentoring (committee member, etc.)",
+}
+
+
+def _student_tier(s: Student) -> int:
+    """Map a Student's (degree, role) to its Purdue subsection tier (1-7).
+
+    The mandated order: 1=PhD Chair, 2=PhD Co-Chair, 3=D.Eng,
+    4=MS Thesis Chair, 5=MS Thesis Co-Chair, 6=MS Non-Thesis,
+    7=other supervision (Committee member). Unrecognized degree → tier 7
+    (drops into "other supervision" rather than mis-sorting).
+    """
+    role = s.role
+    deg = s.degree
+    if role == "Committee member":
+        return 7
+    if deg == "D.Eng":
+        return 3
+    if deg == "PhD":
+        return 1 if role == "Chair" else 2
+    if deg == "MS Thesis":
+        return 4 if role == "Chair" else 5
+    if deg == "MS Non-Thesis":
+        return 6
+    return 7
+
+
+def _student_cellx_positions() -> list[int]:
+    """Cumulative cellx positions for the 6-column student table."""
+    positions: list[int] = []
+    cumulative = 0
+    for w in _STUDENT_TABLE_WIDTHS:
+        cumulative += w
+        positions.append(cumulative)
+    return positions
+
+
+def _render_student_header_row(cellx: list[int]) -> str:
+    """Bold header row: column titles across the full 6-column width."""
+    parts = ["\\trowd\\trgaph108\\trleft0"]
+    for pos in cellx:
+        parts.append(f"{_STUDENT_CELL_BORDER}\\cellx{pos}")
+    parts.append("\n")
+    headers = [
+        "Student Name", "Degree And Type", "Graduation Semester",
+        "Role", "Related Publications", "Current Position and Affiliation",
+    ]
+    for h in headers:
+        parts.append(f" \\b {escape_rtf(h)}\\b0\\cell")
+    parts.append("\\row\n")
+    return "".join(parts)
+
+
+def _render_student_tier_divider(tier: int) -> str:
+    """Short grey-background row separating tier groups within C.14.
+
+    Single full-width cell, light-grey fill (`\\clcbpat2` references the
+    colortbl entry written by `write_rtf`), bolded tier label. Height fixed
+    at ~0.17" (250 twips) so dividers stay visually compact.
+    """
+    label = _STUDENT_TIER_LABELS[tier]
+    return (
+        f"\\trowd\\trgaph108\\trleft0\\trrh250 "
+        f"{_STUDENT_CELL_BORDER}\\clcbpat2\\cellx{_GRANT_TABLE_TOTAL_TWIPS}\n"
+        f" \\b {escape_rtf(label)}\\b0\\cell\\row\n"
+    )
+
+
+def _render_student_data_row(
+    s: Student,
+    bib_entries: list[BibEntry],
+    paper_index: dict[str, str],
+    cellx: list[int],
+) -> str:
+    """One 6-cell data row for a student."""
+    pubs = _student_pub_refs(s.name, bib_entries, paper_index)
+    pubs_cell = ", ".join(pubs) if pubs else ""
+    role_cell = (
+        f"{s.role} (with {s.co_advisor})" if s.co_advisor else s.role
+    )
+    cells = [
+        escape_rtf(s.name),
+        escape_rtf(s.degree),
+        escape_rtf(s.grad_display),
+        escape_rtf(role_cell),
+        escape_rtf(pubs_cell),
+        escape_rtf(s.position),
+    ]
+    parts = ["\\trowd\\trgaph108\\trleft0"]
+    for pos in cellx:
+        parts.append(f"{_STUDENT_CELL_BORDER}\\cellx{pos}")
+    parts.append("\n")
+    for c in cells:
+        parts.append(f" {c}\\cell")
+    parts.append("\\row\n")
+    return "".join(parts)
+
 
 def render_students_section(
     section: Section,
@@ -465,35 +748,100 @@ def render_students_section(
     paper_index: dict[str, str],
     out: IO[str],
 ) -> None:
-    """Generic student-table renderer for C.14 (graduate) and C.16 (undergraduate)."""
+    """C.14 / C.16 student-table renderer.
+
+    For C.14 specifically: sorts by (Purdue tier, grad_year) so the table
+    matches the mandated subsection order (PhD Chair → Co-Chair → D.Eng
+    → MS Thesis Chair → Co-Chair → MS Non-Thesis → committee), and emits
+    a short grey divider row at each tier transition. C.16 has no tier
+    concept; the sort still applies but typically collapses to one tier.
+    """
     if not students:
         return
     code = SECTION_CODES[section]
     heading = SECTION_HEADINGS[section]
     _emit_section_heading(out, code, heading)
-    table = RtfTable(column_widths=_STUDENT_TABLE_WIDTHS)
-    table.add_header([
-        "Student Name", "Degree And Type", "Graduation Semester",
-        "Role", "Related Publications", "Current Position and Affiliation",
-    ])
-    for s in students:
-        pubs = _student_pub_refs(s.name, bib_entries, paper_index)
+
+    cellx = _student_cellx_positions()
+    out.write(_render_student_header_row(cellx))
+
+    sorted_students = sorted(
+        students, key=lambda s: (_student_tier(s), s.grad_year),
+    )
+    prev_tier: Optional[int] = None
+    for s in sorted_students:
+        tier = _student_tier(s)
+        if tier != prev_tier:
+            out.write(_render_student_tier_divider(tier))
+            prev_tier = tier
+        out.write(_render_student_data_row(s, bib_entries, paper_index, cellx))
+    out.write("\\pard\\par\n")
+
+
+# ----- C.15: Postdocs + visiting scholars --------------------------------
+
+
+_POSTDOC_TABLE_WIDTHS: list[int] = [1500, 1200, 1300, 1500, 1500, 2360]
+
+
+def render_postdocs_section(
+    postdocs: list[PostdocVisiting],
+    bib_entries: list[BibEntry],
+    paper_index: dict[str, str],
+    out: IO[str],
+) -> None:
+    """C.15 renderer. Empty list → section heading + indented "N/A" so the
+    section still appears in the packet (Purdue convention) rather than
+    being silently skipped like other empty sections.
+    """
+    code = SECTION_CODES["Postdocs and Visiting Scholars"]
+    heading = SECTION_HEADINGS["Postdocs and Visiting Scholars"]
+    _emit_section_heading(out, code, heading)
+
+    if not postdocs:
+        out.write("\\pard\\li720 N/A\\par\\par\n")
+        return
+
+    # Cumulative cellx for the 6-column postdoc table.
+    cellx: list[int] = []
+    cumulative = 0
+    for w in _POSTDOC_TABLE_WIDTHS:
+        cumulative += w
+        cellx.append(cumulative)
+
+    # Header row.
+    parts: list[str] = ["\\trowd\\trgaph108\\trleft0"]
+    for pos in cellx:
+        parts.append(f"{_STUDENT_CELL_BORDER}\\cellx{pos}")
+    parts.append("\n")
+    for h in (
+        "Name", "Last Degree/Date", "Prior Affiliation",
+        "Position Title/Dates", "Related Publications",
+        "Current Position and Affiliation",
+    ):
+        parts.append(f" \\b {escape_rtf(h)}\\b0\\cell")
+    parts.append("\\row\n")
+    out.write("".join(parts))
+
+    for p in sorted(postdocs, key=lambda x: x.year):
+        pubs = _student_pub_refs(p.name, bib_entries, paper_index)
         pubs_cell = ", ".join(pubs) if pubs else ""
-        # When co_advisor is set (typically with role "Co-Chair"), inline the
-        # partner name as "(with NAME)" so the table row carries the same info
-        # the CV format prints inline after the student's name.
-        role_cell = (
-            f"{s.role} (with {s.co_advisor})" if s.co_advisor else s.role
-        )
-        table.add_row([
-            escape_rtf(s.name),
-            escape_rtf(s.degree),
-            escape_rtf(s.grad_display),
-            escape_rtf(role_cell),
+        cells = [
+            escape_rtf(p.name),
+            escape_rtf(p.last_degree_date),
+            escape_rtf(p.prior_affiliation),
+            escape_rtf(p.position_title_dates),
             escape_rtf(pubs_cell),
-            escape_rtf(s.position),
-        ])
-    out.write(table.render())
+            escape_rtf(p.current_position),
+        ]
+        parts = ["\\trowd\\trgaph108\\trleft0"]
+        for pos in cellx:
+            parts.append(f"{_STUDENT_CELL_BORDER}\\cellx{pos}")
+        parts.append("\n")
+        for c in cells:
+            parts.append(f" {c}\\cell")
+        parts.append("\\row\n")
+        out.write("".join(parts))
     out.write("\\pard\\par\n")
 
 
@@ -572,11 +920,14 @@ def write_rtf(
     gifts: Optional[list[Grant]] = None,
     internal_grants: Optional[list[Grant]] = None,
     graduate_students: Optional[list[Student]] = None,
+    postdocs_visiting: Optional[list[PostdocVisiting]] = None,
     undergraduate_students: Optional[list[Student]] = None,
     university_service: Optional[list[ServiceEntry]] = None,
     profession_service: Optional[list[ServiceEntry]] = None,
     national_service: Optional[list[ServiceEntry]] = None,
     other_service: Optional[list[ServiceEntry]] = None,
+    people: Optional[dict[str, dict[str, str]]] = None,
+    under_review: Optional[list[UnderReview]] = None,
 ) -> None:
     log.info("Generating RTF file: %s", path)
     paper_index = paper_index or {}
@@ -592,17 +943,24 @@ def write_rtf(
     gifts = gifts or []
     internal_grants = internal_grants or []
     graduate_students = graduate_students or []
+    # Note: postdocs_visiting defaults to [] BUT the renderer still emits
+    # the C.15 section heading + indented "N/A" — the empty list is a
+    # signal, not a skip.
+    postdocs_visiting = postdocs_visiting or []
     undergraduate_students = undergraduate_students or []
     university_service = university_service or []
     profession_service = profession_service or []
     national_service = national_service or []
     other_service = other_service or []
+    people = people or {}
+    under_review = under_review or []
     with open(path, "w", encoding="utf-8") as out:
         out.write(
             r"{\rtf1\ansi\ansicpg1252\deff0"
             r"{\fonttbl{\f0\froman\fcharset0 Times New Roman;}}"
         )
-        out.write(r"{\colortbl;\red0\green0\blue255;}")
+        # Color table: 1 = blue (hyperlinks), 2 = light grey (table-row dividers).
+        out.write(r"{\colortbl;\red0\green0\blue255;\red220\green220\blue220;}")
         # Stylesheet: \s1 = Heading 1. Word maps the style name "heading 1"
         # to the navigation pane + auto-TOC + the user's Heading 1 theme.
         out.write(
@@ -612,16 +970,22 @@ def write_rtf(
             r"}"
         )
 
-        # C.1 first (highlight section), data-driven from key_works list.
+        # A.1 first (in-flight submissions), then C.1 (key-works highlight),
+        # then the rest of SECTION_ORDER.
+        render_under_review_section(under_review, out)
+
+        # C.1 highlight section, data-driven from key_works list.
         render_key_works_section(key_works, paper_index, out)
 
         for section in SECTION_ORDER:
             # Special-section renderers handle these via their own data structures.
             if section in (
+                "Under Review",
                 "Key Works", "Invited Talks", "Leadership Roles",
                 "Media Appearances", "Conference Presentations",
                 "Grants PI", "Grants Co-PI", "Gifts", "Internal Grants",
-                "Graduate Students", "Undergraduate Students",
+                "Graduate Students", "Postdocs and Visiting Scholars",
+                "Undergraduate Students",
                 "Patents",
                 "University Service", "Profession Service",
                 "National Service", "Other Service",
@@ -648,10 +1012,10 @@ def write_rtf(
         render_conference_presentations_section(
             conference_presentations, bib_entries, paper_index, out,
         )
-        render_grants_section("Grants PI", grants_as_pi, out)
-        render_grants_section("Grants Co-PI", grants_as_co_pi, out)
-        render_grants_section("Gifts", gifts, out)
-        render_grants_section("Internal Grants", internal_grants, out)
+        render_grants_section("Grants PI", grants_as_pi, out, people)
+        render_grants_section("Grants Co-PI", grants_as_co_pi, out, people)
+        render_grants_section("Gifts", gifts, out, people)
+        render_grants_section("Internal Grants", internal_grants, out, people)
         render_students_section(
             "Graduate Students", graduate_students, bib_entries, paper_index, out,
         )
@@ -659,6 +1023,7 @@ def write_rtf(
             "Undergraduate Students", undergraduate_students,
             bib_entries, paper_index, out,
         )
+        render_postdocs_section(postdocs_visiting, bib_entries, paper_index, out)
         render_patents_section(patents, out)
         render_service_section("University Service", university_service, out)
         render_service_section("Profession Service", profession_service, out)

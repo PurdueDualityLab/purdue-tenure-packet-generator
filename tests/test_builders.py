@@ -138,15 +138,48 @@ class TestBuildGrant:
                 "role": "PI",
                 "start_year": 2025,
                 "end_year": 2030,
-                "amount": 600000,
+                "purdue_amount": 600000,
             }
         )
         assert g.start_year == 2025
         assert g.end_year == 2030
-        assert g.amount == 600000
+        # Sole-PI single-institution case: total/purdue/my all default to
+        # purdue_amount when not explicitly set.
+        assert g.purdue_amount == 600000
+        assert g.total_amount == 600000
+        assert g.my_amount == 600000
         assert g.co_pis == []
         assert g.inspired_by == []
         assert g.publication_outcomes == []
+
+    def test_three_way_amount_breakdown(self) -> None:
+        # Multi-institution collab + multi-PI: all three fields differ.
+        g = build_grant(
+            {
+                "title": "T", "agency": "NSF", "role": "PI",
+                "start_year": 2025, "end_year": 2030,
+                "total_amount": 1000000,
+                "purdue_amount": 500000,
+                "my_amount": 250000,
+            }
+        )
+        assert g.total_amount == 1000000
+        assert g.purdue_amount == 500000
+        assert g.my_amount == 250000
+
+    def test_my_amount_defaults_to_purdue_amount(self) -> None:
+        # Single-institution but multi-PI split — total == purdue, my smaller.
+        # Here we only override my; total should still default to purdue.
+        g = build_grant(
+            {
+                "title": "T", "agency": "NSF", "role": "Co-PI",
+                "start_year": 2025, "end_year": 2030,
+                "purdue_amount": 400000,
+                "my_amount": 100000,
+            }
+        )
+        assert g.total_amount == 400000  # defaulted to purdue
+        assert g.my_amount == 100000
 
     def test_grant_number_coerced_to_string(self) -> None:
         # YAML often parses bare grant numbers as ints; we coerce defensively.
@@ -256,6 +289,171 @@ class TestBuildServiceEntry:
             {"description": "Host, Dr. {\\c{C}}akar visit", "year": 2025}
         )
         assert "Ç" in e.description
+
+
+class TestNormalizeUnderReviewAuthors:
+    """`_normalize_under_review_authors` accepts user-CV mixed-delimiter
+    forms and produces canonical BibTeX 'X and Y and Z' for format_author."""
+
+    def _norm(self, s: str) -> str:
+        from pubs_emitter.builders import _normalize_under_review_authors
+        return _normalize_under_review_authors(s)
+
+    def test_ampersand_separator(self) -> None:
+        assert self._norm("Daniel Lugo & James C. Davis") == (
+            "Daniel Lugo and James C. Davis"
+        )
+
+    def test_comma_and_separator(self) -> None:
+        assert self._norm("Tyler Sivertsen, Neal Singh, and James C. Davis") == (
+            "Tyler Sivertsen and Neal Singh and James C. Davis"
+        )
+
+    def test_plain_comma_separator(self) -> None:
+        assert self._norm("Chinenye Okafor, James C. Davis, Santiago Torres-Arias") == (
+            "Chinenye Okafor and James C. Davis and Santiago Torres-Arias"
+        )
+
+    def test_bare_and_separator(self) -> None:
+        assert self._norm("Luiz Parente and James C. Davis") == (
+            "Luiz Parente and James C. Davis"
+        )
+
+    def test_inserts_missing_initial_period(self) -> None:
+        # "James C Davis" → "James C. Davis" so the bold-for-me matcher
+        # against "James C. Davis" in config.yaml fires.
+        assert "James C. Davis" in self._norm("Oreofe Solarin, James C Davis, Paschal C. Amusuo")
+
+    def test_strips_trailing_sentence_period(self) -> None:
+        assert self._norm("Author One and Author Two.") == (
+            "Author One and Author Two"
+        )
+
+    def test_empty_string_returns_empty(self) -> None:
+        assert self._norm("") == ""
+
+
+class TestBuildUnderReview:
+    """build_under_review wires the YAML dict through author normalization +
+    format_author so role markers fire on coauthored students."""
+
+    def test_due_date_default_sorts_last(self, conn) -> None:
+        from pubs_emitter.builders import build_under_review
+        u = build_under_review(conn, {
+            "title": "X", "authors": "James C. Davis", "venue": "V",
+        })
+        assert u.due_date == "9999-99-99"
+
+    def test_due_date_passthrough(self, conn) -> None:
+        from pubs_emitter.builders import build_under_review
+        u = build_under_review(conn, {
+            "due_date": "2026-03-15",
+            "title": "X", "authors": "James C. Davis", "venue": "V",
+        })
+        assert u.due_date == "2026-03-15"
+
+    def test_bold_for_me_applied(self, conn) -> None:
+        # ME isn't seeded in the test conn (only students are), but the
+        # config.yaml fixture has "James C. Davis" in `me:` and that's what
+        # format_author reads at import time. The seeded students table also
+        # carries Amusuo so G marker should fire on him.
+        from pubs_emitter.builders import build_under_review
+        u = build_under_review(conn, {
+            "title": "X",
+            "authors": "James C. Davis and Paschal C. Amusuo",
+            "venue": "V",
+        })
+        assert "\\b " in u.authors_rtf  # bold-for-me
+        assert "\\super G" in u.authors_rtf  # grad student marker
+
+    def test_pages_stored_verbatim(self, conn) -> None:
+        from pubs_emitter.builders import build_under_review
+        u = build_under_review(conn, {
+            "title": "X", "authors": "James C. Davis", "venue": "V",
+            "pages": "30 pages",
+        })
+        assert u.pages == "30 pages"
+
+
+class TestValidateUnderReview:
+    def test_missing_title_exits(self) -> None:
+        with pytest.raises(SystemExit):
+            validate_non_scholar(
+                {"under_review": [{"authors": "X", "venue": "V"}]},
+                [],
+            )
+
+    def test_missing_authors_exits(self) -> None:
+        with pytest.raises(SystemExit):
+            validate_non_scholar(
+                {"under_review": [{"title": "X", "venue": "V"}]},
+                [],
+            )
+
+    def test_missing_venue_exits(self) -> None:
+        with pytest.raises(SystemExit):
+            validate_non_scholar(
+                {"under_review": [{"title": "X", "authors": "Y"}]},
+                [],
+            )
+
+    def test_full_entry_passes(self) -> None:
+        validate_non_scholar(
+            {"under_review": [
+                {"title": "X", "authors": "Y", "venue": "V", "pages": "10 pages"},
+            ]},
+            [],
+        )
+
+
+class TestBuildPatentImpactLookup:
+    """build_patent looks up impact text from the patent_impacts map (keyed
+    by the clean digits-only patent number). Empty map / missing key →
+    blank impact, with no error."""
+
+    def _entry(self) -> dict:
+        return {
+            "title": "A Test Patent",
+            "author": "Davis, James C",
+            "note": "US Patent 11,875,185",
+            "year": "2024",
+            "month": "jan",
+            "publisher": "US patent",
+        }
+
+    def test_impact_populated_from_map(self) -> None:
+        # We use an in-memory sqlite via the `conn` fixture (defined in
+        # conftest). It has the empty patent_cache so fetch_patent_date
+        # falls back to the bib date without making a network call.
+        import sqlite3
+        from pubs_emitter.builders import build_patent
+        c = sqlite3.connect(":memory:")
+        c.execute("CREATE TABLE patent_cache (patent_id TEXT PRIMARY KEY, issue_date TEXT)")
+        c.execute("INSERT INTO patent_cache VALUES ('11875185', '2024-01-16')")
+        c.commit()
+        impacts = {"11875185": "Incorporated into IBM Spectrum Scale."}
+        p = build_patent(c, self._entry(), impacts)
+        assert p.impact == "Incorporated into IBM Spectrum Scale."
+
+    def test_impact_default_blank_when_no_map(self) -> None:
+        import sqlite3
+        from pubs_emitter.builders import build_patent
+        c = sqlite3.connect(":memory:")
+        c.execute("CREATE TABLE patent_cache (patent_id TEXT PRIMARY KEY, issue_date TEXT)")
+        c.execute("INSERT INTO patent_cache VALUES ('11875185', '2024-01-16')")
+        c.commit()
+        p = build_patent(c, self._entry(), None)
+        assert p.impact == ""
+
+    def test_impact_blank_when_number_missing_from_map(self) -> None:
+        import sqlite3
+        from pubs_emitter.builders import build_patent
+        c = sqlite3.connect(":memory:")
+        c.execute("CREATE TABLE patent_cache (patent_id TEXT PRIMARY KEY, issue_date TEXT)")
+        c.execute("INSERT INTO patent_cache VALUES ('11875185', '2024-01-16')")
+        c.commit()
+        p = build_patent(c, self._entry(), {"99999999": "other"})
+        assert p.impact == ""
 
 
 class TestBuildLeadershipRoleAndMedia:

@@ -28,6 +28,7 @@ from .lookup import (
 from .types import (
     BibEntry, Category, Citation, ConferencePresentation, Grant, InvitedTalk,
     LeadershipRole, MediaAppearance, Patent, Rank, Section, ServiceEntry, Student,
+    UnderReview,
 )
 from .venue import (
     CVE_ID_RE,
@@ -183,7 +184,16 @@ def build_invited_talk(talk: dict) -> InvitedTalk:
 
 
 def build_grant(entry: dict) -> Grant:
-    """Build a Grant from a YAML dict."""
+    """Build a Grant from a YAML dict.
+
+    Amount fields: `purdue_amount` is required; `total_amount` and
+    `my_amount` default to `purdue_amount` (sole-PI single-institution case).
+    Override either when the grant has multi-institution structure or when
+    multiple Purdue PIs split credit.
+    """
+    purdue = int(entry.get("purdue_amount", 0) or 0)
+    total = int(entry.get("total_amount", purdue) or purdue)
+    mine = int(entry.get("my_amount", purdue) or purdue)
     return Grant(
         start_year=int(entry.get("start_year", 0)),
         end_year=int(entry.get("end_year", 0)),
@@ -195,7 +205,9 @@ def build_grant(entry: dict) -> Grant:
         co_pis=list(entry.get("co_pis") or []),
         lead_pi=decode_latex(entry.get("lead_pi", "") or "").replace("\n", " "),
         responsibility_percent=int(entry.get("responsibility_percent", 0) or 0),
-        amount=int(entry.get("amount", 0)),
+        total_amount=total,
+        purdue_amount=purdue,
+        my_amount=mine,
         activities=decode_latex(entry.get("activities", "") or "").replace("\n", " "),
         responsibility=decode_latex(entry.get("responsibility", "") or "").replace("\n", " "),
         inspired_by=list(entry.get("inspired_by") or []),
@@ -214,6 +226,54 @@ def build_student(entry: dict) -> Student:
         role=entry.get("role", "") or "",
         position=decode_latex(entry.get("position", "") or "").replace("\n", " "),
         co_advisor=decode_latex(entry.get("co_advisor", "") or "").replace("\n", " "),
+    )
+
+
+def _normalize_under_review_authors(s: str) -> str:
+    """Convert user-CV author-string forms to BibTeX 'X and Y and Z' form.
+
+    Accepts mixed input shapes from the user's CV: "X & Y", "X, Y, and Z",
+    "X, Y and Z", "X and Y", and plain comma-separated "X, Y, Z". Also adds
+    a missing period after isolated capital letters before whitespace ("James
+    C Davis" → "James C. Davis") so the ME / advisor matcher in
+    `authors.name_matches` fires reliably.
+    """
+    if not s:
+        return ""
+    # Drop trailing sentence-end period+spaces on the full string.
+    s = s.strip().rstrip(". ")
+    # Insert dots after bare middle initials before format_author processes.
+    s = re.sub(r"\b([A-Z])\b(?=\s)", r"\1.", s)
+    # Unify delimiters → comma; final split + rejoin produces canonical
+    # " and " form.
+    s = s.replace(" & ", ", ")
+    s = s.replace(", and ", ", ")
+    s = s.replace(" and ", ", ")
+    parts = [p.strip() for p in s.split(",")]
+    return " and ".join(p for p in parts if p)
+
+
+def build_under_review(conn: sqlite3.Connection, entry: dict) -> UnderReview:
+    """Build an A.1 UnderReview record from a YAML dict.
+
+    Author string is normalized to BibTeX " and " form, then each author is
+    run through `format_author` so role markers (G / # / *) + bold-for-me
+    fire — same convention as published C.2 / C.4 citations.
+    """
+    raw_authors = entry.get("authors", "") or ""
+    bib_form = _normalize_under_review_authors(raw_authors)
+    author_list = bib_form.split(" and ") if bib_form else []
+    formatted = [
+        format_author(conn, a.strip(), is_last=i == len(author_list) - 1)
+        for i, a in enumerate(author_list)
+    ]
+    return UnderReview(
+        # 9999-99-99 sorts unknown-due-date entries to the bottom of the list.
+        due_date=str(entry.get("due_date", "") or "9999-99-99"),
+        title=decode_latex(entry.get("title", "")).replace("\n", " "),
+        authors_rtf=", ".join(formatted),
+        venue=decode_latex(entry.get("venue", "")).replace("\n", " "),
+        pages=str(entry.get("pages", "") or ""),
     )
 
 
@@ -355,7 +415,15 @@ def build_thesis(conn: sqlite3.Connection, entry: BibEntry) -> Citation:
     )
 
 
-def build_patent(conn: sqlite3.Connection, entry: BibEntry) -> Patent:
+def build_patent(
+    conn: sqlite3.Connection,
+    entry: BibEntry,
+    patent_impacts: Optional[dict[str, str]] = None,
+) -> Patent:
+    """Build a Patent record. `patent_impacts` maps the clean (digits-only)
+    patent number to its impact statement; "None yet" / blank is fine for
+    pending entries. When the map has no entry for a given patent the impact
+    cell stays empty (renderer will leave it blank in the table)."""
     title = decode_latex(entry.get("title", "")).replace("\n", " ")
     inventors = format_inventors(entry.get("author", ""))
 
@@ -370,6 +438,8 @@ def build_patent(conn: sqlite3.Connection, entry: BibEntry) -> Patent:
     )
     display_date = format_iso_date(raw_date)
 
+    impact = (patent_impacts or {}).get(number_clean, "") if number_clean else ""
+
     return Patent(
         year=parse_year(year_str),
         year_str=year_str,
@@ -377,7 +447,7 @@ def build_patent(conn: sqlite3.Connection, entry: BibEntry) -> Patent:
         co_inventors=inventors,
         date=display_date,
         number=number_display,
-        impact="",  # Always blank; user fills in manually before submission.
+        impact=impact,
     )
 
 
@@ -444,9 +514,12 @@ def validate_non_scholar(non_scholar: dict, bib_entries: list[BibEntry]) -> None
             # agency_short is optional — when empty, the head line drops the
             # "{agency_short}: " prefix and renders just the title (used for
             # fellowships, internal grants, and other entries with no
-            # canonical funder-name prefix).
+            # canonical funder-name prefix). `total_amount` and `my_amount`
+            # are optional too — they default to `purdue_amount` at build time
+            # when not specified (sole-PI single-institution case).
             for required in (
-                "title", "agency", "role", "start_year", "end_year", "amount",
+                "title", "agency", "role", "start_year", "end_year",
+                "purdue_amount",
             ):
                 if grant.get(required) in (None, ""):
                     errors.append(f"{key}[{i}] missing required field `{required}`")
@@ -469,6 +542,18 @@ def validate_non_scholar(non_scholar: dict, bib_entries: list[BibEntry]) -> None
             for required in ("name", "degree", "role", "grad_year"):
                 if s.get(required) in (None, ""):
                     errors.append(f"{key}[{i}] missing required field `{required}`")
+
+    for i, ur in enumerate(non_scholar.get("under_review") or []):
+        if not isinstance(ur, dict):
+            errors.append(
+                f"`under_review[{i}]` must be a mapping; got {type(ur).__name__}"
+            )
+            continue
+        for required in ("title", "authors", "venue"):
+            if not ur.get(required):
+                errors.append(
+                    f"under_review[{i}] missing required field `{required}`"
+                )
 
     for key in (
         "university_service", "profession_service", "national_service", "other_service",

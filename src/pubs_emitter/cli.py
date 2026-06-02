@@ -32,6 +32,7 @@ from .builders import (
     build_service_entry,
     build_student,
     build_thesis,
+    build_under_review,
     load_non_scholar,
     validate_non_scholar,
 )
@@ -50,7 +51,8 @@ from .lookup import commit_results, dispatch_parallel, plan_lookups
 from .rtf import build_paper_index, write_rtf
 from .types import (
     BibEntry, Citation, ConferencePresentation, Grant, InvitedTalk, KeyWork,
-    LeadershipRole, MediaAppearance, Patent, Publications, ServiceEntry, Student,
+    LeadershipRole, MediaAppearance, Patent, PostdocVisiting, Publications,
+    ServiceEntry, Student, UnderReview,
 )
 from .venue import (
     EntryParseError,
@@ -319,10 +321,11 @@ def main(argv: Optional[list[str]] = None) -> None:
         patents: list[Patent] = []
         theses_internal: list[Citation] = []
         parse_errors: list[EntryParseError] = []
+        patent_impacts: dict[str, str] = dict(non_scholar.get("patent_impacts") or {})
         for entry in entries:
             try:
                 if is_patent_entry(entry):
-                    patents.append(build_patent(conn, entry))
+                    patents.append(build_patent(conn, entry, patent_impacts))
                 elif is_thesis_entry(entry):
                     theses_internal.append(build_thesis(conn, entry))
                 elif is_book_chapter_entry(entry):
@@ -388,6 +391,19 @@ def main(argv: Optional[list[str]] = None) -> None:
         graduate_students: list[Student] = [
             build_student(s) for s in (non_scholar.get("graduate_students") or [])
         ]
+        # C.15 postdocs_visiting: minimal builder. Empty list is the canonical
+        # case (user has no postdocs); the renderer emits "N/A" then.
+        postdocs_visiting: list[PostdocVisiting] = [
+            PostdocVisiting(
+                year=int(p.get("year", 9999) or 9999),
+                name=p.get("name", "") or "",
+                last_degree_date=p.get("last_degree_date", "") or "",
+                prior_affiliation=p.get("prior_affiliation", "") or "",
+                position_title_dates=p.get("position_title_dates", "") or "",
+                current_position=p.get("current_position", "") or "",
+            )
+            for p in (non_scholar.get("postdocs_visiting") or [])
+        ]
         undergraduate_students: list[Student] = [
             build_student(s) for s in (non_scholar.get("undergraduate_students") or [])
         ]
@@ -404,6 +420,11 @@ def main(argv: Optional[list[str]] = None) -> None:
         other_service: list[ServiceEntry] = [
             build_service_entry(e) for e in (non_scholar.get("other_service") or [])
         ]
+        # A.1: in-flight submissions. Sorted ASC by `due_date` (empty → bottom).
+        under_review: list[UnderReview] = [
+            build_under_review(conn, e) for e in (non_scholar.get("under_review") or [])
+        ]
+        under_review.sort(key=lambda u: u.due_date)
 
         # Chronological order (oldest first) within each section.
         for section in publications:
@@ -453,11 +474,14 @@ def main(argv: Optional[list[str]] = None) -> None:
             gifts=gifts,
             internal_grants=internal_grants,
             graduate_students=graduate_students,
+            postdocs_visiting=postdocs_visiting,
             undergraduate_students=undergraduate_students,
             university_service=university_service,
             profession_service=profession_service,
             national_service=national_service,
             other_service=other_service,
+            people=non_scholar.get("people") or {},
+            under_review=under_review,
         )
     finally:
         conn.close()
