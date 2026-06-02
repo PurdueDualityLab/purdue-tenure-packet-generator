@@ -148,7 +148,8 @@ class TestBuildGrant:
         assert g.purdue_amount == 600000
         assert g.total_amount == 600000
         assert g.my_amount == 600000
-        assert g.co_pis == []
+        assert g.personnel == []
+        assert g.lead_institution == ""
         assert g.inspired_by == []
         assert g.publication_outcomes == []
 

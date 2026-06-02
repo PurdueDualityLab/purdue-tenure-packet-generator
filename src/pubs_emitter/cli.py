@@ -480,7 +480,6 @@ def main(argv: Optional[list[str]] = None) -> None:
             profession_service=profession_service,
             national_service=national_service,
             other_service=other_service,
-            people=non_scholar.get("people") or {},
             under_review=under_review,
         )
     finally:

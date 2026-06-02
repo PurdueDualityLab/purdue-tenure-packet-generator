@@ -16,9 +16,9 @@ from .config import (
     TIER_LABELS,
 )
 from .types import (
-    BibEntry, Citation, ConferencePresentation, Grant, InvitedTalk, KeyWork,
-    LeadershipRole, MediaAppearance, Patent, PostdocVisiting, Publications,
-    Section, ServiceEntry, Student, UnderReview,
+    BibEntry, Citation, ConferencePresentation, Grant, GrantPerson,
+    InvitedTalk, KeyWork, LeadershipRole, MediaAppearance, Patent,
+    PostdocVisiting, Publications, Section, ServiceEntry, Student, UnderReview,
 )
 from .authors import parse_name_parts
 from .venue import parse_venue
@@ -436,57 +436,66 @@ def _format_grant_number_field(grant: Grant) -> str:
     return display
 
 
-def _format_person(name: str, people: dict[str, dict[str, str]]) -> str:
-    """Format a person's name with departmental affiliation (and institution
-    if external), looked up in the YAML `people:` registry.
+def _format_role_with_lead(grant: Grant) -> str:
+    """Row 3 role line, including lead-institution annotation when present.
 
-    Falls back to the bare name when the person isn't in the registry — the
-    registry is opt-in; missing entries don't fail the render. External
-    personnel (different institution from the candidate) include the
-    `institution` field after the department.
+      * `lead_institution == "Purdue University"` → "{role} (Purdue University is lead)"
+      * `lead_institution != ""` (external lead)  → "Purdue {role} ({lead} is lead)"
+      * `lead_institution == ""` (single-inst)    → just "{role}"
     """
-    info = people.get(name) or {}
-    parts: list[str] = [escape_rtf(name)]
-    if info.get("department"):
-        parts.append(escape_rtf(info["department"]))
-    if info.get("institution"):
-        parts.append(escape_rtf(info["institution"]))
-    return ", ".join(parts)
+    role = grant.role
+    lead = grant.lead_institution
+    if not lead:
+        return role
+    if lead == "Purdue University":
+        return f"{role} (Purdue University is lead)"
+    return f"Purdue {role} ({lead} is lead)"
 
 
-def _format_other_personnel(
-    grant: Grant, people: dict[str, dict[str, str]],
-) -> str:
-    """Row 4 content: PI + Co-PI(s) OTHER than the candidate, each rendered
-    as a standalone "Label: Name[, Department[, Institution]]" entry joined
-    with "; ".
+def _format_grant_person(p: "GrantPerson") -> str:
+    """Render one personnel record as the renderer-agnostic display string.
 
-    Per-person labels (not collective "Co-PIs: A, B, C") because each person
-    may have a different affiliation — comma-separated "A, B, C" collides
-    with the "Name, Dept" comma. Returns "" when there's no other personnel
-    so the caller can skip row 4 entirely.
+    Format:
+      * Purdue person   → "Role: Name (Department)"
+      * External person → "NSF #X: Name (Department, Institution)" when an
+                          NSF award number is set, else "Role: Name (Dept, Inst)"
+      * Free-form note  → role="" + only name set → just the name verbatim
+                          (escape hatch for cases like the Qualcomm fellowship's
+                          "Project Supervisor of winning team: ..." annotation).
+    Department / institution components are omitted when empty.
     """
-    entries: list[str] = []
-    if grant.lead_pi:
-        entries.append(f"PI: {_format_person(grant.lead_pi, people)}")
-    for co_pi in grant.co_pis:
-        entries.append(f"Co-PI: {_format_person(co_pi, people)}")
-    return "; ".join(entries)
+    paren_bits: list[str] = []
+    if p.department:
+        paren_bits.append(p.department)
+    if p.institution:
+        paren_bits.append(p.institution)
+    paren = f" ({', '.join(paren_bits)})" if paren_bits else ""
+    if p.nsf_award:
+        prefix = f"NSF #{p.nsf_award}: "
+    elif p.role:
+        prefix = f"{p.role}: "
+    else:
+        prefix = ""
+    return f"{prefix}{p.name}{paren}"
 
 
-def _format_grant_table(
-    grant: Grant, idx: int, people: dict[str, dict[str, str]],
-) -> str:
+def _format_personnel_line(grant: Grant) -> str:
+    """Row 4 content. Sole-PI grants (empty `personnel`) render "Sole PI";
+    everything else is `; `-joined per-person records via `_format_grant_person`.
+    """
+    if not grant.personnel:
+        return "Sole PI"
+    return "; ".join(_format_grant_person(p) for p in grant.personnel)
+
+
+def _format_grant_table(grant: Grant, idx: int) -> str:
     """Render one grant as a 4-row RTF table matching the Purdue CV format.
 
     Layout (each row in its own `\\trowd`, borders on all sides):
       Row 1 (full width):  "{N}. [{grant_number-link}] {agency} / {title}"
       Row 2 (split):       "{start}-{end}."     |     "${amount}"  (right-aligned)
-      Row 3 (full width):  "{role}[ - %{pct}][, {responsibility|activities}]"
-      Row 4 (full width):  "{personnel}"   (omitted when no other personnel)
-
-    `people` is the YAML `people:` registry; used by row-4 personnel lookup
-    to append department + institution to each name.
+      Row 3 (full width):  "{role}[ (lead-institution annotation)][, {responsibility|activities}]"
+      Row 4 (full width):  "{personnel}"   ("Sole PI" when grant.personnel is empty)
     """
     # --- Row 1: numbered head ---
     head_bits: list[str] = [f"\\b {idx}.\\b0 "]
@@ -502,23 +511,17 @@ def _format_grant_table(
     # En-dash (U+2013) is the conventional separator for date ranges; escape_rtf
     # converts it to the cp1252-safe 舑? form.
     duration = escape_rtf(f"{grant.start_year}–{grant.end_year}.")
-    # `_format_grant_amounts` collapses to a single "$X" when total/purdue/my
-    # are equal (sole-PI single-institution case) and expands to a verbose
-    # breakdown otherwise. The cell may wrap to multiple lines in Word when
-    # the breakdown is used; that's intentional.
     amount = escape_rtf(_format_grant_amounts(grant))
 
-    # --- Row 3: role + responsibility ---
-    role_pct = escape_rtf(grant.role)
+    # --- Row 3: role + lead-institution + responsibility ---
+    role_pct = escape_rtf(_format_role_with_lead(grant))
     if grant.responsibility_percent:
         role_pct += f" - %{grant.responsibility_percent}"
-    # Prefer `responsibility` (the user's explicit role statement); fall back
-    # to `activities` (project description). Either can be empty.
     description = escape_rtf(grant.responsibility or grant.activities or "")
     role_line = f"{role_pct}, {description}" if description else role_pct
 
-    # --- Row 4: other personnel ---
-    other_personnel = _format_other_personnel(grant, people)
+    # --- Row 4: personnel line (always emitted; "Sole PI" when none) ---
+    personnel = escape_rtf(_format_personnel_line(grant))
 
     out: list[str] = []
     out.append(
@@ -538,12 +541,11 @@ def _format_grant_table(
         f"{_GRANT_CELL_BORDER}\\cellx{_GRANT_TABLE_TOTAL_TWIPS}\n"
         f" {role_line}\\cell\\row\n"
     )
-    if other_personnel:
-        out.append(
-            f"\\trowd\\trgaph108\\trleft0 "
-            f"{_GRANT_CELL_BORDER}\\cellx{_GRANT_TABLE_TOTAL_TWIPS}\n"
-            f" {other_personnel}\\cell\\row\n"
-        )
+    out.append(
+        f"\\trowd\\trgaph108\\trleft0 "
+        f"{_GRANT_CELL_BORDER}\\cellx{_GRANT_TABLE_TOTAL_TWIPS}\n"
+        f" {personnel}\\cell\\row\n"
+    )
     return "".join(out)
 
 
@@ -551,7 +553,6 @@ def render_grants_section(
     section: Section,
     grants: list[Grant],
     out: IO[str],
-    people: Optional[dict[str, dict[str, str]]] = None,
 ) -> None:
     """Generic renderer for any of C.10 / C.11 / C.12 / C.13.
 
@@ -568,7 +569,6 @@ def render_grants_section(
     """
     if not grants:
         return
-    people = people or {}
     from .config import GRANT_TOTAL_LABELS  # local: limit import surface
     code = SECTION_CODES[section]
     heading = SECTION_HEADINGS[section]
@@ -576,10 +576,7 @@ def render_grants_section(
 
     total_label = GRANT_TOTAL_LABELS.get(section)
     if total_label:
-        # Section total sums `my_amount` — the tenure-credited share, which
-        # is what the "Total amount of external funding as PI" line is meant
-        # to represent. (Sole-PI single-institution grants have my == purdue
-        # == total, so this collapses to the headline figure anyway.)
+        # Section total sums `my_amount` — the tenure-credited share.
         total_amount = sum(g.my_amount for g in grants)
         out.write(
             f"\\pard \\b {escape_rtf(total_label)}:\\b0 "
@@ -587,7 +584,7 @@ def render_grants_section(
         )
 
     for idx, grant in enumerate(grants, 1):
-        out.write(_format_grant_table(grant, idx, people))
+        out.write(_format_grant_table(grant, idx))
         out.write("\\pard\\par\n")  # blank paragraph between grant tables
 
 
@@ -926,7 +923,6 @@ def write_rtf(
     profession_service: Optional[list[ServiceEntry]] = None,
     national_service: Optional[list[ServiceEntry]] = None,
     other_service: Optional[list[ServiceEntry]] = None,
-    people: Optional[dict[str, dict[str, str]]] = None,
     under_review: Optional[list[UnderReview]] = None,
 ) -> None:
     log.info("Generating RTF file: %s", path)
@@ -952,7 +948,6 @@ def write_rtf(
     profession_service = profession_service or []
     national_service = national_service or []
     other_service = other_service or []
-    people = people or {}
     under_review = under_review or []
     with open(path, "w", encoding="utf-8") as out:
         out.write(
@@ -1012,10 +1007,10 @@ def write_rtf(
         render_conference_presentations_section(
             conference_presentations, bib_entries, paper_index, out,
         )
-        render_grants_section("Grants PI", grants_as_pi, out, people)
-        render_grants_section("Grants Co-PI", grants_as_co_pi, out, people)
-        render_grants_section("Gifts", gifts, out, people)
-        render_grants_section("Internal Grants", internal_grants, out, people)
+        render_grants_section("Grants PI", grants_as_pi, out)
+        render_grants_section("Grants Co-PI", grants_as_co_pi, out)
+        render_grants_section("Gifts", gifts, out)
+        render_grants_section("Internal Grants", internal_grants, out)
         render_students_section(
             "Graduate Students", graduate_students, bib_entries, paper_index, out,
         )

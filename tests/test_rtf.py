@@ -27,6 +27,7 @@ from pubs_emitter.types import (
     Citation,
     ConferencePresentation,
     Grant,
+    GrantPerson,
     InvitedTalk,
     KeyWork,
     LeadershipRole,
@@ -317,11 +318,24 @@ def _grant(**overrides) -> Grant:
     `purdue_amount`, `my_amount` individually to override only that field.
     """
     amount = overrides.pop("amount", 600000)
+    # Back-compat shim for tests that still pass co_pis / lead_pi: synthesize
+    # GrantPerson records so the renderer's Row 4 produces equivalent output.
+    co_pis = overrides.pop("co_pis", None)
+    lead_pi = overrides.pop("lead_pi", None)
+    personnel = overrides.pop("personnel", None)
+    if personnel is None:
+        personnel = []
+        if lead_pi:
+            personnel.append(GrantPerson(name=lead_pi, role="PI"))
+        for c in (co_pis or []):
+            personnel.append(GrantPerson(name=c, role="Co-PI"))
     base = dict(
         start_year=2025, end_year=2030,
         title="Test Project", agency="National Science Foundation",
         agency_short="NSF", grant_number="2025001",
-        role="PI", co_pis=[], lead_pi="",
+        role="PI",
+        lead_institution="",
+        personnel=personnel,
         responsibility_percent=0,
         total_amount=amount, purdue_amount=amount, my_amount=amount,
         activities="", responsibility="",
@@ -438,16 +452,17 @@ class TestGrantTableStructure:
     """Pins the 4-row table layout so renderer refactors can't silently
     collapse to paragraphs or drop a row."""
 
-    def test_table_emits_exactly_three_rows_for_solo_pi(self) -> None:
-        # Sole PI, no other personnel → row 4 (personnel) skipped.
+    def test_table_emits_four_rows_for_solo_pi(self) -> None:
+        # Sole PI → row 4 renders "Sole PI" (always emitted; no conditional skip).
         buf = io.StringIO()
         render_grants_section(
             "Grants PI",
             [_grant(role="PI", co_pis=[], lead_pi="")],
             buf,
         )
-        # Each row ends with \row; count them.
-        assert buf.getvalue().count("\\row") == 3
+        out = buf.getvalue()
+        assert out.count("\\row") == 4
+        assert "Sole PI" in out
 
     def test_table_emits_four_rows_when_co_pi_present(self) -> None:
         buf = io.StringIO()
@@ -547,74 +562,136 @@ class TestGrantTablePersonnelRow:
 
 
 class TestGrantPersonnelAffiliations:
-    """Personnel-row name lookup against the YAML `people:` registry —
-    appends department + (optional) institution to each name."""
-
-    def _registry(self) -> dict[str, dict[str, str]]:
-        return {
-            "Aravind Machiry": {"department": "Electrical & Computer Engineering"},
-            "Yung-Hsiang Lu": {"department": "Electrical & Computer Engineering"},
-            "Kirsten Davis": {"department": "Engineering Education"},
-            "External Person": {
-                "department": "Civil Engineering",
-                "institution": "University of Maine",
-            },
-        }
+    """Personnel records carry their own `department` / `institution` /
+    `nsf_award` fields. The renderer reads structured data directly off
+    each `GrantPerson` — no separate registry lookup."""
 
     def test_co_pi_with_department(self) -> None:
         buf = io.StringIO()
         render_grants_section(
             "Grants PI",
-            [_grant(role="PI", co_pis=["Yung-Hsiang Lu"])],
-            buf, self._registry(),
+            [_grant(role="PI", personnel=[
+                GrantPerson(
+                    name="Yung-Hsiang Lu", role="Co-PI",
+                    department="Electrical & Computer Engineering",
+                ),
+            ])],
+            buf,
         )
-        assert "Co-PI: Yung-Hsiang Lu, Electrical & Computer Engineering" in buf.getvalue()
+        assert "Co-PI: Yung-Hsiang Lu (Electrical & Computer Engineering)" in buf.getvalue()
 
     def test_lead_pi_with_department(self) -> None:
         buf = io.StringIO()
         render_grants_section(
             "Grants Co-PI",
-            [_grant(role="Co-PI", co_pis=[], lead_pi="Kirsten Davis")],
-            buf, self._registry(),
+            [_grant(role="Co-PI", personnel=[
+                GrantPerson(
+                    name="Kirsten Davis", role="PI",
+                    department="Engineering Education",
+                ),
+            ])],
+            buf,
         )
-        assert "PI: Kirsten Davis, Engineering Education" in buf.getvalue()
+        assert "PI: Kirsten Davis (Engineering Education)" in buf.getvalue()
 
-    def test_external_institution_appended(self) -> None:
+    def test_external_with_dept_and_institution(self) -> None:
+        # External collaborator: dept + institution both appear inside parens.
         buf = io.StringIO()
         render_grants_section(
             "Grants Co-PI",
-            [_grant(role="Co-PI", co_pis=["External Person"], lead_pi="Aravind Machiry")],
-            buf, self._registry(),
+            [_grant(role="Co-PI", personnel=[
+                GrantPerson(
+                    name="Aravind Machiry", role="PI",
+                    department="Electrical & Computer Engineering",
+                ),
+                GrantPerson(
+                    name="External Person", role="Co-PI",
+                    department="Civil Engineering",
+                    institution="University of Maine",
+                ),
+            ])],
+            buf,
         )
         out = buf.getvalue()
-        assert "PI: Aravind Machiry, Electrical & Computer Engineering" in out
-        assert "Co-PI: External Person, Civil Engineering, University of Maine" in out
+        assert "PI: Aravind Machiry (Electrical & Computer Engineering)" in out
+        assert "Co-PI: External Person (Civil Engineering, University of Maine)" in out
 
-    def test_missing_registry_entry_renders_bare_name(self) -> None:
-        # Graceful degradation: unknown name → just the name, no affiliation,
-        # no error. The registry is opt-in.
+    def test_nsf_award_prefix_for_external_collab_pi(self) -> None:
+        # Multi-inst NSF Collab: external PI's record carries their separate
+        # award number; rendered as "NSF #X: Name (Dept, Institution)".
         buf = io.StringIO()
         render_grants_section(
             "Grants PI",
-            [_grant(role="PI", co_pis=["Unknown Person"])],
-            buf, self._registry(),
+            [_grant(role="PI", lead_institution="Purdue University", personnel=[
+                GrantPerson(
+                    name="Dongyoon Lee", role="PI",
+                    department="Computer Science",
+                    institution="SUNY at Stony Brook",
+                    nsf_award="2135157",
+                ),
+            ])],
+            buf,
+        )
+        assert "NSF #2135157: Dongyoon Lee (Computer Science, SUNY at Stony Brook)" in buf.getvalue()
+
+    def test_bare_name_when_no_dept_or_institution(self) -> None:
+        # Personnel record with only name → renders without parentheses.
+        buf = io.StringIO()
+        render_grants_section(
+            "Grants PI",
+            [_grant(role="PI", personnel=[
+                GrantPerson(name="Unknown Person", role="Co-PI"),
+            ])],
+            buf,
         )
         out = buf.getvalue()
         assert "Co-PI: Unknown Person" in out
-        # Make sure we didn't append a stray comma or trailing whitespace.
+        # Make sure we didn't append empty parens or a stray comma.
+        assert "Co-PI: Unknown Person (" not in out
         assert "Co-PI: Unknown Person," not in out
 
-    def test_empty_registry_falls_back_to_names(self) -> None:
-        # Default registry (None / empty) — no affiliation rendering.
+
+class TestGrantLeadInstitutionAnnotation:
+    """Row 3 role line carries the lead-institution annotation for multi-inst
+    grants. Three shapes:
+      * `lead_institution == ""`                  → "{role}"
+      * `lead_institution == "Purdue University"` → "{role} (Purdue University is lead)"
+      * `lead_institution == "X"` (external)      → "Purdue {role} (X is lead)"
+    """
+
+    def test_single_inst_no_annotation(self) -> None:
+        buf = io.StringIO()
+        render_grants_section("Grants PI", [_grant(role="PI", lead_institution="")], buf)
+        out = buf.getvalue()
+        assert "is lead" not in out
+
+    def test_purdue_lead_annotation(self) -> None:
         buf = io.StringIO()
         render_grants_section(
             "Grants PI",
-            [_grant(role="PI", co_pis=["Yung-Hsiang Lu"])],
-            buf,  # no people arg
+            [_grant(role="PI", lead_institution="Purdue University")],
+            buf,
         )
-        out = buf.getvalue()
-        assert "Co-PI: Yung-Hsiang Lu" in out
-        assert "Engineering" not in out  # no department leaked from a stale state
+        assert "PI (Purdue University is lead)" in buf.getvalue()
+
+    def test_external_lead_annotation(self) -> None:
+        buf = io.StringIO()
+        render_grants_section(
+            "Grants PI",
+            [_grant(role="PI", lead_institution="Columbia University")],
+            buf,
+        )
+        # External lead → Davis becomes "Purdue PI" to disambiguate.
+        assert "Purdue PI (Columbia University is lead)" in buf.getvalue()
+
+    def test_external_lead_with_co_pi_role(self) -> None:
+        buf = io.StringIO()
+        render_grants_section(
+            "Grants Co-PI",
+            [_grant(role="Co-PI", lead_institution="Loyola University Chicago")],
+            buf,
+        )
+        assert "Purdue Co-PI (Loyola University Chicago is lead)" in buf.getvalue()
 
 
 class TestGrantNumberNsfHyperlink:

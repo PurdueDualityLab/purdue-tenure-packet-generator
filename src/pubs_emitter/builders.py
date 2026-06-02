@@ -26,9 +26,9 @@ from .lookup import (
     fetch_patent_date,
 )
 from .types import (
-    BibEntry, Category, Citation, ConferencePresentation, Grant, InvitedTalk,
-    LeadershipRole, MediaAppearance, Patent, Rank, Section, ServiceEntry, Student,
-    UnderReview,
+    BibEntry, Category, Citation, ConferencePresentation, Grant, GrantPerson,
+    InvitedTalk, LeadershipRole, MediaAppearance, Patent, Rank, Section,
+    ServiceEntry, SoftwareProduct, Student, UnderReview,
 )
 from .venue import (
     CVE_ID_RE,
@@ -194,6 +194,16 @@ def build_grant(entry: dict) -> Grant:
     purdue = int(entry.get("purdue_amount", 0) or 0)
     total = int(entry.get("total_amount", purdue) or purdue)
     mine = int(entry.get("my_amount", purdue) or purdue)
+    personnel = [
+        GrantPerson(
+            name=decode_latex(p.get("name", "")).replace("\n", " "),
+            role=p.get("role", "Co-PI") or "Co-PI",
+            department=decode_latex(p.get("department", "") or "").replace("\n", " "),
+            institution=decode_latex(p.get("institution", "") or "").replace("\n", " "),
+            nsf_award=str(p.get("nsf_award", "") or ""),
+        )
+        for p in (entry.get("personnel") or [])
+    ]
     return Grant(
         start_year=int(entry.get("start_year", 0)),
         end_year=int(entry.get("end_year", 0)),
@@ -202,8 +212,10 @@ def build_grant(entry: dict) -> Grant:
         agency_short=entry.get("agency_short", "") or "",
         grant_number=str(entry.get("grant_number", "") or ""),
         role=entry.get("role", "") or "",
-        co_pis=list(entry.get("co_pis") or []),
-        lead_pi=decode_latex(entry.get("lead_pi", "") or "").replace("\n", " "),
+        lead_institution=decode_latex(
+            entry.get("lead_institution", "") or ""
+        ).replace("\n", " "),
+        personnel=personnel,
         responsibility_percent=int(entry.get("responsibility_percent", 0) or 0),
         total_amount=total,
         purdue_amount=purdue,

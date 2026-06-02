@@ -34,6 +34,7 @@ Section = Literal[
     "Postdocs and Visiting Scholars",
     "Undergraduate Students",
     "Patents",
+    "Software Products",
     "University Service",
     "Profession Service",
     "National Service",
@@ -111,11 +112,29 @@ class Student(NamedTuple):
     co_advisor: str = ""     # set when role == "Co-Chair"; renders "(with NAME)" in Role column
 
 
+class GrantPerson(NamedTuple):
+    """A person on a grant other than the candidate.
+
+    Captures the full structured tuple needed for the Purdue mentoring-format
+    personnel line: role label, name, departmental affiliation, and (for
+    external collaborators) the institution + their separate NSF award number.
+
+      * Purdue Co-PI:    role="Co-PI", name=..., department=...,
+                          institution="" (implicit Purdue), nsf_award=""
+      * External lead PI on a collab: role="PI", name=..., department=...,
+                          institution="Columbia University", nsf_award="2526620"
+    """
+    name: str
+    role: str = "Co-PI"           # "PI" / "Co-PI" / "Co-I"
+    department: str = ""          # e.g., "Computer Science", "ECE"
+    institution: str = ""         # external only; empty → Purdue (implicit)
+    nsf_award: str = ""           # NSF collab partner's separate award #
+
+
 class Grant(NamedTuple):
     """A C.10/C.11/C.12/C.13 grant entry (same datatype, routed by YAML key).
 
-    Three explicit USD fields capture the full structure of a grant in the
-    tenure-packet sense:
+    Three explicit USD fields capture the financial scope:
       * `total_amount`   — whole award across all institutions (matters for
                             multi-institution NSF Collab and similar)
       * `purdue_amount`  — Purdue's share of the award (== total for
@@ -123,9 +142,12 @@ class Grant(NamedTuple):
       * `my_amount`      — your credited share (== purdue when sole Purdue
                             PI; smaller when multiple Purdue PIs split credit)
 
-    For sole-PI single-institution grants all three are equal; the YAML
-    only needs to set `purdue_amount` and the builder defaults the other
-    two. Section totals sum `my_amount` (the tenure-credited figure).
+    Personnel is fully structured via `GrantPerson` records:
+      * `personnel: list[GrantPerson]` — every other person on the grant.
+        Sole-PI grants → empty list.
+      * `lead_institution` — multi-inst only: name of the lead institution
+        ("Purdue University" / "Columbia University" / ...). When set, the
+        renderer annotates Davis's role line accordingly.
 
     inspired_by + publication_outcomes are paper-title lists that get
     resolved against the bib (case+whitespace insensitive) to C.X.Y refs.
@@ -136,9 +158,9 @@ class Grant(NamedTuple):
     agency: str                   # full name (e.g. "US National Science Foundation")
     agency_short: str             # short form for prefix (e.g. "NSF")
     grant_number: str             # funder's award ID (e.g. "2541917")
-    role: str                     # "PI" / "Co-PI" / "Co-I" / "Sole PI" / etc.
-    co_pis: list[str]             # other co-PIs (when user is PI)
-    lead_pi: str                  # name of the lead PI (when user is Co-PI/Co-I)
+    role: str                     # "PI" / "Co-PI" / etc. (Davis's role only)
+    lead_institution: str         # multi-inst only: which institution is lead
+    personnel: list[GrantPerson]  # other personnel, structured
     responsibility_percent: int   # user's responsibility share % (0 = unspecified)
     total_amount: int             # full award across institutions (USD)
     purdue_amount: int            # Purdue's share (USD)
@@ -184,6 +206,19 @@ class PostdocVisiting(NamedTuple):
     prior_affiliation: str          # e.g., "University X"
     position_title_dates: str       # e.g., "Postdoc, 03/01/10 - present"
     current_position: str           # optional
+
+
+class SoftwareProduct(NamedTuple):
+    """A C.22 software product entry — tools, libraries, datasets,
+    reproducibility artifacts released independently or alongside papers.
+
+    Schema is intentionally minimal: name + description + year. Add a URL,
+    license, or paper cross-refs inline in `description` when relevant.
+    """
+    year: int            # sort key (first release year)
+    year_str: str        # display (e.g., "2018", "2018-present", "Annual 2015-2019")
+    name: str            # tool / project name (may include a parenthetical URL)
+    description: str     # free-form prose, typically 1-2 paragraphs
 
 
 class ServiceEntry(NamedTuple):
