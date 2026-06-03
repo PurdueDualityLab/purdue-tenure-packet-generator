@@ -320,10 +320,13 @@ class TestBuildPaperIndex:
         assert idx["paperb"] == "C.4.2"
 
     def test_cve_entries_excluded(self) -> None:
-        # CVEs are excluded from the index (they'd be back-pointer chains), but
-        # the per-section enumeration still counts them — the preprint takes
-        # whichever slot enumerate() gives it. The CVE is still rendered in
-        # write_rtf at slot 1; the index just doesn't record it as a target.
+        # CVEs are excluded from the index (they'd be back-pointer chains).
+        # For C.5 specifically, build_paper_index mirrors the renderer's
+        # subcategory grouping (Magazine → Technical Reports → Direct
+        # computing industry impacts) so the index codes match what's
+        # actually emitted in the RTF. Preprint goes to "Technical Reports"
+        # (first non-empty bucket) → C.5.1; CVE goes to "Direct computing
+        # industry impacts" → would be C.5.2 but excluded from the index.
         pubs = {
             "Other publications and products": [
                 _citation(title="A CVE Entry", rank="CVE"),
@@ -332,7 +335,73 @@ class TestBuildPaperIndex:
         }
         idx = build_paper_index(pubs)
         assert "acvenetry" not in idx
-        assert idx["apreprint"] == "C.5.2"
+        assert idx["apreprint"] == "C.5.1"
+
+
+class TestOrderCitationsForEmission:
+    """Single source of truth for "what's the i-th C.X entry?".
+
+    Both `build_paper_index` and `render_other_pubs_section` MUST call
+    this — that's the structural defense against the 260603 incident
+    class (paper_index numbered by source order, renderer regrouped by
+    subcategory → C.X.Y back-pointers landed at the wrong paper).
+    """
+
+    def test_default_is_pass_through(self) -> None:
+        """Most sections emit in input order; the function returns the
+        same list reference (no copy, no reorder)."""
+        from pubs_emitter.rtf import order_citations_for_emission
+        cits = [_citation(title=f"P{i}") for i in range(3)]
+        assert order_citations_for_emission(
+            "Conferences and Workshops", cits,
+        ) == cits
+
+    def test_c5_groups_by_subcategory(self) -> None:
+        """C.5 input that mixes Preprint / Magazine / CVE / Disclosure
+        must come back ordered: Magazine → Technical Reports → Direct
+        computing industry impacts (the canonical C.5 subsection order
+        the user ratified)."""
+        from pubs_emitter.rtf import order_citations_for_emission
+        cits = [
+            _citation(title="A-preprint", rank="Preprint"),
+            _citation(title="B-magazine", rank="Magazine"),
+            _citation(title="C-cve",      rank="CVE"),
+            _citation(title="D-preprint", rank="Preprint"),
+            _citation(title="E-disclosure", rank="Disclosure"),
+        ]
+        ordered = order_citations_for_emission(
+            "Other publications and products", cits,
+        )
+        # Magazines first, then Technical Reports (Preprints), then
+        # Direct-computing-industry-impacts (CVE + Disclosure pooled).
+        # Within each subcategory the input order is preserved.
+        titles = [c.title for c in ordered]
+        assert titles == [
+            "B-magazine",
+            "A-preprint", "D-preprint",
+            "C-cve", "E-disclosure",
+        ]
+
+    def test_paper_index_codes_match_emit_order(self) -> None:
+        """The structural invariant: paper_index codes line up with the
+        positional order returned by order_citations_for_emission, so
+        rendered C.X.Y bookmarks and back-pointer codes always agree."""
+        from pubs_emitter.rtf import order_citations_for_emission
+        cits = [
+            _citation(title="A-preprint", rank="Preprint"),
+            _citation(title="B-magazine", rank="Magazine"),
+        ]
+        pubs = {"Other publications and products": cits}
+        idx = build_paper_index(pubs)
+        ordered = order_citations_for_emission(
+            "Other publications and products", cits,
+        )
+        for i, cit in enumerate(ordered, 1):
+            if cit.rank == "CVE":
+                continue
+            expected_code = f"C.5.{i}"
+            from pubs_emitter.venue import normalize_title
+            assert idx[normalize_title(cit.title)] == expected_code
 
 
 def _grant(**overrides) -> Grant:

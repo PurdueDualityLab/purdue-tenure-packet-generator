@@ -90,7 +90,14 @@ def format_author(conn: sqlite3.Connection, bib_name: str, is_last: bool) -> str
         markers.append("*")
 
     if markers:
-        formatted += f"\\super {','.join(markers)}\\nosupersub"
+        # Trailing `{}` empty group terminates the `\nosupersub` control
+        # word without consuming the next character as its delimiter.
+        # Bare `\nosupersub (2023)` renders as `(2023)` glued to the marker
+        # ("Davis, J.C.*(2023)") because the space after `\nosupersub` is
+        # eaten — same trap class as `\b0 X` / `\i0 X`. The `{}` empty
+        # group is the standard RTF idiom for "end this control word, do
+        # not eat my trailing space."
+        formatted += f"\\super {','.join(markers)}\\nosupersub{{}}"
     return formatted
 
 

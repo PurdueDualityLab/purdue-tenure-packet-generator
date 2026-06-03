@@ -135,6 +135,14 @@ class Student(NamedTuple):
     co_advisor: str = ""     # set when role == "Co-Chair"; renders "(with NAME)" in Role column
     id: str = ""             # OPTIONAL cross-ref id; @id resolves to "C.14.N" / "C.16.N"
     aliases: tuple[str, ...] = ()  # alternate bib forms for pub-back-mapping
+    linkedin: str = ""       # OPTIONAL LinkedIn profile URL — rendered as
+                             # a clickable "LinkedIn" link in the Position
+                             # cell so the reader can verify current
+                             # position. Not auto-scraped (LinkedIn ToS
+                             # forbids; reality: their 999/login-wall
+                             # response makes it unworkable anyway).
+                             # Periodic refresh via tools/refresh-positions.py
+                             # is the intended freshness path.
 
 
 class GrantPerson(NamedTuple):

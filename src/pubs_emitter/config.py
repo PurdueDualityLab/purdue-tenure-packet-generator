@@ -59,6 +59,19 @@ for _rank, _acronyms in (_conf.get("ranks") or {}).items():
 # at startup so the normal cache-lookup path picks them up.
 MANUAL_LINKS: dict[str, str] = dict(_conf.get("manual_links") or {})
 
+# Corresponding-author override. The default `*` marker goes on the LAST
+# author of each paper (typical CS convention). For papers where the
+# corresponding author is in another position (e.g. multi-institution
+# studies where the first or middle author led the work), map the bib
+# citation key → the last-name string. `build_citation` finds the
+# matching author in the bib's author list and marks THAT one with `*`
+# instead of the structural last author. Example:
+#   corresponding_authors:
+#     herbold2022fine: "Herbold"  # 48 authors; Herbold (first) corresponds
+CORRESPONDING_AUTHORS: dict[str, str] = dict(
+    _conf.get("corresponding_authors") or {}
+)
+
 # Bib titles to drop on load (case- and whitespace-insensitive match). Scholar
 # re-exports clobber manual edits to my_papers.bib, so a config-driven filter
 # is the only durable way to suppress entries the user doesn't want in the CV.

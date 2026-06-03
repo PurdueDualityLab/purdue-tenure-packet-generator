@@ -172,8 +172,23 @@ def build_citation(conn: sqlite3.Connection, entry: BibEntry) -> Citation:
     section = derive_section(category, rank)
 
     author_list = raw_authors.split(" and ")
+    # Default: structural last author gets the `*` (corresponding) marker.
+    # Override per `CORRESPONDING_AUTHORS[bib_key]` when the corresponding
+    # author lives elsewhere in the author order (e.g. herbold2022fine —
+    # 48 authors, Herbold (first) is corresponding, not Erbel (last)).
+    bib_key = entry.get("ID", "")
+    from .authors import parse_name_parts
+    from .config import CORRESPONDING_AUTHORS
+    override_last = CORRESPONDING_AUTHORS.get(bib_key, "").strip().lower()
+    corresponding_idx = len(author_list) - 1
+    if override_last:
+        for i, a in enumerate(author_list):
+            last_part, _ = parse_name_parts(decode_latex(a.strip()))
+            if last_part.lower() == override_last:
+                corresponding_idx = i
+                break
     formatted_authors = [
-        format_author(conn, a.strip(), is_last=i == len(author_list) - 1)
+        format_author(conn, a.strip(), is_last=i == corresponding_idx)
         for i, a in enumerate(author_list)
     ]
     authors_rtf = ", ".join(formatted_authors)
@@ -413,6 +428,7 @@ def build_student(entry: dict) -> Student:
         co_advisor=decode_latex(entry.get("co_advisor", "") or "").replace("\n", " "),
         id=str(entry.get("id", "") or ""),
         aliases=aliases,
+        linkedin=str(entry.get("linkedin", "") or "").strip(),
     )
 
 

@@ -152,7 +152,10 @@ def render_citation(
     """RTF body for one citation (no paragraph wrapping).
 
     `paper_index` maps normalized-bib-title → section code (e.g. "C.4.7").
-    When `cit.back_ref_title` is set (CVE → paper linkage), "(see C.4.7)" is appended.
+    When `cit.back_ref_title` is set, the back-pointer wording reflects
+    the relationship: CVE entries render "(discovered as part of C.4.7)"
+    (the CVE was found during that paper's work); non-CVE entries render
+    "(see C.4.7)" (generic cross-reference).
 
     `key_work_index` maps normalized-bib-title → "C.1.N". When this citation's
     title is itself a key work, a "(listed as C.1.N)" cross-link is appended.
@@ -190,7 +193,12 @@ def render_citation(
     if cit.back_ref_title and paper_index:
         ref = paper_index.get(normalize_title(cit.back_ref_title))
         if ref:
-            body += f" (see {_code_link(ref)})"
+            # CVE entries: the linked paper IS where the vuln was
+            # discovered / disclosed during. Non-CVE: generic cross-ref.
+            if cit.rank == "CVE":
+                body += f" (discovered as part of {_code_link(ref)})"
+            else:
+                body += f" (see {_code_link(ref)})"
     if key_work_index:
         kw_ref = key_work_index.get(normalize_title(cit.title))
         if kw_ref:
@@ -247,17 +255,58 @@ def render_key_works_section(
         out.write(f"\\pard\\li720\\fi0 {escape_rtf(kw.impact)}\\par\\par\n")
 
 
+def order_citations_for_emission(
+    section: Section, citations: list[Citation],
+) -> list[Citation]:
+    """Return citations in the order the renderer will emit them.
+
+    Single source of truth for "what's the i-th C.X entry?" — used by
+    both `build_paper_index` (to produce the back-pointer code) AND the
+    renderers (to actually emit). Default: pass-through (renderer
+    iterates input order). Per-section override: C.5's subcategory
+    grouping (Magazine → Technical Reports → Direct computing industry
+    impacts) is applied here so paper_index["C.5.N"] always matches the
+    rendered C.5.N bookmark.
+
+    If a future renderer re-orders its input, the re-order belongs HERE
+    — not duplicated between `build_paper_index` and the renderer. The
+    260603 RCA: paper_index used source order, renderer regrouped by
+    subcategory, the two diverged → C.16.2.3.25 linked at C.5.8 but the
+    rendered C.5.8 was a different paper.
+    """
+    if section == "Other publications and products":
+        by_subcat: dict[str, list[Citation]] = {}
+        for cit in citations:
+            subcat = _C5_SUBCATEGORY_BY_RANK.get(cit.rank, "Other")
+            by_subcat.setdefault(subcat, []).append(cit)
+        def _subcat_key(s: str) -> tuple[int, str]:
+            try:
+                return (_C5_SUBCATEGORY_ORDER.index(s), "")
+            except ValueError:
+                return (len(_C5_SUBCATEGORY_ORDER), s.lower())
+        return [
+            cit for subcat in sorted(by_subcat.keys(), key=_subcat_key)
+            for cit in by_subcat[subcat]
+        ]
+    return citations
+
+
 def build_paper_index(publications: Publications) -> dict[str, str]:
     """Map normalized-paper-title → 'C.X.Y' for back-pointer resolution.
 
-    Assumes citations are already chrono-sorted within each section.
-    CVEs are excluded as targets (would chain forward).
+    Numbering goes through `order_citations_for_emission` so the index
+    codes match the rendered bookmarks for every section, including the
+    ones whose renderers re-order their input (C.5). CVEs are excluded
+    from the index (they'd be back-pointer chains).
     """
     index: dict[str, str] = {}
     for section in SECTION_ORDER:
         if section == "Patents":
             continue
-        for idx, cit in enumerate(publications.get(section, []), 1):
+        ordered = order_citations_for_emission(
+            section, publications.get(section, []),
+        )
+        for idx, cit in enumerate(ordered, 1):
             if cit.rank == "CVE":
                 continue
             if cit.title:
@@ -323,16 +372,13 @@ def render_other_pubs_section(
 ) -> None:
     """C.5: subcategory-grouped numbered list.
 
-    Each Citation routes via its `rank` to a subcategory subheading
-    (Magazine, Technical Reports, Direct computing industry impacts).
-    Unknown ranks fall to an "Other" bucket sorted to the end. Numbering
-    is FLAT across all subcategories (`C.5.1`, `C.5.2`, ...) so the
-    back-pointer code is stable irrespective of how the visual subheadings
-    are arranged.
-
-    Within each subcategory the order is whatever the caller produced
-    (cli.py sorts `publications["Other publications and products"]` by
-    `(year, venue)` — the global publication sort rule).
+    Walks the pre-ordered citation list (from
+    `order_citations_for_emission`) and emits a subcategory subheading
+    each time the running subcategory changes. Numbering is FLAT across
+    all subcategories (`C.5.1`, `C.5.2`, ...). The ordering itself is
+    NOT defined here — the single source of truth is
+    `order_citations_for_emission`, also used by `build_paper_index` to
+    guarantee paper_index codes match the rendered bookmarks.
     """
     if not citations:
         return
@@ -340,30 +386,23 @@ def render_other_pubs_section(
     heading = SECTION_HEADINGS["Other publications and products"]
     _emit_section_heading(out, code, heading)
 
-    by_subcat: dict[str, list[Citation]] = {}
-    for cit in citations:
-        subcat = _C5_SUBCATEGORY_BY_RANK.get(cit.rank, "Other")
-        by_subcat.setdefault(subcat, []).append(cit)
-
-    def _subcat_key(s: str) -> tuple[int, str]:
-        try:
-            return (_C5_SUBCATEGORY_ORDER.index(s), "")
-        except ValueError:
-            return (len(_C5_SUBCATEGORY_ORDER), s.lower())
-
-    idx = 0  # Section-wide counter; does NOT reset between subcategories.
+    ordered = order_citations_for_emission(
+        "Other publications and products", citations,
+    )
     expansion_done: set[str] = set()
-    for subcat in sorted(by_subcat.keys(), key=_subcat_key):
-        out.write(
-            f"\\pard\\b\\fs26\\sb120\\sa60 {escape_rtf(subcat)}"
-            f"\\b0\\fs24\\par\n"
-        )
-        for cit in by_subcat[subcat]:
-            idx += 1
-            body = render_citation(
-                cit, expansion_done, paper_index, key_work_index,
+    prev_subcat: Optional[str] = None
+    for idx, cit in enumerate(ordered, 1):
+        subcat = _C5_SUBCATEGORY_BY_RANK.get(cit.rank, "Other")
+        if subcat != prev_subcat:
+            out.write(
+                f"\\pard\\b\\fs26\\sb120\\sa60 {escape_rtf(subcat)}"
+                f"\\b0\\fs24\\par\n"
             )
-            _emit_list_item(out, f"{code}.{idx}", body)
+            prev_subcat = subcat
+        body = render_citation(
+            cit, expansion_done, paper_index, key_work_index,
+        )
+        _emit_list_item(out, f"{code}.{idx}", body)
 
 
 def render_invited_talk(talk: InvitedTalk) -> str:
@@ -948,17 +987,49 @@ def _render_student_data_row(
         under_review=under_review,
         under_review_index=under_review_index,
     )
-    pubs_cell = ", ".join(pubs) if pubs else ""
+    # Wrap each ref in `_code_link` sentinels so the post-write pass
+    # converts them to clickable styled hyperlinks (same treatment as
+    # cross-refs elsewhere in the doc). Sentinels survive `escape_rtf`
+    # unchanged; `_finalize_ref_hyperlinks` substitutes them at write time.
+    pubs_cell = ", ".join(_code_link(r) for r in pubs) if pubs else ""
     role_cell = (
         f"{s.role} (with {s.co_advisor})" if s.co_advisor else s.role
     )
+    # Ongoing-student affiliation default: an empty `position` field on an
+    # in-flight student (grad_year >= a sentinel "current" boundary) means
+    # they're currently advised at Purdue. The "Current Position and
+    # Affiliation" column reads as a data gap if left blank; the Purdue
+    # default conveys the affiliation explicitly without requiring the
+    # author to repeat "Purdue University" on every in-flight row.
+    if not s.position and s.grad_year >= 2025:
+        position_text = "Purdue University (in progress)"
+    else:
+        position_text = s.position
+    # The position cell is a hybrid: position text (manually maintained)
+    # plus an optional clickable "LinkedIn" link the reader can use to
+    # verify freshness. Runtime LinkedIn scraping is NOT supported (their
+    # ToS + 999/login-wall make it unworkable); periodic manual refresh
+    # via the LinkedIn link IS the freshness path.
+    if s.linkedin:
+        linkedin_link = (
+            f'{{\\field{{\\*\\fldinst HYPERLINK "{s.linkedin}"}}'
+            f'{{\\fldrslt {{\\cs1\\cf1\\ul LinkedIn}}}}}}'
+        )
+        # The link is pre-rendered RTF — skip escape_rtf on this cell so
+        # the HYPERLINK markup survives.
+        position_cell_rtf = (
+            f"{escape_rtf(position_text)} ({linkedin_link})"
+            if position_text else linkedin_link
+        )
+    else:
+        position_cell_rtf = escape_rtf(position_text)
     cells = [
         escape_rtf(s.name),
         escape_rtf(s.degree),
         escape_rtf(s.grad_display),
         escape_rtf(role_cell),
         escape_rtf(pubs_cell),
-        escape_rtf(s.position),
+        position_cell_rtf,  # already-escaped + may contain a HYPERLINK field
     ]
     parts = ["\\trowd\\trgaph108\\trleft0"]
     for pos in cellx:
@@ -1066,7 +1137,7 @@ def render_postdocs_section(
             under_review=under_review,
             under_review_index=under_review_index,
         )
-        pubs_cell = ", ".join(pubs) if pubs else ""
+        pubs_cell = ", ".join(_code_link(r) for r in pubs) if pubs else ""
         cells = [
             escape_rtf(p.name),
             escape_rtf(p.last_degree_date),
