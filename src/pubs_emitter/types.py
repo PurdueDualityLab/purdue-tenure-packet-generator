@@ -33,7 +33,14 @@ Section = Literal[
     "Graduate Students",
     "Postdocs and Visiting Scholars",
     "Undergraduate Students",
+    "Undergraduate Research Products",
+    "Undergraduate Student Awards",
+    "Graduate Student Awards",
+    "Courses Taught",
+    "Course Development",
     "Patents",
+    "Entrepreneurial Activities",
+    "Technology Transfer",
     "Software Products",
     "University Service",
     "Profession Service",
@@ -76,6 +83,7 @@ class InvitedTalk(NamedTuple):
     topic: str          # main subject; e.g. "Regular Expression Denial of Service"
     subtitle: str       # optional specific talk title within that topic ("" if none)
     venue: str          # institution / forum + location
+    id: str = ""        # OPTIONAL cross-ref id; @id resolves to "C.6.N" at build time
 
 
 class LeadershipRole(NamedTuple):
@@ -85,6 +93,7 @@ class LeadershipRole(NamedTuple):
     role: str           # "Co-Chair", "Organizer", "Mentor", "Editor", etc.
     description: str    # the event/journal/committee name + venue context
     society: str        # affiliated professional society ("ACM SIGSOFT", "IEEE", "ASEE")
+    id: str = ""        # OPTIONAL cross-ref id; @id resolves to "C.7.N" at build time
 
 
 class MediaAppearance(NamedTuple):
@@ -94,6 +103,7 @@ class MediaAppearance(NamedTuple):
     title: str          # the episode/article/segment title
     venue: str          # podcast/publication/show name
     url: str            # optional link
+    id: str = ""        # OPTIONAL cross-ref id; @id resolves to "C.8.N" at build time
 
 
 class ConferencePresentation(NamedTuple):
@@ -110,6 +120,7 @@ class Student(NamedTuple):
     role: str                # "Chair" | "Co-Chair" | "Committee member"
     position: str            # current job + affiliation (optional)
     co_advisor: str = ""     # set when role == "Co-Chair"; renders "(with NAME)" in Role column
+    id: str = ""             # OPTIONAL cross-ref id; @id resolves to "C.14.N" / "C.16.N"
 
 
 class GrantPerson(NamedTuple):
@@ -169,6 +180,7 @@ class Grant(NamedTuple):
     responsibility: str           # optional free-text role/percent statement
     inspired_by: list[str]        # bib titles that motivated this grant → C.X.Y refs
     publication_outcomes: list[str]  # bib titles funded by this grant → C.X.Y refs
+    id: str = ""                  # OPTIONAL cross-ref id; @id resolves to "C.10.N" / "C.11.N" / "C.12.N" / "C.13.N"
 
 
 class UnderReview(NamedTuple):
@@ -184,12 +196,14 @@ class UnderReview(NamedTuple):
     authors_rtf: str
     venue: str
     pages: str           # e.g., "30 pages"
+    id: str = ""         # OPTIONAL cross-ref id; @id resolves to "A.1.N" at build time
 
 
 class KeyWork(NamedTuple):
     """A paper designated as a key/highlight scholarly publication (C.1 entry)."""
     citation: Citation   # the resolved paper's standard Citation
     impact: str          # 100-word impact statement
+    id: str = ""         # OPTIONAL cross-ref id; @id resolves to "C.1.N" at build time
 
 
 class PostdocVisiting(NamedTuple):
@@ -206,6 +220,137 @@ class PostdocVisiting(NamedTuple):
     prior_affiliation: str          # e.g., "University X"
     position_title_dates: str       # e.g., "Postdoc, 03/01/10 - present"
     current_position: str           # optional
+    id: str = ""                    # OPTIONAL cross-ref id; @id resolves to "C.15.N"
+
+
+class UndergradProduct(NamedTuple):
+    """A C.16.2.3 record: a publication / artifact that includes ≥1 undergrad
+    coauthor. Auto-derived from each bib entry's `author` list at build
+    time — never authored in YAML.
+
+    Renders as: "{product_label} {ref} ({n} undergraduate co-author{s}
+    [undergraduate is lead author])".
+      * `product_label` — short kind hint ("Paper" / "Book chapter")
+      * `ref` — back-pointer like `C.4.7` (from paper_index, source of truth)
+      * `n_coauthors` — count of undergrads in the bib author list
+      * `lead_is_undergrad` — True when the FIRST bib author is an undergrad
+        (triggers the "[undergraduate is lead author]" trailing tag)
+    """
+    year: int               # sort key (cit.year, for newest-first ordering)
+    product_label: str      # "Paper" / "Book chapter"
+    ref: str                # "C.4.7"
+    n_coauthors: int        # ≥1; entries with 0 are filtered out at build time
+    lead_is_undergrad: bool
+
+
+class CourseTaught(NamedTuple):
+    """A C.17 row: one course-section taught at Purdue (or elsewhere).
+
+    Mirrors the Purdue tenure-template 6-column table exactly so the
+    renderer can emit `RtfTable` rows directly. Sort order: year ASC,
+    then `semester_order` ASC (Spring → Summer → Fall) — chrono-ascending
+    matches how the rest of the packet presents teaching activity.
+
+    CIE-score fields are OPTIONAL so a row can be added BEFORE the CIE
+    survey results come back (or for cross-institution course sections
+    where CIE data doesn't apply). Missing values render as "—" rather
+    than "0.00" so they're distinguishable from a zero score.
+
+    `is_new_course` controls the "*" prefix on the title cell per the
+    Purdue convention ("indicate with asterisk if new course introduced").
+    """
+    year: int                # sort key (calendar year of the semester)
+    semester_order: int      # within-year sort: 1=Spring, 2=Summer, 3=Fall
+    semester_str: str        # display: "F20" / "Sp21" / "Su22"
+    title: str               # course title (no asterisk; renderer adds it)
+    is_new_course: bool      # True → "*" prefix on title cell
+    course_number: str       # "ECE 30861/46100" (slash-form allowed)
+    responsibility: str      # free-form: "Instructor designed, prepared, …"
+    responses: Optional[int]      # CIE survey responses (numerator)
+    enrolled: Optional[int]       # # enrolled in class (denominator)
+    cie_average: Optional[float]  # 5.0 scale; avg of 10 CIE reported averages
+    cie_min: Optional[float]      # min among the 10 averages
+    cie_max: Optional[float]      # max among the 10 averages
+    id: str = ""                  # OPTIONAL cross-ref id; @id resolves to "C.17.N" at build time
+
+
+class CourseDevelopment(NamedTuple):
+    """A C.18 entry: one course / curricular contribution. Numbered list shape.
+
+    Schema mirrors `EntrepreneurialActivity` (bold-summary + free-form
+    description) so the same two-field pattern covers any "open-ended
+    fill-in" Purdue section. The C.18 packet heading asks for course,
+    location, date, enrollment, and nature of participation — fold all
+    of that into the summary + description rather than carving out
+    discrete fields.
+    """
+    summary: str       # bold prefix; typically "{course-number}: {course-title}"
+    description: str   # free-form prose
+    id: str = ""       # OPTIONAL cross-ref id; @id resolves to "C.18.N" at build time
+
+
+class EntrepreneurialActivity(NamedTuple):
+    """A C.20 entry: "Summary: natural-language description".
+
+    `summary` renders bold; `description` follows after a colon. Empty
+    `entrepreneurial_activities` list → renderer emits the section heading
+    plus indented "N/A" (same pattern as C.15 postdocs — empty IS a signal,
+    not a skip).
+    """
+    summary: str
+    description: str
+    id: str = ""       # OPTIONAL cross-ref id; @id resolves to "C.20.N" at build time
+
+
+class TechnologyTransfer(NamedTuple):
+    """A C.21 entry: a table row capturing a technology-transfer contribution.
+
+    Mirrors the Purdue tenure-template column shape exactly so the renderer
+    can emit `RtfTable` rows directly. Empty `technology_transfer` list →
+    renderer emits the section heading plus indented "N/A".
+
+    `cited_publications` carries bib-title strings; the renderer resolves
+    each via `paper_index` to a `C.X.Y` ref (same pattern as the grant
+    `publication_outcomes` field). Unresolved titles surface as a build-time
+    error in `validate_non_scholar`.
+    """
+    code_standard: str           # e.g. "AASHTO LRFD Bridge Design Specs"
+    change_subject: str          # e.g. "Ultra-High-Performance Concrete (UHPC)"
+    reason: str                  # "Reason For The Change" cell
+    research_supporting: str     # "Research Supporting The Change" cell
+    cited_publications: list[str]  # bib titles → resolved to "C.X.Y, C.X.Y" at render
+    impact: str                  # "Impact" cell (e.g., "Enable Robotics in ...")
+    id: str = ""                 # OPTIONAL cross-ref id; @id resolves to "C.21.N" at build time
+
+
+class StudentAward(NamedTuple):
+    """A student award/fellowship — students Davis mentored.
+
+    Tenure-packet codes split by recipient level:
+      * `level = "U"` → C.16.2.4 (undergraduate student awards)
+      * `level = "G"` → C.16.3.3 (graduate student awards)
+
+    Level is REQUIRED in YAML (no auto-detection): the award NAME is the
+    strongest signal ("ECE Undergraduate Research Award" vs "ECE Magoon
+    Graduate Student ..."), but enough awards are ambiguous (Astronaut
+    Scholar, CSGrad4US, NDSEG) that auto-classification gets specific cases
+    wrong. Explicit tagging avoids that failure class.
+
+    Tier is the within-section subheading group:
+      * `tier = "National and International Awards"`
+      * `tier = "Institutional Awards"`
+
+    Other tier strings are allowed (will render alphabetically after the two
+    canonical tiers); keep them rare. Within a tier the renderer sorts by
+    year descending (newest first).
+    """
+    year: int            # sort key
+    year_str: str        # display ("2025")
+    level: StudentType   # "U" or "G" — routes to C.16.2.4 vs C.16.3.3
+    tier: str            # subsection grouping label
+    recipient: str       # student name(s); free-form (multi-name, "VIP Team", etc.)
+    award: str           # award title (may contain semicolons for multi-award entries)
+    id: str = ""         # OPTIONAL cross-ref id; @id resolves to "C.16.2.4.N" / "C.16.3.3.N"
 
 
 class SoftwareProduct(NamedTuple):
@@ -219,6 +364,7 @@ class SoftwareProduct(NamedTuple):
     year_str: str        # display (e.g., "2018", "2018-present", "Annual 2015-2019")
     name: str            # tool / project name (may include a parenthetical URL)
     description: str     # free-form prose, typically 1-2 paragraphs
+    id: str = ""         # OPTIONAL cross-ref id; @id resolves to "C.22.N" at build time
 
 
 class ServiceEntry(NamedTuple):
@@ -232,6 +378,7 @@ class ServiceEntry(NamedTuple):
     year: int            # sort key; 9999 when year_str is empty
     year_str: str        # display
     description: str
+    id: str = ""         # OPTIONAL cross-ref id; @id resolves to "C.23.N" / "C.24.N" / "C.25.N" / "C.26.N"
 
 
 class NetworkTask(NamedTuple):

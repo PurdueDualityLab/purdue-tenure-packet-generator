@@ -19,13 +19,18 @@ from pubs_emitter.rtf import (
     render_link_field,
     render_media_appearance,
     render_postdocs_section,
+    render_entrepreneurial_activities_section,
     render_service_section,
+    render_student_awards_section,
     render_students_section,
+    render_technology_transfer_section,
     render_under_review_section,
+    render_undergrad_products_section,
 )
 from pubs_emitter.types import (
     Citation,
     ConferencePresentation,
+    EntrepreneurialActivity,
     Grant,
     GrantPerson,
     InvitedTalk,
@@ -35,6 +40,9 @@ from pubs_emitter.types import (
     PostdocVisiting,
     ServiceEntry,
     Student,
+    StudentAward,
+    TechnologyTransfer,
+    UndergradProduct,
     UnderReview,
 )
 
@@ -153,26 +161,42 @@ class TestRenderCitation:
     def test_non_ranked_section_no_prefix(self) -> None:
         cit = _citation(section="Other publications and products", rank="Preprint")
         out = render_citation(cit, expansion_done=set())
-        assert "Preprint" in out
+        # arXiv preprints are tier-labeled "Technical report" — aligns
+        # with the C.5 subcategory "Technical Reports" that groups them,
+        # and avoids any implication that the paper is on a peer-review
+        # track (which "Preprint" connotes).
+        assert "Technical report" in out
         assert "Venue rank:" not in out
 
     def test_back_ref_resolved(self) -> None:
+        # All C.X.Y cross-refs now emit sentinel-wrapped form via
+        # `_code_link` so `_finalize_ref_hyperlinks` converts them to
+        # clickable links (matching `@id` resolution). The unit test
+        # checks the sentinel form; the integration path is exercised
+        # in TestE2eSectionsFilter.
+        from pubs_emitter.rtf import _code_link
         cit = _citation(back_ref_title="Another Paper")
         out = render_citation(
             cit,
             expansion_done=set(),
             paper_index={"anotherpaper": "C.4.3"},
         )
-        assert "(see C.4.3)" in out
+        assert f"(see {_code_link('C.4.3')})" in out
 
     def test_key_work_cross_link(self) -> None:
+        # When a regular C.2/C.4 paper is ALSO a designated key work,
+        # the cross-link reads "(key paper C.1.X)" — explicitly flags
+        # promotion-relevant papers without making the reader visit C.1.
+        from pubs_emitter.rtf import _code_link
         cit = _citation(title="Highlighted Paper")
         out = render_citation(
             cit,
             expansion_done=set(),
             key_work_index={"highlightedpaper": "C.1.2"},
         )
-        assert "(listed as C.1.2)" in out
+        assert f"(key paper {_code_link('C.1.2')})" in out
+        # Regression guard: the old "(listed as C.1.X)" form is gone.
+        assert "(listed as " not in out
 
 
 class TestRenderInvitedTalk:
@@ -266,9 +290,10 @@ class TestRenderConferencePresentation:
             bib,
             paper_index,
         )
+        from pubs_emitter.rtf import _code_link
         assert "Talk at" in out
         assert "2025" in out
-        assert "Associated with publication C.4.1" in out
+        assert f"Associated with publication {_code_link('C.4.1')}" in out
 
     def test_unresolved_paper_renders_placeholder(self) -> None:
         out = render_conference_presentation(
@@ -415,9 +440,13 @@ class TestGrantHeadShape:
         # Regression guard: no double-space, no orphan "/ " at start.
         assert "  /" not in out
 
-    def test_first_row_carries_bold_index_only(self) -> None:
-        # The "C.X.Y" prefix is intentionally not in the table; the section
-        # heading above the tables already carries the section code.
+    def test_first_row_carries_bold_full_code(self) -> None:
+        # Each grant's Row 1 carries the full `C.X.Y` code (e.g. C.10.1)
+        # in bold, wrapped in a bookmark anchor so `@id` refs to grants
+        # can hyperlink to the same form used elsewhere in the document.
+        # Bold is brace-scoped (`{\b ... .}`) so the trailing space
+        # before the rest of the head renders literally instead of being
+        # eaten as the `\b0` control-word delimiter.
         buf = io.StringIO()
         render_grants_section(
             "Grants PI",
@@ -425,11 +454,12 @@ class TestGrantHeadShape:
             buf,
         )
         out = buf.getvalue()
-        # Each grant numbered "{N}." in bold; not "C.10.{N}."
-        assert "\\b 1.\\b0" in out
-        assert "\\b 2.\\b0" in out
-        assert "\\b 3.\\b0" in out
-        assert "C.10.1.\\tab" not in out
+        # The bookmark anchor for grant N is "C_10_N" (dots → underscores).
+        assert "\\*\\bkmkstart C_10_1" in out
+        assert "\\*\\bkmkstart C_10_2" in out
+        assert "\\*\\bkmkstart C_10_3" in out
+        # Display code is the dotted form, inside the brace-scoped bold.
+        assert "{\\b " in out and "C.10.1" in out
 
     def test_internal_grant_no_funder_prefix(self) -> None:
         # Internal grants typically have a long agency string ("Office of the
@@ -479,12 +509,15 @@ class TestGrantTableStructure:
         buf = io.StringIO()
         render_grants_section("Grants PI", [_grant(amount=123456)], buf)
         out = buf.getvalue()
-        # Right-align directive opens the cell, formatted amount is the
-        # first token inside, and `\ql\cell` closes. Use prefix + presence
-        # checks so the test stays correct after the renderer started
-        # emitting "my share" inline in the same cell.
-        assert "\\qr $123,456" in out
-        assert "; my share: $123,456\\ql\\cell" in out
+        # The amount cell starts with `\pard\intbl\qr` (paragraph reset +
+        # in-table marker + right-align). Row 2 now shows just the total
+        # amount (template-aligned); the "my share" sub-figure is gone.
+        # Each cell opens with its own `\pard` so the next cell starts
+        # with default alignment automatically.
+        assert "\\pard\\intbl\\qr $123,456\\cell" in out
+        # Old three-way breakdown form must not appear anywhere.
+        assert "my share" not in out
+        assert " total; " not in out
 
     def test_borders_on_every_cell(self) -> None:
         buf = io.StringIO()
@@ -578,7 +611,8 @@ class TestGrantPersonnelAffiliations:
             ])],
             buf,
         )
-        assert "Co-PI: Yung-Hsiang Lu (Electrical & Computer Engineering)" in buf.getvalue()
+        # Template-aligned: comma-separated affiliation, no parens.
+        assert "Co-PI: Yung-Hsiang Lu, Electrical & Computer Engineering" in buf.getvalue()
 
     def test_lead_pi_with_department(self) -> None:
         buf = io.StringIO()
@@ -592,7 +626,7 @@ class TestGrantPersonnelAffiliations:
             ])],
             buf,
         )
-        assert "PI: Kirsten Davis (Engineering Education)" in buf.getvalue()
+        assert "PI: Kirsten Davis, Engineering Education" in buf.getvalue()
 
     def test_external_with_dept_and_institution(self) -> None:
         # External collaborator: dept + institution both appear inside parens.
@@ -613,12 +647,14 @@ class TestGrantPersonnelAffiliations:
             buf,
         )
         out = buf.getvalue()
-        assert "PI: Aravind Machiry (Electrical & Computer Engineering)" in out
-        assert "Co-PI: External Person (Civil Engineering, University of Maine)" in out
+        assert "PI: Aravind Machiry, Electrical & Computer Engineering" in out
+        assert "Co-PI: External Person, Civil Engineering, University of Maine" in out
 
-    def test_nsf_award_prefix_for_external_collab_pi(self) -> None:
-        # Multi-inst NSF Collab: external PI's record carries their separate
-        # award number; rendered as "NSF #X: Name (Dept, Institution)".
+    def test_nsf_award_moves_to_parenthetical(self) -> None:
+        # Multi-inst NSF Collab: external PI's separate award number is
+        # rendered as a trailing parenthetical after the full
+        # `Role: Name, Dept, Institution` prefix. Keeps the personnel
+        # rendering uniform with Purdue Co-PIs (template convention).
         buf = io.StringIO()
         render_grants_section(
             "Grants PI",
@@ -632,7 +668,10 @@ class TestGrantPersonnelAffiliations:
             ])],
             buf,
         )
-        assert "NSF #2135157: Dongyoon Lee (Computer Science, SUNY at Stony Brook)" in buf.getvalue()
+        assert (
+            "PI: Dongyoon Lee, Computer Science, "
+            "SUNY at Stony Brook (NSF #2135157)"
+        ) in buf.getvalue()
 
     def test_bare_name_when_no_dept_or_institution(self) -> None:
         # Personnel record with only name → renders without parentheses.
@@ -651,47 +690,51 @@ class TestGrantPersonnelAffiliations:
         assert "Co-PI: Unknown Person," not in out
 
 
-class TestGrantLeadInstitutionAnnotation:
-    """Row 3 role line carries the lead-institution annotation for multi-inst
-    grants. Three shapes:
-      * `lead_institution == ""`                  → "{role}"
-      * `lead_institution == "Purdue University"` → "{role} (Purdue University is lead)"
-      * `lead_institution == "X"` (external)      → "Purdue {role} (X is lead)"
+class TestGrantLeadInstitutionAnnotationElided:
+    """The renderer intentionally OMITS the lead-institution annotation
+    from Row 3 (template-aligned behavior). The C.X section a grant
+    lands in (C.10 PI vs C.11 Co-PI vs whatever) already conveys whether
+    Davis is the lead or follower, so "(Purdue is lead)" / "(Columbia is
+    lead)" reads as redundant noise in the rendered packet.
+
+    The `Grant.lead_institution` YAML field stays in the schema — it's
+    just elided from this specific rendering. Future consumers can read
+    it directly if needed.
     """
 
-    def test_single_inst_no_annotation(self) -> None:
-        buf = io.StringIO()
-        render_grants_section("Grants PI", [_grant(role="PI", lead_institution="")], buf)
-        out = buf.getvalue()
-        assert "is lead" not in out
-
-    def test_purdue_lead_annotation(self) -> None:
+    def test_purdue_lead_not_annotated(self) -> None:
         buf = io.StringIO()
         render_grants_section(
             "Grants PI",
             [_grant(role="PI", lead_institution="Purdue University")],
             buf,
         )
-        assert "PI (Purdue University is lead)" in buf.getvalue()
+        out = buf.getvalue()
+        assert "is lead" not in out
+        assert "Purdue University is lead" not in out
 
-    def test_external_lead_annotation(self) -> None:
+    def test_external_lead_not_annotated(self) -> None:
         buf = io.StringIO()
         render_grants_section(
             "Grants PI",
             [_grant(role="PI", lead_institution="Columbia University")],
             buf,
         )
-        # External lead → Davis becomes "Purdue PI" to disambiguate.
-        assert "Purdue PI (Columbia University is lead)" in buf.getvalue()
+        out = buf.getvalue()
+        assert "is lead" not in out
+        # Davis's role doesn't get prefixed with "Purdue" either.
+        assert "Purdue PI" not in out
 
-    def test_external_lead_with_co_pi_role(self) -> None:
+    def test_external_lead_with_co_pi_role_not_annotated(self) -> None:
         buf = io.StringIO()
         render_grants_section(
             "Grants Co-PI",
             [_grant(role="Co-PI", lead_institution="Loyola University Chicago")],
             buf,
         )
-        assert "Purdue Co-PI (Loyola University Chicago is lead)" in buf.getvalue()
+        out = buf.getvalue()
+        assert "is lead" not in out
+        assert "Purdue Co-PI" not in out
 
 
 class TestGrantNumberNsfHyperlink:
@@ -753,51 +796,79 @@ class TestGrantNumberNsfHyperlink:
         assert "fldinst HYPERLINK" not in out
 
 
-class TestGrantThreeWayAmountFormat:
-    """`_format_grant_amounts` always renders `my_amount` (no conditional
-    collapse) per the CV convention. Single-inst grants get `"$X; my share:
-    $Y"`; multi-inst grants get `"$T total; $P Purdue; $M my share"`."""
+class TestGrantTotalAmountAndResponsibilityPct:
+    """Template-aligned grant rendering:
+
+      * Row 2 shows ONLY the total award amount (single dollar figure).
+      * Row 3's `{role} - {pct}%` derives `pct` from `my_amount /
+        total_amount`. When `pct == 100` (sole PI single-inst), the
+        `- 100%` is suppressed since 100% is the implicit default.
+      * Davis's per-recipient share is conveyed via the Row 3
+        percentage, NOT via a Row 2 sub-figure.
+    """
 
     def _fmt(self, total: int, purdue: int, mine: int) -> str:
         from pubs_emitter.rtf import _format_grant_amounts
         g = _grant(total_amount=total, purdue_amount=purdue, my_amount=mine)
         return _format_grant_amounts(g)
 
-    def test_sole_pi_single_inst_still_shows_my_share(self) -> None:
-        # Even when all three are equal, my_share is rendered (no collapse).
-        assert self._fmt(600000, 600000, 600000) == "$600,000; my share: $600,000"
+    def test_sole_pi_single_inst_single_amount(self) -> None:
+        # Sole PI single-inst: row 2 shows just the total. The redundant
+        # "my share: $X" repetition is gone.
+        assert self._fmt(600000, 600000, 600000) == "$600,000"
 
-    def test_single_inst_multi_pi_split(self) -> None:
-        # total == purdue, mine smaller.
-        assert self._fmt(500000, 500000, 125000) == "$500,000; my share: $125,000"
+    def test_collab_multi_pi_row_2_shows_total(self) -> None:
+        # Even multi-inst NSF Collab with split credit: row 2 shows the
+        # full award total; the credited share moves to Row 3 as a pct.
+        assert self._fmt(2000000, 800000, 200000) == "$2,000,000"
 
-    def test_collab_sole_purdue_pi(self) -> None:
-        # total > purdue, purdue == mine — multi-inst form still includes
-        # the "my share" component.
-        out = self._fmt(1000000, 400000, 400000)
-        assert "$1,000,000 total" in out
-        assert "$400,000 Purdue" in out
-        assert "$400,000 my share" in out
-
-    def test_collab_multi_pi(self) -> None:
-        # All three differ.
-        out = self._fmt(2000000, 800000, 200000)
-        assert "$2,000,000 total" in out
-        assert "$800,000 Purdue" in out
-        assert "$200,000 my share" in out
-
-    def test_amounts_render_in_row_2(self) -> None:
-        # End-to-end: Row 2 of the grant table picks up the new format helper.
+    def test_pct_100_suppressed_when_sole_pi(self) -> None:
+        # Sole PI single-inst → 100% credit → suppress the `- 100%`
+        # because 100% is the implicit default.
         buf = io.StringIO()
         render_grants_section(
             "Grants PI",
-            [_grant(total_amount=1000000, purdue_amount=400000, my_amount=400000)],
+            [_grant(role="PI", total_amount=500000,
+                    purdue_amount=500000, my_amount=500000,
+                    responsibility="Lead project")],
             buf,
         )
         out = buf.getvalue()
-        assert "$1,000,000 total" in out
-        assert "$400,000 Purdue" in out
-        assert "$400,000 my share" in out
+        assert "- 100%" not in out
+        # Role + responsibility still present in Row 3.
+        assert "PI, Lead project" in out
+
+    def test_pct_shown_when_lt_100(self) -> None:
+        # Multi-PI split: render `- {pct}%` on the role line.
+        buf = io.StringIO()
+        render_grants_section(
+            "Grants PI",
+            [_grant(role="PI", total_amount=548000,
+                    purdue_amount=274000, my_amount=274000,
+                    responsibility="Lead Purdue effort")],
+            buf,
+        )
+        out = buf.getvalue()
+        # 274000 / 548000 = 50%
+        assert "PI - 50%, Lead Purdue effort" in out
+
+    def test_amounts_render_in_row_2_end_to_end(self) -> None:
+        buf = io.StringIO()
+        render_grants_section(
+            "Grants PI",
+            [_grant(total_amount=1000000,
+                    purdue_amount=400000, my_amount=400000)],
+            buf,
+        )
+        out = buf.getvalue()
+        # Just the total amount appears.
+        assert "$1,000,000" in out
+        # No three-way breakdown leftovers.
+        assert "Purdue" not in out.split("Row 2")[0] or "total" not in out
+        # Specifically the old "T total; P Purdue; M my share" form is gone.
+        assert " total; " not in out
+        assert " Purdue; " not in out
+        assert " my share" not in out
 
 
 class TestGrantTotalsMath:
@@ -877,7 +948,10 @@ class TestGrantTotalsMath:
         # Note: $500,000 / $300,000 / $100,000 / $60,000 also appear in the
         # individual amount cells of each grant; the regression-sensitive
         # token is the TOTAL line carrying $160,000.
-        assert "external funding as PI:\\b0 $160,000" in out
+        # Bold is brace-scoped (`{\b ...:}`) so the trailing space renders
+        # as literal whitespace instead of being eaten as the `\b0`
+        # control-word delimiter.
+        assert "external funding as PI:} $160,000" in out
 
 
 # ----- Student helpers ----------------------------------------------------
@@ -1071,9 +1145,14 @@ class TestRenderServiceSection:
             buf,
         )
         out = buf.getvalue()
-        assert "C.24.1." in out
-        assert "C.24.2." in out
-        assert "C.24.3." in out
+        # Each entry's code substring lives inside an RTF bookmark wrap
+        # (`{\*\bkmkstart C_24_N}C.24.N{\*\bkmkend ...}`), so the trailing
+        # period that used to be part of the assertion is now separated
+        # from `C.24.N` by the closing-bookmark markup. Match the bare
+        # code instead.
+        assert "C.24.1" in out
+        assert "C.24.2" in out
+        assert "C.24.3" in out
 
 
 class TestRenderUnderReviewSection:
@@ -1096,8 +1175,11 @@ class TestRenderUnderReviewSection:
         render_under_review_section([self._ur()], buf)
         out = buf.getvalue()
         assert "A.1 Products under review" in out
-        # Numbered list cross-ref form: A.1.1.\tab
-        assert "A.1.1.\\tab" in out
+        # Numbered list cross-ref form: A.1.1 (inside a bookmark wrap, then
+        # the literal period + `\tab` follow). Confirm both the code and
+        # the bookmark anchor.
+        assert "A.1.1" in out
+        assert "\\*\\bkmkstart A_1_1" in out
 
     def test_multiple_entries_increment_index(self) -> None:
         buf = io.StringIO()
@@ -1106,7 +1188,7 @@ class TestRenderUnderReviewSection:
             buf,
         )
         out = buf.getvalue()
-        assert "A.1.1." in out and "A.1.2." in out and "A.1.3." in out
+        assert "A.1.1" in out and "A.1.2" in out and "A.1.3" in out
 
     def test_body_shape(self) -> None:
         buf = io.StringIO()
@@ -1137,6 +1219,151 @@ class TestRenderUnderReviewSection:
         buf = io.StringIO()
         render_under_review_section([], buf)
         assert buf.getvalue() == ""
+
+
+class TestRenderStudentAwardsSection:
+    """C.16.2.4 / C.16.3.3 student awards, level-filtered + tier-grouped.
+
+    Invariants pinned here:
+      * Renderer takes a Section key ("Undergraduate Student Awards" or
+        "Graduate Student Awards") and filters the shared `awards` list by
+        each entry's `level` matching the section's expected level (U or G).
+      * Section heading emitted with the correct C.16.2.4 / C.16.3.3 code.
+      * Canonical tier order: National before Institutional regardless of
+        YAML order.
+      * Flat sequential numbering: `{code}.1`, `{code}.2`, … across BOTH
+        tier subheadings (tier doesn't contribute to the number).
+      * Within a tier, entries sort by year DESCENDING (newest first).
+      * Empty filtered list = nothing emitted (no orphan heading).
+    """
+
+    def _award(self, **overrides) -> StudentAward:
+        base = dict(
+            year=2025, year_str="2025",
+            level="U",
+            tier="Institutional Awards",
+            recipient="Test Student",
+            award="Test Award",
+        )
+        base.update(overrides)
+        return StudentAward(**base)
+
+    def test_undergrad_section_emits_c1624_code(self) -> None:
+        buf = io.StringIO()
+        render_student_awards_section(
+            "Undergraduate Student Awards",
+            [self._award(level="U", tier="National and International Awards")],
+            buf,
+        )
+        out = buf.getvalue()
+        assert "C.16.2.4 Undergraduate student awards and fellowships" in out
+        # The old "These are students I mentored." preamble was dropped —
+        # the section heading already conveys the context.
+        assert "These are students I mentored" not in out
+        assert "C.16.2.4.1\\tab" in out
+
+    def test_grad_section_emits_c1633_code(self) -> None:
+        buf = io.StringIO()
+        render_student_awards_section(
+            "Graduate Student Awards",
+            [self._award(level="G", tier="Institutional Awards")],
+            buf,
+        )
+        out = buf.getvalue()
+        assert "C.16.3.3 Graduate student awards and fellowships" in out
+        assert "C.16.3.3.1\\tab" in out
+
+    def test_filters_by_level(self) -> None:
+        """The mixed list goes to BOTH calls; each filters by its own level."""
+        mixed = [
+            self._award(level="U", recipient="UndergradEntry"),
+            self._award(level="G", recipient="GradEntry"),
+        ]
+        ubuf = io.StringIO()
+        render_student_awards_section("Undergraduate Student Awards", mixed, ubuf)
+        gbuf = io.StringIO()
+        render_student_awards_section("Graduate Student Awards", mixed, gbuf)
+        assert "UndergradEntry" in ubuf.getvalue()
+        assert "GradEntry" not in ubuf.getvalue()
+        assert "GradEntry" in gbuf.getvalue()
+        assert "UndergradEntry" not in gbuf.getvalue()
+
+    def test_canonical_tier_order(self) -> None:
+        """Even if Institutional appears first in input, National renders first."""
+        buf = io.StringIO()
+        render_student_awards_section(
+            "Undergraduate Student Awards",
+            [
+                self._award(tier="Institutional Awards", recipient="A"),
+                self._award(tier="National and International Awards", recipient="B"),
+            ],
+            buf,
+        )
+        out = buf.getvalue()
+        # Subheading order: National block precedes Institutional block.
+        # Use `\b0` close-tag to disambiguate the Institutional SUBHEADING
+        # line from the body-text mention earlier.
+        national_pos = out.index("National and International Awards\\b0")
+        institutional_pos = out.index("Institutional Awards\\b0")
+        assert national_pos < institutional_pos
+        # Counter is section-wide: B (in National tier) gets .1, A gets .2.
+        assert "C.16.2.4.1\\tab B" in out
+        assert "C.16.2.4.2\\tab A" in out
+
+    def test_within_tier_year_desc(self) -> None:
+        buf = io.StringIO()
+        render_student_awards_section(
+            "Undergraduate Student Awards",
+            [
+                self._award(year=2021, year_str="2021", recipient="Old"),
+                self._award(year=2026, year_str="2026", recipient="New"),
+                self._award(year=2024, year_str="2024", recipient="Mid"),
+            ],
+            buf,
+        )
+        out = buf.getvalue()
+        new_pos = out.index("New, Test Award")
+        mid_pos = out.index("Mid, Test Award")
+        old_pos = out.index("Old, Test Award")
+        assert new_pos < mid_pos < old_pos
+        # Numbering reflects the sorted order, not the input order.
+        assert "C.16.2.4.1\\tab New" in out
+        assert "C.16.2.4.2\\tab Mid" in out
+        assert "C.16.2.4.3\\tab Old" in out
+
+    def test_year_in_parens(self) -> None:
+        buf = io.StringIO()
+        render_student_awards_section(
+            "Undergraduate Student Awards", [self._award(year_str="2025")], buf,
+        )
+        assert "(2025)" in buf.getvalue()
+
+    def test_empty_list_writes_nothing(self) -> None:
+        buf = io.StringIO()
+        render_student_awards_section("Undergraduate Student Awards", [], buf)
+        assert buf.getvalue() == ""
+
+    def test_filtered_empty_writes_nothing(self) -> None:
+        """If the list is non-empty but no entry matches the section's level,
+        emit nothing (don't leave an orphan heading without entries)."""
+        buf = io.StringIO()
+        render_student_awards_section(
+            "Graduate Student Awards",  # expects level="G"
+            [self._award(level="U")],   # only undergrad
+            buf,
+        )
+        assert buf.getvalue() == ""
+
+    def test_invalid_section_key_raises(self) -> None:
+        """Passing a non-award section to the renderer is a programmer
+        error — fail loud."""
+        buf = io.StringIO()
+        with pytest.raises(ValueError):
+            render_student_awards_section(
+                "Software Products",  # type: ignore[arg-type]
+                [self._award()],
+                buf,
+            )
 
 
 class TestStudentTier:
@@ -1233,11 +1460,14 @@ class TestStudentSectionTierSort:
             bib_entries=[], paper_index={}, out=buf,
         )
         out = buf.getvalue()
-        # Each tier divider uses the grey-background marker (\clcbpat2).
-        assert out.count("\\clcbpat2") == 3
-        # Labels appear in tier order. Em-dash in the labels is RTF-escaped
-        # to 舒? per the cp1252 discipline, so check head + tail substrings
-        # of each label separately rather than the full literal.
+        # Each tier divider emits exactly one `\clmgf` (merge-first cell)
+        # — the divider row is now a 6-column horizontal merge so that
+        # the row's column structure matches the data rows (without this,
+        # TextEdit/Word collapse the divider visually into the next
+        # data row). `\clcbpat2` (grey-fill) appears per-cell of the
+        # merge, so counting `\clcbpat2` gives 6× the divider count;
+        # `\clmgf` is the per-row signal.
+        assert out.count("\\clmgf") == 3
         assert "PhD students" in out and "Committee Chair" in out
         assert "MS Thesis students" in out
         assert "Other supervision and mentoring" in out
@@ -1257,8 +1487,9 @@ class TestStudentSectionTierSort:
             bib_entries=[], paper_index={}, out=buf,
         )
         # Exactly one divider (between header and first row), no
-        # mid-tier dividers.
-        assert buf.getvalue().count("\\clcbpat2") == 1
+        # mid-tier dividers. Count `\clmgf` (the per-row merge-first
+        # marker) — `\clcbpat2` would count once per merged cell.
+        assert buf.getvalue().count("\\clmgf") == 1
 
 
 class TestRenderPostdocsSection:
@@ -1335,13 +1566,219 @@ class TestRenderKeyWorksSection:
             out=buf,
         )
         out = buf.getvalue()
+        from pubs_emitter.rtf import _code_link
         assert "C.1" in out
         assert "Highlighted" in out
         assert "Big impact text." in out
-        # Cross-link to canonical location.
-        assert "(listed as C.4.7)" in out
+        # Cross-link to canonical location (sentinel-wrapped → becomes a
+        # clickable hyperlink in the final write_rtf pass).
+        assert f"(listed as {_code_link('C.4.7')})" in out
 
     def test_empty_list_writes_nothing(self) -> None:
         buf = io.StringIO()
         render_key_works_section([], paper_index={}, out=buf)
         assert buf.getvalue() == ""
+
+
+class TestRenderUndergradProductsSection:
+    """C.16.2.3 numbered list, auto-derived from bib coauthor scan.
+
+    Invariants pinned: pluralization (1 → "co-author", N>1 → "co-authors"),
+    optional "[undergraduate is lead author]" tag, empty list emits nothing
+    (NO "N/A" — that's the C.20/C.21/C.15 pattern, not this one).
+    """
+
+    def _p(self, **overrides) -> UndergradProduct:
+        base = dict(
+            year=2024, product_label="Paper", ref="C.4.7",
+            n_coauthors=2, lead_is_undergrad=False,
+        )
+        base.update(overrides)
+        return UndergradProduct(**base)
+
+    def test_heading_and_basic_line(self) -> None:
+        buf = io.StringIO()
+        render_undergrad_products_section([self._p()], buf)
+        out = buf.getvalue()
+        assert "C.16.2.3 Research products with undergraduate co-authors" in out
+        # Entry code lives inside an RTF bookmark wrap; the period+\tab
+        # follow the closing-bookmark markup.
+        from pubs_emitter.rtf import _code_link
+        assert "C.16.2.3.1" in out
+        # The product's `ref` (`C.4.7`) is emitted as a styled link via
+        # `_code_link` so it survives the post-write finalize as a
+        # clickable hyperlink in the rendered RTF.
+        assert f"Paper {_code_link('C.4.7')} (2 undergraduate co-authors)" in out
+
+    def test_singular_form(self) -> None:
+        buf = io.StringIO()
+        render_undergrad_products_section([self._p(n_coauthors=1)], buf)
+        assert "(1 undergraduate co-author)" in buf.getvalue()
+
+    def test_lead_undergrad_tag(self) -> None:
+        buf = io.StringIO()
+        render_undergrad_products_section(
+            [self._p(n_coauthors=1, lead_is_undergrad=True)], buf,
+        )
+        assert "[undergraduate is lead author]" in buf.getvalue()
+
+    def test_empty_list_writes_nothing(self) -> None:
+        """Unlike C.15/C.20/C.21 (which emit 'N/A'), C.16.2.3 silently skips
+        when there are no undergrad coauthors anywhere — the heading would
+        be misleading without entries to back it up."""
+        buf = io.StringIO()
+        render_undergrad_products_section([], buf)
+        assert buf.getvalue() == ""
+
+
+class TestRenderEntrepreneurialActivitiesSection:
+    """C.20: numbered list with bold-summary + description. Empty list emits
+    heading + 'N/A' (NOT silent skip — section is mandatory pre-promotion)."""
+
+    def test_empty_emits_na(self) -> None:
+        buf = io.StringIO()
+        render_entrepreneurial_activities_section([], buf)
+        out = buf.getvalue()
+        assert "C.20 Major entrepreneurial activities" in out
+        assert "N/A" in out
+
+    def test_populated_renders_summary_and_description(self) -> None:
+        buf = io.StringIO()
+        render_entrepreneurial_activities_section(
+            [EntrepreneurialActivity(
+                summary="NSF I-Corps",
+                description="Customer-discovery program based on RegexBench work.",
+            )],
+            buf,
+        )
+        out = buf.getvalue()
+        # Entry code is wrapped in an RTF bookmark, so the trailing dot
+        # isn't adjacent to "C.20.1" in the output.
+        assert "C.20.1" in out
+        assert "\\b NSF I-Corps\\b0" in out
+        assert "Customer-discovery program based on RegexBench work." in out
+
+
+class TestRenderTechnologyTransferSection:
+    """C.21: 6-column table. Empty list emits heading + 'N/A' (same convention
+    as C.15/C.20). `cited_publications` cell resolves bib titles to C.X.Y
+    refs via paper_index; unresolved titles fall back to escaped raw title."""
+
+    def test_empty_emits_na(self) -> None:
+        buf = io.StringIO()
+        render_technology_transfer_section([], paper_index={}, out=buf)
+        out = buf.getvalue()
+        assert "C.21 Technology transfer" in out
+        assert "N/A" in out
+
+    def test_populated_renders_table_with_resolved_refs(self) -> None:
+        # Use a normalized lookup-key so the paper_index hit reflects the
+        # renderer's actual normalize_title pipeline.
+        from pubs_emitter.venue import normalize_title
+        paper_index = {normalize_title("My Paper Title"): "C.4.7"}
+        buf = io.StringIO()
+        render_technology_transfer_section(
+            [TechnologyTransfer(
+                code_standard="AASHTO X",
+                change_subject="UHPC",
+                reason="Enable 3-D printing",
+                research_supporting="Project X",
+                cited_publications=["My Paper Title"],
+                impact="Bridge construction.",
+            )],
+            paper_index=paper_index,
+            out=buf,
+        )
+        out = buf.getvalue()
+        assert "C.21 Technology transfer" in out
+        # All 6 column headers (each is wrapped in `\b` markup by RtfTable).
+        assert "Code/Standard" in out
+        assert "Change Subject" in out
+        assert "Cited Publications" in out
+        assert "Impact" in out
+        # Resolved ref appears in the Cited-Publications cell.
+        assert "C.4.7" in out
+        # Body cells.
+        assert "AASHTO X" in out
+        assert "UHPC" in out
+        assert "Bridge construction." in out
+
+    def test_unresolved_cited_title_falls_back_to_raw(self) -> None:
+        """If a title doesn't resolve in paper_index, render the raw escaped
+        title in the cell (defensive — validation should prevent this at
+        load-time, but the renderer doesn't crash)."""
+        buf = io.StringIO()
+        render_technology_transfer_section(
+            [TechnologyTransfer(
+                code_standard="X", change_subject="Y", reason="Z",
+                research_supporting="W",
+                cited_publications=["Nonexistent Title"],
+                impact="I",
+            )],
+            paper_index={},
+            out=buf,
+        )
+        assert "Nonexistent Title" in buf.getvalue()
+
+
+class TestRefAnchorAndHyperlinkFinalize:
+    """RTF bookmark wrap + sentinel-to-hyperlink post-pass.
+
+    Invariants pinned:
+      * `_ref_anchor("C.18.1")` returns `{\\*\\bkmkstart C_18_1}C.18.1{\\*\\bkmkend C_18_1}`
+        — bookmark names use `_` in place of `.` (RTF spec restriction).
+      * `_finalize_ref_hyperlinks` converts `\\x01CODE\\x02` sentinels into
+        RTF HYPERLINK fields targeting the corresponding bookmark.
+      * Sentinels with no closing `\\x02` are left untouched (defensive).
+      * Text with no sentinels is returned unchanged.
+    """
+
+    def test_ref_anchor_uses_underscore_in_bookmark_name(self) -> None:
+        from pubs_emitter.rtf import _ref_anchor
+        anchor = _ref_anchor("C.18.1")
+        assert "\\*\\bkmkstart C_18_1" in anchor
+        assert "\\*\\bkmkend C_18_1" in anchor
+        # Display content keeps the original dotted form.
+        assert "}C.18.1{" in anchor
+
+    def test_finalize_converts_sentinel_to_hyperlink(self) -> None:
+        from pubs_emitter.builders import REF_LINK_CLOSE, REF_LINK_OPEN
+        from pubs_emitter.rtf import _finalize_ref_hyperlinks
+        rtf = f"see {REF_LINK_OPEN}C.4.7{REF_LINK_CLOSE} for details"
+        out = _finalize_ref_hyperlinks(rtf)
+        # No raw sentinels survive.
+        assert REF_LINK_OPEN not in out and REF_LINK_CLOSE not in out
+        # Hyperlink field is present.
+        assert "HYPERLINK \\\\l \"C_4_7\"" in out
+        # Display text is the dotted code.
+        assert "C.4.7" in out
+
+    def test_finalize_multiple_sentinels(self) -> None:
+        from pubs_emitter.builders import REF_LINK_CLOSE, REF_LINK_OPEN
+        from pubs_emitter.rtf import _finalize_ref_hyperlinks
+        rtf = (
+            f"see {REF_LINK_OPEN}C.1.1{REF_LINK_CLOSE} and "
+            f"{REF_LINK_OPEN}C.10.3{REF_LINK_CLOSE}"
+        )
+        out = _finalize_ref_hyperlinks(rtf)
+        assert "HYPERLINK \\\\l \"C_1_1\"" in out
+        assert "HYPERLINK \\\\l \"C_10_3\"" in out
+
+    def test_finalize_passes_through_clean_rtf(self) -> None:
+        from pubs_emitter.rtf import _finalize_ref_hyperlinks
+        rtf = "no sentinels here \\par"
+        assert _finalize_ref_hyperlinks(rtf) == rtf
+
+    def test_bookmark_name_matches_hyperlink_target(self) -> None:
+        """The bookmark wrapper and the hyperlink-finalize post-pass must
+        use the same `code.replace('.', '_')` sanitization, otherwise
+        click-to-jump would point at a non-existent bookmark."""
+        from pubs_emitter.builders import REF_LINK_CLOSE, REF_LINK_OPEN
+        from pubs_emitter.rtf import _finalize_ref_hyperlinks, _ref_anchor
+        anchor = _ref_anchor("C.16.2.3")  # multi-dot code
+        link = _finalize_ref_hyperlinks(
+            f"{REF_LINK_OPEN}C.16.2.3{REF_LINK_CLOSE}"
+        )
+        # Both reference the same bookmark name.
+        assert "bkmkstart C_16_2_3" in anchor
+        assert "HYPERLINK \\\\l \"C_16_2_3\"" in link

@@ -16,7 +16,7 @@ from typing import Optional
 
 import yaml
 
-from .authors import format_author, format_inventors
+from .authors import format_author, format_inventors, lookup_student_type
 from .db import LOOKUP_STATS
 from .latex import decode_latex, rtf_escape_unicode
 from .lookup import (
@@ -26,9 +26,11 @@ from .lookup import (
     fetch_patent_date,
 )
 from .types import (
-    BibEntry, Category, Citation, ConferencePresentation, Grant, GrantPerson,
-    InvitedTalk, LeadershipRole, MediaAppearance, Patent, Rank, Section,
-    ServiceEntry, SoftwareProduct, Student, UnderReview,
+    BibEntry, Category, Citation, ConferencePresentation, CourseDevelopment,
+    CourseTaught, EntrepreneurialActivity, Grant, GrantPerson,
+    InvitedTalk, LeadershipRole, MediaAppearance, Patent, Publications, Rank,
+    Section, ServiceEntry, SoftwareProduct, Student, StudentAward,
+    TechnologyTransfer, UndergradProduct, UnderReview,
 )
 from .venue import (
     CVE_ID_RE,
@@ -55,12 +57,34 @@ def escape_rtf(text: str) -> str:
     return rtf_escape_unicode(text)
 
 
+def _format_pages(raw: str) -> str:
+    """Normalize Scholar's bib page strings to a CV-presentable form.
+
+      * `"62--pages"`  → `"62 pages"`  — Scholar's quirky form for
+        article-number journals (paper has a page count but no range)
+      * `"1--12"`     → `"1–2"` (en-dash) — LaTeX range syntax to
+        the typographic en-dash that Word/TextEdit render correctly;
+        bare `--` passes through unchanged otherwise (and shows as two
+        hyphens, which looks wrong on a CV)
+      * Empty / non-range values pass through unchanged.
+    """
+    if not raw:
+        return ""
+    # Scholar oddity: "{N}--pages" → "{N} pages"
+    if raw.endswith("--pages"):
+        return raw[:-len("--pages")] + " pages"
+    # LaTeX `--` page-range → typographic en-dash (U+2013)
+    if "--" in raw:
+        return raw.replace("--", "–")
+    return raw
+
+
 def format_details(entry: BibEntry) -> str:
     """', vol(issue), pages' suffix."""
     vol_issue = entry.get("volume", "")
     if "number" in entry:
         vol_issue += f"({entry['number']})"
-    pages = entry.get("pages", "")
+    pages = _format_pages(entry.get("pages", ""))
     parts = [p for p in (vol_issue, pages) if p]
     return ", " + ", ".join(parts) if parts else ""
 
@@ -171,6 +195,126 @@ def build_citation(conn: sqlite3.Connection, entry: BibEntry) -> Citation:
 # ----- Patent builder -----------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# @id cross-reference resolution
+# ---------------------------------------------------------------------------
+#
+# YAML entries may carry an optional `id` field (string, [a-zA-Z][a-zA-Z0-9_-]*).
+# Free-form text fields in any other entry can write `@id` to embed a
+# back-pointer; the build phase computes each entry's final `C.X.Y` code,
+# then substitutes every `@id` in registered prose fields with that code.
+#
+# Escape: `@@` → literal `@` (rare, mostly relevant for emails in prose).
+#
+# Email-safe: the regex requires `@` to NOT be preceded by a word char, so
+# `email@example.com` is left untouched.
+
+_REF_PATTERN = re.compile(r"(?<![\w])@([a-zA-Z][a-zA-Z0-9_-]*)")
+_REF_ESCAPE_SENTINEL = "\x00__AT_AT_ESCAPE__\x00"
+
+# When `link_format=True`, resolved refs emit `\x01CODE\x02` sentinels
+# instead of plain CODE. The sentinels survive `escape_rtf` unchanged
+# (both are <0x80 and not in the escape set) and are converted to RTF
+# hyperlink markup by `rtf._finalize_ref_hyperlinks` after write.
+REF_LINK_OPEN = "\x01"
+REF_LINK_CLOSE = "\x02"
+
+# Per NamedTuple type-name → tuple of prose-field-names that should be
+# scanned for @id refs. New free-form fields default to NOT resolving; add
+# them here when you want the substitution to fire.
+PROSE_FIELDS_BY_TYPE: dict[str, tuple[str, ...]] = {
+    "Grant": ("title", "activities", "responsibility"),
+    "InvitedTalk": ("topic", "subtitle", "venue"),
+    "LeadershipRole": ("description", "society"),
+    "MediaAppearance": ("title", "venue"),
+    "KeyWork": ("impact",),
+    "StudentAward": ("recipient", "award"),
+    "SoftwareProduct": ("name", "description"),
+    "EntrepreneurialActivity": ("summary", "description"),
+    "TechnologyTransfer": (
+        "code_standard", "change_subject", "reason",
+        "research_supporting", "impact",
+    ),
+    "CourseDevelopment": ("summary", "description"),
+    "CourseTaught": ("title", "responsibility"),
+    "UnderReview": ("title", "venue"),
+    "ServiceEntry": ("description",),
+    "PostdocVisiting": ("position_title_dates", "current_position"),
+    "Student": ("position",),
+}
+
+
+def resolve_refs(
+    text: str, ref_index: dict[str, str], *, link_format: bool = False,
+) -> tuple[str, list[str]]:
+    """Substitute `@id` tokens in `text` with the resolved C.X.Y code.
+
+    Returns `(substituted_text, unresolved_ids)`. Caller checks for non-empty
+    unresolved list and decides whether to error.
+
+    `@@` → literal `@`. Word-char lookbehind keeps emails (`x@y.com`) safe.
+
+    `link_format=True` wraps each substituted code with the sentinel pair
+    `\\x01CODE\\x02` so the downstream RTF writer can convert it into a
+    clickable hyperlink. Sentinels are <0x80 and survive `escape_rtf` and
+    `rtf_escape_unicode` unchanged. Default `False` keeps the bare-text
+    substitution useful for testing and any non-RTF consumer.
+    """
+    if not text or "@" not in text:
+        return text, []
+    # Protect literal `@@` sequences.
+    protected = text.replace("@@", _REF_ESCAPE_SENTINEL)
+    unresolved: list[str] = []
+
+    def _sub(match: "re.Match[str]") -> str:
+        ref_id = match.group(1)
+        if ref_id in ref_index:
+            code = ref_index[ref_id]
+            if link_format:
+                return f"{REF_LINK_OPEN}{code}{REF_LINK_CLOSE}"
+            return code
+        unresolved.append(ref_id)
+        return match.group(0)  # leave as-is so it's visible in error report
+
+    substituted = _REF_PATTERN.sub(_sub, protected)
+    # Restore literal `@`.
+    substituted = substituted.replace(_REF_ESCAPE_SENTINEL, "@")
+    return substituted, unresolved
+
+
+def resolve_refs_in_list(
+    items: list, type_name: str, ref_index: dict[str, str],
+    *, link_format: bool = False,
+) -> tuple[list, list[tuple[int, str]]]:
+    """Apply `resolve_refs` to each item's prose fields per
+    `PROSE_FIELDS_BY_TYPE[type_name]`. Returns `(new_items, errors)` where
+    `errors` is `[(item_index, unresolved_id), ...]`.
+
+    NamedTuple `_replace()` is used so the originals aren't mutated and
+    the substitution is purely a transformation step.
+    """
+    fields = PROSE_FIELDS_BY_TYPE.get(type_name, ())
+    if not fields:
+        return items, []
+    new_items = []
+    errors: list[tuple[int, str]] = []
+    for i, item in enumerate(items):
+        updates: dict[str, str] = {}
+        for f in fields:
+            current = getattr(item, f, None)
+            if not isinstance(current, str):
+                continue
+            new_text, unresolved = resolve_refs(
+                current, ref_index, link_format=link_format,
+            )
+            for u in unresolved:
+                errors.append((i, u))
+            if new_text != current:
+                updates[f] = new_text
+        new_items.append(item._replace(**updates) if updates else item)
+    return new_items, errors
+
+
 def build_invited_talk(talk: dict) -> InvitedTalk:
     """Build an InvitedTalk record from a YAML dict. No bib lookup needed."""
     year_str = str(talk.get("year", ""))
@@ -180,6 +324,7 @@ def build_invited_talk(talk: dict) -> InvitedTalk:
         topic=decode_latex(talk.get("topic", "")).replace("\n", " "),
         subtitle=decode_latex(talk.get("subtitle", "")).replace("\n", " "),
         venue=decode_latex(talk.get("venue", "")).replace("\n", " "),
+        id=str(talk.get("id", "") or ""),
     )
 
 
@@ -224,6 +369,7 @@ def build_grant(entry: dict) -> Grant:
         responsibility=decode_latex(entry.get("responsibility", "") or "").replace("\n", " "),
         inspired_by=list(entry.get("inspired_by") or []),
         publication_outcomes=list(entry.get("publication_outcomes") or []),
+        id=str(entry.get("id", "") or ""),
     )
 
 
@@ -238,6 +384,7 @@ def build_student(entry: dict) -> Student:
         role=entry.get("role", "") or "",
         position=decode_latex(entry.get("position", "") or "").replace("\n", " "),
         co_advisor=decode_latex(entry.get("co_advisor", "") or "").replace("\n", " "),
+        id=str(entry.get("id", "") or ""),
     )
 
 
@@ -286,6 +433,209 @@ def build_under_review(conn: sqlite3.Connection, entry: dict) -> UnderReview:
         authors_rtf=", ".join(formatted),
         venue=decode_latex(entry.get("venue", "")).replace("\n", " "),
         pages=str(entry.get("pages", "") or ""),
+        id=str(entry.get("id", "") or ""),
+    )
+
+
+_UNDERGRAD_PRODUCT_LABELS: dict[Section, str] = {
+    "Journals": "Paper",
+    "Books and Chapters": "Book chapter",
+    "Conferences and Workshops": "Paper",
+    "Other publications and products": "Paper",
+}
+
+
+def build_undergrad_products(
+    conn: sqlite3.Connection,
+    publications: Publications,
+    paper_index: dict[str, str],
+    bib_entries: list[BibEntry],
+) -> list[UndergradProduct]:
+    """Auto-derive C.16.2.3 records by scanning every emitted citation's bib
+    author list for undergrad coauthors.
+
+    A bib entry contributes a record iff (a) at least one author resolves to
+    student-type `"U"` via `lookup_student_type` AND (b) the citation is
+    present in `paper_index` (i.e. it was actually rendered — held-internal
+    theses are excluded). Lead-is-undergrad is True iff the FIRST bib author
+    is an undergrad.
+
+    Order: year DESCENDING, then by `ref` ASC for deterministic tie-break.
+    """
+    title_to_bib: dict[str, BibEntry] = {
+        normalize_title(e.get("title", "") or ""): e
+        for e in bib_entries
+        if e.get("title")
+    }
+    products: list[UndergradProduct] = []
+    for section, label in _UNDERGRAD_PRODUCT_LABELS.items():
+        for cit in publications.get(section, []):
+            key = normalize_title(cit.title)
+            bib = title_to_bib.get(key)
+            if not bib:
+                continue
+            raw_authors = bib.get("author", "") or ""
+            author_list = [a.strip() for a in raw_authors.split(" and ") if a.strip()]
+            n_under = 0
+            lead_is_under = False
+            for i, raw in enumerate(author_list):
+                if lookup_student_type(conn, raw) == "U":
+                    n_under += 1
+                    if i == 0:
+                        lead_is_under = True
+            if n_under == 0:
+                continue
+            ref = paper_index.get(key)
+            if not ref:
+                continue
+            products.append(UndergradProduct(
+                year=cit.year,
+                product_label=label,
+                ref=ref,
+                n_coauthors=n_under,
+                lead_is_undergrad=lead_is_under,
+            ))
+    products.sort(key=lambda p: (-p.year, p.ref))
+    return products
+
+
+_SEMESTER_ORDER_MAP: dict[str, int] = {
+    "Sp": 1, "Spring": 1,
+    "Su": 2, "Summer": 2,
+    "F": 3, "Fall": 3,
+}
+
+
+def _infer_semester_order(semester_str: str) -> int:
+    """Best-effort: "F20" → 3, "Sp21" → 1, "Su22" → 2. Returns 0 on miss
+    (caller is expected to provide explicit `semester_order` in that case).
+    """
+    for prefix, order in _SEMESTER_ORDER_MAP.items():
+        if semester_str.startswith(prefix):
+            return order
+    return 0
+
+
+def _maybe_int(v: object) -> Optional[int]:
+    if v in (None, "", "—", "-"):
+        return None
+    return int(v)  # type: ignore[arg-type]
+
+
+def _maybe_float(v: object) -> Optional[float]:
+    if v in (None, "", "—", "-"):
+        return None
+    return float(v)  # type: ignore[arg-type]
+
+
+def build_course_taught(entry: dict) -> CourseTaught:
+    """Build a C.17 row from a YAML dict.
+
+    `year` + `semester_str` + `title` + `course_number` + `responsibility`
+    are required; `is_new_course` defaults to False; CIE fields are all
+    optional (missing → rendered as "—").
+
+    `semester_order` is inferred from the `semester_str` prefix
+    ("Sp"/"Su"/"F") when not given; provide it explicitly only if the
+    string doesn't follow that convention.
+    """
+    semester_str = str(entry.get("semester_str", "") or "")
+    semester_order = int(
+        entry.get("semester_order")
+        or _infer_semester_order(semester_str)
+        or 0
+    )
+    return CourseTaught(
+        year=int(entry.get("year", 0) or 0),
+        semester_order=semester_order,
+        semester_str=semester_str,
+        title=decode_latex(entry.get("title", "")).replace("\n", " "),
+        is_new_course=bool(entry.get("is_new_course", False)),
+        course_number=decode_latex(entry.get("course_number", "") or "").replace("\n", " "),
+        responsibility=decode_latex(entry.get("responsibility", "") or "").replace("\n", " "),
+        responses=_maybe_int(entry.get("responses")),
+        enrolled=_maybe_int(entry.get("enrolled")),
+        cie_average=_maybe_float(entry.get("cie_average")),
+        cie_min=_maybe_float(entry.get("cie_min")),
+        cie_max=_maybe_float(entry.get("cie_max")),
+        id=str(entry.get("id", "") or ""),
+    )
+
+
+def build_course_development(entry: dict) -> CourseDevelopment:
+    """Build a C.18 entry from a YAML dict.
+
+    Both fields free-form prose. Same shape as `build_entrepreneurial_activity`
+    (summary + description); kept as a separate function for type clarity
+    and so future divergence (e.g., a `date` field on courses) doesn't have
+    to ripple through both call sites.
+    """
+    return CourseDevelopment(
+        summary=decode_latex(entry.get("summary", "")).replace("\n", " "),
+        description=decode_latex(entry.get("description", "")).replace("\n", " "),
+        id=str(entry.get("id", "") or ""),
+    )
+
+
+def build_entrepreneurial_activity(entry: dict) -> EntrepreneurialActivity:
+    """Build a C.20 entry from a YAML dict.
+
+    Both fields are free-form prose. Empty list is the canonical pre-promotion
+    state (renderer emits "N/A" under the heading).
+    """
+    return EntrepreneurialActivity(
+        summary=decode_latex(entry.get("summary", "")).replace("\n", " "),
+        description=decode_latex(entry.get("description", "")).replace("\n", " "),
+        id=str(entry.get("id", "") or ""),
+    )
+
+
+def build_technology_transfer(entry: dict) -> TechnologyTransfer:
+    """Build a C.21 entry from a YAML dict.
+
+    `cited_publications` is a list of bib titles; the renderer resolves each
+    to a `C.X.Y` ref via `paper_index`. Validation in `validate_non_scholar`
+    enforces that every cited title resolves.
+    """
+    cited_raw = entry.get("cited_publications") or []
+    cited = [str(c) for c in cited_raw]
+    return TechnologyTransfer(
+        code_standard=decode_latex(entry.get("code_standard", "")).replace("\n", " "),
+        change_subject=decode_latex(entry.get("change_subject", "")).replace("\n", " "),
+        reason=decode_latex(entry.get("reason", "")).replace("\n", " "),
+        research_supporting=decode_latex(entry.get("research_supporting", "")).replace("\n", " "),
+        cited_publications=cited,
+        impact=decode_latex(entry.get("impact", "")).replace("\n", " "),
+        id=str(entry.get("id", "") or ""),
+    )
+
+
+def build_student_award(entry: dict) -> StudentAward:
+    """Build a StudentAward from a YAML dict (C.16.2.4 / C.16.3.3)."""
+    year_raw = entry.get("year", "")
+    year_str = str(entry.get("year_str", "") or year_raw or "")
+    level = str(entry.get("level", "") or "").strip().upper()
+    return StudentAward(
+        year=parse_year(year_str) if year_str else 9999,
+        year_str=year_str,
+        level=level,  # validated by validate_non_scholar to be "U" or "G"
+        tier=str(entry.get("tier", "") or ""),
+        recipient=decode_latex(entry.get("recipient", "")).replace("\n", " "),
+        award=decode_latex(entry.get("award", "")).replace("\n", " "),
+        id=str(entry.get("id", "") or ""),
+    )
+
+
+def build_software_product(entry: dict) -> SoftwareProduct:
+    """Build a SoftwareProduct from a YAML dict (C.22)."""
+    year_raw = entry.get("year", "")
+    year_str = str(entry.get("year_str", "") or year_raw or "")
+    return SoftwareProduct(
+        year=parse_year(year_str) if year_str else 9999,
+        year_str=year_str,
+        name=decode_latex(entry.get("name", "")).replace("\n", " "),
+        description=decode_latex(entry.get("description", "") or "").replace("\n", " "),
+        id=str(entry.get("id", "") or ""),
     )
 
 
@@ -302,6 +652,7 @@ def build_service_entry(entry: dict) -> ServiceEntry:
         year=parse_year(year_str) if year_str else 9999,
         year_str=year_str,
         description=decode_latex(entry.get("description", "")).replace("\n", " "),
+        id=str(entry.get("id", "") or ""),
     )
 
 
@@ -321,6 +672,7 @@ def build_media_appearance(entry: dict) -> MediaAppearance:
         title=decode_latex(entry.get("title", "")).replace("\n", " "),
         venue=decode_latex(entry.get("venue", "")).replace("\n", " "),
         url=entry.get("url", "") or "",
+        id=str(entry.get("id", "") or ""),
     )
 
 
@@ -333,6 +685,7 @@ def build_leadership_role(role: dict) -> LeadershipRole:
         role=decode_latex(role.get("role", "")).replace("\n", " "),
         description=decode_latex(role.get("description", "")).replace("\n", " "),
         society=decode_latex(role.get("society", "")).replace("\n", " "),
+        id=str(role.get("id", "") or ""),
     )
 
 
@@ -578,6 +931,105 @@ def validate_non_scholar(non_scholar: dict, bib_entries: list[BibEntry]) -> None
                 continue
             if not entry.get("description"):
                 errors.append(f"{key}[{i}] missing required field `description`")
+
+    for i, sp in enumerate(non_scholar.get("software_products") or []):
+        if not isinstance(sp, dict):
+            errors.append(
+                f"`software_products[{i}]` must be a mapping; got {type(sp).__name__}"
+            )
+            continue
+        for required in ("name", "description"):
+            if not sp.get(required):
+                errors.append(
+                    f"software_products[{i}] missing required field `{required}`"
+                )
+
+    for i, ct in enumerate(non_scholar.get("courses_taught") or []):
+        if not isinstance(ct, dict):
+            errors.append(
+                f"`courses_taught[{i}]` must be a mapping; "
+                f"got {type(ct).__name__}"
+            )
+            continue
+        for required in (
+            "year", "semester_str", "title", "course_number", "responsibility",
+        ):
+            if ct.get(required) in (None, ""):
+                errors.append(
+                    f"courses_taught[{i}] missing required field `{required}`"
+                )
+
+    for i, cd in enumerate(non_scholar.get("course_development") or []):
+        if not isinstance(cd, dict):
+            errors.append(
+                f"`course_development[{i}]` must be a mapping; "
+                f"got {type(cd).__name__}"
+            )
+            continue
+        for required in ("summary", "description"):
+            if not cd.get(required):
+                errors.append(
+                    f"course_development[{i}] missing required field "
+                    f"`{required}`"
+                )
+
+    for i, ea in enumerate(non_scholar.get("entrepreneurial_activities") or []):
+        if not isinstance(ea, dict):
+            errors.append(
+                f"`entrepreneurial_activities[{i}]` must be a mapping; "
+                f"got {type(ea).__name__}"
+            )
+            continue
+        for required in ("summary", "description"):
+            if not ea.get(required):
+                errors.append(
+                    f"entrepreneurial_activities[{i}] missing required field "
+                    f"`{required}`"
+                )
+
+    for i, tt in enumerate(non_scholar.get("technology_transfer") or []):
+        if not isinstance(tt, dict):
+            errors.append(
+                f"`technology_transfer[{i}]` must be a mapping; "
+                f"got {type(tt).__name__}"
+            )
+            continue
+        for required in (
+            "code_standard", "change_subject", "reason",
+            "research_supporting", "impact",
+        ):
+            if not tt.get(required):
+                errors.append(
+                    f"technology_transfer[{i}] missing required field "
+                    f"`{required}`"
+                )
+        # cited_publications is OPTIONAL but if present each title must
+        # resolve against the bib (same pattern as grant inspired_by).
+        for cited in (tt.get("cited_publications") or []):
+            if normalize_title(str(cited)) not in bib_titles:
+                errors.append(
+                    f"technology_transfer[{i}] references cited_publications "
+                    f"{cited!r}, which doesn't match any bib title"
+                )
+
+    for i, sa in enumerate(non_scholar.get("student_awards") or []):
+        if not isinstance(sa, dict):
+            errors.append(
+                f"`student_awards[{i}]` must be a mapping; got {type(sa).__name__}"
+            )
+            continue
+        for required in ("level", "tier", "recipient", "award", "year"):
+            if not sa.get(required):
+                errors.append(
+                    f"student_awards[{i}] missing required field `{required}`"
+                )
+        # `level` must be exactly "U" or "G" — routes to C.16.2.4 vs C.16.3.3.
+        level = str(sa.get("level", "") or "").strip().upper()
+        if level and level not in ("U", "G"):
+            errors.append(
+                f"student_awards[{i}] has invalid `level={sa.get('level')!r}`; "
+                f"must be 'U' (undergrad, C.16.2.4) or 'G' (grad, C.16.3.3)"
+            )
 
     for i, pres in enumerate(non_scholar.get("conference_presentations") or []):
         if not isinstance(pres, dict):

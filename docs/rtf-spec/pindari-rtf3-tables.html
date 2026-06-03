@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RTF – Working with Tables (part 3)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,600;1,400&family=Lora:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #faf8f3;
+    --surface: #f0ede5;
+    --border: #d6d0c4;
+    --text: #1e1c18;
+    --muted: #6b6659;
+    --accent: #8b3a1a;
+    --accent-light: #f5e8e2;
+    --code-bg: #1e1c18;
+    --code-text: #e8e4d8;
+    --code-keyword: #e8a87c;
+    --code-comment: #7a7465;
+    --link: #8b3a1a;
+  }
+
+  body {
+    font-family: 'Lora', Georgia, serif;
+    font-size: 17px;
+    line-height: 1.75;
+    color: var(--text);
+    background: var(--bg);
+  }
+
+  .site-header {
+    border-bottom: 1px solid var(--border);
+    padding: 1rem 0;
+    background: var(--bg);
+  }
+
+  .site-header .inner {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 0 2rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .site-header .breadcrumb {
+    font-size: 13px;
+    color: var(--muted);
+    font-family: 'IBM Plex Mono', monospace;
+    letter-spacing: 0.04em;
+  }
+
+  .site-header .breadcrumb a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+
+  .site-header .breadcrumb a:hover { text-decoration: underline; }
+
+  .site-header .badge {
+    font-size: 11px;
+    font-family: 'IBM Plex Mono', monospace;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    padding: 3px 10px;
+    border-radius: 2px;
+  }
+
+  main {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 3rem 2rem 5rem;
+  }
+
+  .page-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 1rem;
+  }
+
+  h1 {
+    font-family: 'Lora', Georgia, serif;
+    font-size: 2.2rem;
+    font-weight: 600;
+    line-height: 1.2;
+    color: var(--text);
+    margin-bottom: 0.4rem;
+  }
+
+  .subtitle {
+    font-size: 1rem;
+    color: var(--muted);
+    margin-bottom: 2.5rem;
+    font-style: italic;
+  }
+
+  .divider {
+    height: 1px;
+    background: var(--border);
+    margin: 2.5rem 0;
+  }
+
+  h2 {
+    font-family: 'Lora', Georgia, serif;
+    font-size: 1.25rem;
+    font-weight: 600;
+    margin-top: 2.5rem;
+    margin-bottom: 0.75rem;
+    color: var(--text);
+  }
+
+  p { margin-bottom: 1.1rem; }
+
+  a { color: var(--link); }
+  a:hover { text-decoration: none; }
+
+  code {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.85em;
+    background: var(--accent-light);
+    color: var(--accent);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  .code-block {
+    background: var(--code-bg);
+    color: var(--code-text);
+    border-radius: 6px;
+    padding: 1.5rem 1.75rem;
+    margin: 1.5rem 0 1.75rem;
+    overflow-x: auto;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.82rem;
+    line-height: 1.65;
+    position: relative;
+  }
+
+  .code-block .tag-label {
+    position: absolute;
+    top: 10px;
+    right: 14px;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--code-comment);
+  }
+
+  .code-block .kw { color: var(--code-keyword); }
+  .code-block .cm { color: var(--code-comment); font-style: italic; }
+
+  .callout {
+    background: var(--accent-light);
+    border-left: 3px solid var(--accent);
+    padding: 0.9rem 1.25rem;
+    border-radius: 0 4px 4px 0;
+    margin: 1.25rem 0;
+    font-size: 0.94rem;
+    color: var(--muted);
+  }
+
+  .callout strong { color: var(--text); font-weight: 600; }
+
+  /* Demo tables */
+  .demo-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1.25rem 1.5rem;
+    margin: 1rem 0 1.75rem;
+    overflow-x: auto;
+  }
+
+  .demo-wrap p.demo-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.75rem;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 0.75rem;
+  }
+
+  .demo-table {
+    border-collapse: collapse;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.85rem;
+    width: 100%;
+  }
+
+  .demo-table td {
+    padding: 0.4rem 0.6rem;
+    vertical-align: top;
+  }
+
+  /* Border style classes for demo */
+  .b-single   { border: 1px solid var(--text); }
+  .b-dotted   { border: 2px dotted var(--text); }
+  .b-double   { border: 3px double var(--text); }
+  .b-dashed   { border: 2px dashed var(--text); }
+  .b-wavy     { outline: 2px solid transparent; box-shadow: 0 0 0 2px var(--text); border-radius: 2px; }
+
+  /* Border reference table */
+  .border-ref {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+    margin: 1rem 0 1.5rem;
+  }
+
+  .border-ref th {
+    text-align: left;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.78rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    padding: 0.4rem 0.75rem 0.4rem 0;
+  }
+
+  .border-ref td {
+    padding: 0.55rem 0.75rem 0.55rem 0;
+    border-bottom: 1px dashed var(--border);
+    vertical-align: middle;
+  }
+
+  .border-ref td:first-child {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.82rem;
+    color: var(--accent);
+    white-space: nowrap;
+    width: 11rem;
+  }
+
+  .border-ref td:last-child {
+    width: 7rem;
+    text-align: center;
+  }
+
+  /* Inline border preview boxes */
+  .bprev {
+    display: inline-block;
+    padding: 3px 16px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.78rem;
+    color: var(--muted);
+  }
+
+  .bp-single      { border: 1px solid var(--text); }
+  .bp-dotted      { border: 2px dotted var(--text); }
+  .bp-double      { border: 3px double var(--text); }
+  .bp-dashed      { border: 2px dashed var(--text); }
+  .bp-dashed-sm   { border: 1px dashed var(--text); }
+  .bp-dot-dash    { border: 2px dashed var(--text); outline: 1px dotted var(--text); outline-offset: -3px; }
+  .bp-triple      { border: 5px double var(--text); outline: 1px solid var(--text); outline-offset: 3px; }
+  .bp-thick-thin  { border-top: 3px solid var(--text); border-left: 3px solid var(--text); border-bottom: 1px solid var(--text); border-right: 1px solid var(--text); }
+  .bp-thin-thick  { border-top: 1px solid var(--text); border-left: 1px solid var(--text); border-bottom: 3px solid var(--text); border-right: 3px solid var(--text); }
+  .bp-wavy        { border: 2px solid var(--text); border-radius: 3px; }
+  .bp-striped     { border: 2px solid var(--text); background: repeating-linear-gradient(45deg, transparent, transparent 2px, rgba(0,0,0,0.08) 2px, rgba(0,0,0,0.08) 4px); }
+  .bp-emboss      { border: 2px solid #aaa; border-top-color: #fff; border-left-color: #fff; }
+  .bp-engrave     { border: 2px solid #aaa; border-bottom-color: #fff; border-right-color: #fff; }
+
+  /* Resources */
+  .resources {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    margin-top: 1rem;
+  }
+
+  .resource-link {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.75rem 1rem;
+    text-decoration: none;
+    color: var(--text);
+    font-size: 0.95rem;
+    transition: border-color 0.15s;
+  }
+
+  .resource-link:hover { border-color: var(--accent); color: var(--accent); }
+  .resource-link svg { flex-shrink: 0; color: var(--muted); }
+
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 1.5rem 2rem;
+    max-width: 760px;
+    margin: 0 auto;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+
+  footer a { color: var(--accent); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+
+  @media (max-width: 600px) {
+    h1 { font-size: 1.7rem; }
+    .border-ref td:first-child { width: auto; }
+    footer { flex-direction: column; gap: 0.5rem; text-align: center; }
+  }
+</style>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="inner">
+    <span class="breadcrumb">
+      <a href="https://www.pindari.com/">pindari.com</a> /
+      <a href="https://www.pindari.com/rtf1.html">rtf tutorial</a> /
+      part 3
+    </span>
+    <span class="badge">Application Interchange Formats</span>
+  </div>
+</header>
+
+<main>
+  <p class="page-label">Simple tutorial for programmers — part 3</p>
+  <h1>RTF – Working with Tables</h1>
+  <p class="subtitle">Defining rows and cells, adding borders, controlling padding, and border style reference</p>
+
+  <div class="divider"></div>
+
+  <p>
+    This page builds on the <a href="https://www.pindari.com/rtf1.html">first example</a>. The original use case was a database report with three columns: a question column, a current-period comments column, and a last-period comments column, with rows for each question.
+  </p>
+
+  <div class="callout">
+    <strong>Twips reminder:</strong> RTF measures space in twips — 1/20th of a point, with 72 points per inch. That means <strong>1440 twips = 1 inch</strong>. So <code>\cellx2880</code> places a cell boundary at exactly 2 inches from the left margin.
+  </div>
+
+  <h2>Basic table structure</h2>
+  <p>
+    Each row starts with <code>\trowd</code> and ends with <code>\row</code>. Within a row, cell boundaries are declared with <code>\cellx<em>N</em></code> (the right edge of each cell in twips), and cell content ends with <code>\intbl\cell</code>. The example below creates one row with three cells, ending at 1000, 2000, and 3000 twips:
+  </p>
+
+  <div class="code-block">
+    <span class="tag-label">RTF</span>
+<span class="kw">{\rtf1\ansi\deff0</span>
+<span class="kw">\trowd</span>
+<span class="kw">\cellx1000</span>
+<span class="kw">\cellx2000</span>
+<span class="kw">\cellx3000</span>
+cell 1<span class="kw">\intbl\cell</span>
+cell 2<span class="kw">\intbl\cell</span>
+cell 3<span class="kw">\intbl\cell</span>
+<span class="kw">\row</span>
+<span class="kw">}</span>
+  </div>
+
+  <div class="demo-wrap">
+    <p class="demo-label">Rendered output</p>
+    <table class="demo-table">
+      <tr>
+        <td style="width:33%;">cell 1</td>
+        <td style="width:33%;">cell 2</td>
+        <td style="width:34%;">cell 3</td>
+      </tr>
+    </table>
+  </div>
+
+  <h2>Auto-expanding row height</h2>
+  <p>
+    Unlike tabs, table rows automatically grow to fit their content. If one cell contains a long string, the entire row height expands to accommodate it:
+  </p>
+
+  <div class="code-block">
+    <span class="tag-label">RTF</span>
+<span class="kw">{\rtf1\ansi\deff0</span>
+<span class="kw">\trowd</span>
+<span class="kw">\cellx1000</span>
+<span class="kw">\cellx2000</span>
+<span class="kw">\cellx3000</span>
+cell 1<span class="kw">\intbl\cell</span>
+lots of text in cell two<span class="kw">\intbl\cell</span>
+cell 3<span class="kw">\intbl\cell</span>
+<span class="kw">\row</span>
+<span class="kw">}</span>
+  </div>
+
+  <div class="demo-wrap">
+    <p class="demo-label">Rendered output</p>
+    <table class="demo-table">
+      <tr>
+        <td style="width:33%; vertical-align:top;">cell 1</td>
+        <td style="width:33%; vertical-align:top;">lots of text in cell two</td>
+        <td style="width:34%; vertical-align:top;">cell 3</td>
+      </tr>
+    </table>
+  </div>
+
+  <h2>Adding cell borders</h2>
+  <p>
+    Border commands are placed before each <code>\cellx<em>N</em></code> declaration. The four sides are top (<code>\clbrdrt</code>), left (<code>\clbrdrl</code>), bottom (<code>\clbrdrb</code>), and right (<code>\clbrdrr</code>). Follow each with a border style — <code>\brdrs</code> gives a plain single line:
+  </p>
+
+  <div class="code-block">
+    <span class="tag-label">RTF</span>
+<span class="kw">{\rtf1\ansi\deff0</span>
+<span class="kw">\trowd</span>
+<span class="kw">\clbrdrt\brdrs\clbrdrl\brdrs\clbrdrb\brdrs\clbrdrr\brdrs</span>
+<span class="kw">\cellx1000</span>
+<span class="kw">\clbrdrt\brdrs\clbrdrl\brdrs\clbrdrb\brdrs\clbrdrr\brdrs</span>
+<span class="kw">\cellx2000</span>
+<span class="kw">\clbrdrt\brdrs\clbrdrl\brdrs\clbrdrb\brdrs\clbrdrr\brdrs</span>
+<span class="kw">\cellx3000</span>
+cell 1<span class="kw">\intbl\cell</span>
+lots of text in cell two<span class="kw">\intbl\cell</span>
+cell 3<span class="kw">\intbl\cell</span>
+<span class="kw">\row</span>
+<span class="kw">}</span>
+  </div>
+
+  <div class="demo-wrap">
+    <p class="demo-label">Rendered output</p>
+    <table class="demo-table b-single" style="border-collapse:collapse;">
+      <tr>
+        <td class="b-single" style="width:33%;">cell 1</td>
+        <td class="b-single" style="width:33%;">lots of text in cell two</td>
+        <td class="b-single" style="width:34%;">cell 3</td>
+      </tr>
+    </table>
+  </div>
+
+  <h2>Cell padding with <code>\trgaph</code></h2>
+  <p>
+    Without padding, text sits flush against the cell border. <code>\trgaph<em>N</em></code> on the <code>\trowd</code> line sets the half-gap between cell content and borders. A value of 144 twips gives a comfortable 1/10&quot; of breathing room:
+  </p>
+
+  <div class="code-block">
+    <span class="tag-label">RTF</span>
+<span class="kw">{\rtf1\ansi\deff0</span>
+<span class="kw">\trowd\trgaph144</span>
+<span class="kw">\clbrdrt\brdrs\clbrdrl\brdrs\clbrdrb\brdrs\clbrdrr\brdrs</span>
+<span class="kw">\cellx1000</span>
+<span class="kw">\clbrdrt\brdrs\clbrdrl\brdrs\clbrdrb\brdrs\clbrdrr\brdrs</span>
+<span class="kw">\cellx2000</span>
+<span class="kw">\clbrdrt\brdrs\clbrdrl\brdrs\clbrdrb\brdrs\clbrdrr\brdrs</span>
+<span class="kw">\cellx3000</span>
+cell 1<span class="kw">\intbl\cell</span>
+lots of text in cell two<span class="kw">\intbl\cell</span>
+cell 3<span class="kw">\intbl\cell</span>
+<span class="kw">\row</span>
+<span class="kw">}</span>
+  </div>
+
+  <div class="demo-wrap">
+    <p class="demo-label">Rendered output (with padding)</p>
+    <table class="demo-table" style="border-collapse:collapse;">
+      <tr>
+        <td class="b-single" style="width:33%; padding:0.4rem 0.6rem;">cell 1</td>
+        <td class="b-single" style="width:33%; padding:0.4rem 0.6rem;">lots of text in cell two</td>
+        <td class="b-single" style="width:34%; padding:0.4rem 0.6rem;">cell 3</td>
+      </tr>
+    </table>
+  </div>
+
+  <h2>Adding a second row</h2>
+  <p>
+    Repeat the <code>\trowd</code>…<code>\row</code> block for each additional row. Use <code>\par</code> and <code>\pard</code> between rows to reset paragraph state cleanly:
+  </p>
+
+  <div class="code-block">
+    <span class="tag-label">RTF</span>
+<span class="kw">{\rtf1\ansi\deff0</span>
+<span class="kw">\trowd\trgaph144</span>
+<span class="kw">\clbrdrt\brdrs\clbrdrl\brdrs\clbrdrb\brdrs\clbrdrr\brdrs\cellx1000</span>
+<span class="kw">\clbrdrt\brdrs\clbrdrl\brdrs\clbrdrb\brdrs\clbrdrr\brdrs\cellx2000</span>
+<span class="kw">\clbrdrt\brdrs\clbrdrl\brdrs\clbrdrb\brdrs\clbrdrr\brdrs\cellx3000</span>
+cell 1<span class="kw">\intbl\cell</span>
+lots of text in cell two<span class="kw">\intbl\cell</span>
+cell 3<span class="kw">\intbl\cell</span>
+<span class="kw">\row</span>
+<span class="kw">\trowd\trgaph144</span>
+<span class="kw">\clbrdrt\brdrs\clbrdrl\brdrs\clbrdrb\brdrs\clbrdrr\brdrs\cellx1000</span>
+<span class="kw">\clbrdrt\brdrs\clbrdrl\brdrs\clbrdrb\brdrs\clbrdrr\brdrs\cellx2000</span>
+<span class="kw">\clbrdrt\brdrs\clbrdrl\brdrs\clbrdrb\brdrs\clbrdrr\brdrs\cellx3000</span>
+row 2 cell 1<span class="kw">\intbl\cell</span>
+lots of text in row 2 cell two<span class="kw">\intbl\cell</span>
+row 2 cell 3<span class="kw">\intbl\cell</span>
+<span class="kw">\row</span>
+<span class="kw">}</span>
+  </div>
+
+  <div class="demo-wrap">
+    <p class="demo-label">Rendered output</p>
+    <table class="demo-table" style="border-collapse:collapse;">
+      <tr>
+        <td class="b-single" style="width:33%; padding:0.4rem 0.6rem;">cell 1</td>
+        <td class="b-single" style="width:33%; padding:0.4rem 0.6rem;">lots of text in cell two</td>
+        <td class="b-single" style="width:34%; padding:0.4rem 0.6rem;">cell 3</td>
+      </tr>
+      <tr>
+        <td class="b-single" style="padding:0.4rem 0.6rem;">row 2 cell 1</td>
+        <td class="b-single" style="padding:0.4rem 0.6rem;">lots of text in row 2 cell two</td>
+        <td class="b-single" style="padding:0.4rem 0.6rem;">row 2 cell 3</td>
+      </tr>
+    </table>
+  </div>
+
+  <h2>Border style reference</h2>
+  <p>
+    Instead of <code>\brdrs</code> (single line), a range of other border styles are available. The RTF command is applied to all four sides of the cell — for example, replacing <code>\brdrs</code> with <code>\brdrdot</code> gives a dotted border. Download the <a href="http://www.pindari.com/borders.rtf">example .rtf file</a> to see all styles rendered in a word processor.
+  </p>
+
+  <table class="border-ref" aria-label="RTF border style commands">
+    <thead>
+      <tr>
+        <th>RTF command</th>
+        <th>Description</th>
+        <th>Preview</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>\brdrs</td>
+        <td>Single line</td>
+        <td><span class="bprev bp-single">abc</span></td>
+      </tr>
+      <tr>
+        <td>\brdrdot</td>
+        <td>Dotted</td>
+        <td><span class="bprev bp-dotted">abc</span></td>
+      </tr>
+      <tr>
+        <td>\brdrdb</td>
+        <td>Double thickness</td>
+        <td><span class="bprev bp-double">abc</span></td>
+      </tr>
+      <tr>
+        <td>\brdrdash</td>
+        <td>Dashed</td>
+        <td><span class="bprev bp-dashed">abc</span></td>
+      </tr>
+      <tr>
+        <td>\brdrdashsm</td>
+        <td>Small dashes</td>
+        <td><span class="bprev bp-dashed-sm">abc</span></td>
+      </tr>
+      <tr>
+        <td>\brdrdashd</td>
+        <td>Dot-dash</td>
+        <td><span class="bprev bp-dot-dash">abc</span></td>
+      </tr>
+      <tr>
+        <td>\brdrdashdd</td>
+        <td>Dot-dot-dash</td>
+        <td><span class="bprev bp-dot-dash">abc</span></td>
+      </tr>
+      <tr>
+        <td>\brdrtriple</td>
+        <td>Triple line</td>
+        <td><span class="bprev bp-triple">abc</span></td>
+      </tr>
+      <tr>
+        <td>\brdrtnthlg</td>
+        <td>Thick-thin (large)</td>
+        <td><span class="bprev bp-thick-thin">abc</span></td>
+      </tr>
+      <tr>
+        <td>\brdrthtnlg</td>
+        <td>Thin-thick (large)</td>
+        <td><span class="bprev bp-thin-thick">abc</span></td>
+      </tr>
+      <tr>
+        <td>\brdrtnthtnlg</td>
+        <td>Thin-thick-thin (large)</td>
+        <td><span class="bprev bp-dot-dash">abc</span></td>
+      </tr>
+      <tr>
+        <td>\brdrwavy</td>
+        <td>Wavy</td>
+        <td><span class="bprev bp-wavy">abc</span></td>
+      </tr>
+      <tr>
+        <td>\brdrdashdotstr</td>
+        <td>Striped</td>
+        <td><span class="bprev bp-striped">abc</span></td>
+      </tr>
+      <tr>
+        <td>\brdremboss</td>
+        <td>Embossed</td>
+        <td><span class="bprev bp-emboss">abc</span></td>
+      </tr>
+      <tr>
+        <td>\brdrengrave</td>
+        <td>Engraved</td>
+        <td><span class="bprev bp-engrave">abc</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <strong>Note:</strong> Some border styles — wavy, triple, thick-thin — are only rendered by word processors that fully implement the RTF 1.5 specification. Plain text editors will ignore them.
+  </div>
+
+  <div class="divider"></div>
+
+  <h2>Navigation</h2>
+
+  <div class="resources">
+    <a class="resource-link" href="https://www.pindari.com/rtf2.html">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+      Part 2 – Fonts, color, and tab leaders
+    </a>
+    <a class="resource-link" href="https://www.pindari.com/rtf1.html">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+      Part 1 – RTF basics: color, fonts, layout, and formatting
+    </a>
+    <a class="resource-link" href="http://www.pindari.com/borders.rtf">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Download borders.rtf — all border styles in one file
+    </a>
+    <a class="resource-link" href="http://www.biblioscape.com/rtf15_spec.htm">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+      Rich Text Format (RTF) Version 1.5 Specification
+    </a>
+  </div>
+</main>
+
+<footer>
+  <a href="https://www.pindari.com/">← pindari.com home</a>
+  <span>Application Interchange File Formats</span>
+</footer>
+
+</body>
+</html>

@@ -568,3 +568,129 @@ class TestLoadNonScholar:
         data = load_non_scholar(str(path))
         assert "key_works" in data
         assert "graduate_students" in data
+
+
+class TestResolveRefs:
+    """`@id` cross-reference substitution.
+
+    Invariants:
+      * Known ids substitute to the indexed code; unknown ids surface in
+        the returned `unresolved` list and are LEFT IN the text (so callers
+        can show the user where the typo is).
+      * Email-safe: `x@y.com` is not matched because `@` is preceded by a
+        word char (negative lookbehind).
+      * Escape: `@@id` renders as literal `@id` (no resolution).
+      * Empty text or text with no `@` short-circuits to no work.
+    """
+
+    def test_basic_substitution(self) -> None:
+        from pubs_emitter.builders import resolve_refs
+        text, unresolved = resolve_refs(
+            "see @grant1 and @paper2",
+            {"grant1": "C.10.3", "paper2": "C.4.7"},
+        )
+        assert text == "see C.10.3 and C.4.7"
+        assert unresolved == []
+
+    def test_unresolved_collected_and_left_in_text(self) -> None:
+        from pubs_emitter.builders import resolve_refs
+        text, unresolved = resolve_refs(
+            "see @missing here",
+            {"other": "C.1.1"},
+        )
+        assert unresolved == ["missing"]
+        # Token left in place for visibility.
+        assert "@missing" in text
+
+    def test_email_safe(self) -> None:
+        """Email-shaped `@` (preceded by a word char) is NOT matched."""
+        from pubs_emitter.builders import resolve_refs
+        text, _ = resolve_refs(
+            "contact me at davis@purdue.edu",
+            {"purdue": "C.1.1"},
+        )
+        assert text == "contact me at davis@purdue.edu"
+
+    def test_double_at_escape(self) -> None:
+        from pubs_emitter.builders import resolve_refs
+        text, _ = resolve_refs("twitter @@handle", {})
+        assert text == "twitter @handle"
+
+    def test_multiple_in_one_string(self) -> None:
+        from pubs_emitter.builders import resolve_refs
+        text, _ = resolve_refs(
+            "see @a, @b, @c.",
+            {"a": "X", "b": "Y", "c": "Z"},
+        )
+        assert text == "see X, Y, Z."
+
+    def test_no_at_short_circuits(self) -> None:
+        from pubs_emitter.builders import resolve_refs
+        text, unresolved = resolve_refs("no refs here", {"foo": "C.1.1"})
+        assert text == "no refs here"
+        assert unresolved == []
+
+    def test_empty_text_passthrough(self) -> None:
+        from pubs_emitter.builders import resolve_refs
+        text, unresolved = resolve_refs("", {})
+        assert text == ""
+        assert unresolved == []
+
+    def test_id_with_dashes(self) -> None:
+        from pubs_emitter.builders import resolve_refs
+        text, _ = resolve_refs(
+            "@ece-30861 is fall-2021.",
+            {"ece-30861": "C.18.1"},
+        )
+        assert text == "C.18.1 is fall-2021."
+
+    def test_resolve_in_list_replaces_only_prose_fields(self) -> None:
+        from pubs_emitter.builders import resolve_refs_in_list
+        from pubs_emitter.types import EntrepreneurialActivity
+        items = [
+            EntrepreneurialActivity(
+                summary="@target funding raised", description="prose @target ok",
+                id="src",
+            ),
+        ]
+        new_items, errors = resolve_refs_in_list(
+            items, "EntrepreneurialActivity", {"target": "C.10.5"},
+        )
+        assert errors == []
+        assert new_items[0].summary == "C.10.5 funding raised"
+        assert new_items[0].description == "prose C.10.5 ok"
+        # id field unchanged.
+        assert new_items[0].id == "src"
+
+    def test_resolve_in_list_collects_errors_with_indices(self) -> None:
+        from pubs_emitter.builders import resolve_refs_in_list
+        from pubs_emitter.types import EntrepreneurialActivity
+        items = [
+            EntrepreneurialActivity(summary="@unknown1", description="ok"),
+            EntrepreneurialActivity(summary="ok", description="@unknown2"),
+        ]
+        _, errors = resolve_refs_in_list(items, "EntrepreneurialActivity", {})
+        # Two unresolved refs, one per item.
+        assert (0, "unknown1") in errors
+        assert (1, "unknown2") in errors
+
+    def test_link_format_emits_sentinels(self) -> None:
+        """`link_format=True` wraps each resolved code with `\\x01...\\x02`
+        sentinels so the RTF post-pass can convert them into HYPERLINK
+        fields. Without `link_format`, substitution is plain text."""
+        from pubs_emitter.builders import (
+            REF_LINK_CLOSE, REF_LINK_OPEN, resolve_refs,
+        )
+        # Plain default.
+        plain, _ = resolve_refs("see @x", {"x": "C.4.7"})
+        assert plain == "see C.4.7"
+        # link_format=True
+        wrapped, _ = resolve_refs("see @x", {"x": "C.4.7"}, link_format=True)
+        assert wrapped == f"see {REF_LINK_OPEN}C.4.7{REF_LINK_CLOSE}"
+        # Unresolved refs are NOT wrapped — they're left as-is for error
+        # reporting.
+        leftalone, unresolved = resolve_refs(
+            "@missing", {"x": "C.4.7"}, link_format=True,
+        )
+        assert leftalone == "@missing"
+        assert unresolved == ["missing"]

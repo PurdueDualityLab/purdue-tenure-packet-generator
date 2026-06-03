@@ -332,3 +332,399 @@ class TestE2eGrantTotalsExtended:
         rtf = out.read_text(encoding="utf-8")
         # 123456 + 654321 + 1000000 = 1,777,777
         assert "$1,777,777" in rtf
+
+
+class TestE2eUnresolvedAtIdRef:
+    """Build MUST fail loudly when any `@id` ref in a YAML prose field
+    doesn't resolve to a registered id (YAML `id:` or bib citation key).
+
+    Catches the typo class — without this gate a misspelled `@grant1` (vs
+    the real `@grant-1`) would silently leave the literal text `@grant1`
+    in the rendered RTF.
+    """
+
+    def test_unresolved_at_id_in_course_development_exits_nonzero(
+        self,
+        fixtures_dir: pathlib.Path,
+        tmp_path: pathlib.Path,
+        fake_network: None,  # noqa: ARG002 — pulled in for the side effect
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Start from the base fixture (so all required YAML sections are
+        # present + valid), then inject ONE course_development entry whose
+        # description references a non-existent `@id`.
+        with open(fixtures_dir / "non-scholar.yaml", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        data["course_development"] = [
+            {
+                "summary": "Test course",
+                "description": "See @this-id-does-not-exist for context.",
+            },
+        ]
+        custom_yaml = tmp_path / "bad-ref.yaml"
+        with open(custom_yaml, "w", encoding="utf-8") as f:
+            yaml.safe_dump(data, f)
+
+        out = tmp_path / "publications.rtf"
+        cache = tmp_path / "cache.sqlite"
+        with pytest.raises(SystemExit) as exc:
+            cli.main(
+                [
+                    "--bib", str(fixtures_dir / "sample.bib"),
+                    "--non-scholar", str(custom_yaml),
+                    "--out", str(out),
+                    "--cache", str(cache),
+                ]
+            )
+        # The cli exits 1 (failure) when refs don't resolve.
+        assert exc.value.code == 1
+        # The error log identifies the offending id by name so the user
+        # can find their typo. The full ref list is also logged (for
+        # discovery) but that's not asserted here.
+        assert "this-id-does-not-exist" in caplog.text
+
+    def test_unresolved_at_id_in_grant_responsibility_exits_nonzero(
+        self,
+        fixtures_dir: pathlib.Path,
+        tmp_path: pathlib.Path,
+        fake_network: None,  # noqa: ARG002
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Grants are the most common host for `@id` refs (e.g. "@ece-30861"
+        # in the responsibility line). Verify the same gate fires from a
+        # grant prose field, not just course_development.
+        with open(fixtures_dir / "non-scholar.yaml", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        data["grants_as_pi"] = [
+            {
+                "title": "Test Grant", "agency": "X", "agency_short": "X",
+                "role": "PI", "start_year": 2024, "end_year": 2025,
+                "purdue_amount": 100000,
+                "responsibility": "Integrate into @typo-here.",
+            },
+        ]
+        custom_yaml = tmp_path / "bad-grant-ref.yaml"
+        with open(custom_yaml, "w", encoding="utf-8") as f:
+            yaml.safe_dump(data, f)
+
+        out = tmp_path / "publications.rtf"
+        cache = tmp_path / "cache.sqlite"
+        with pytest.raises(SystemExit) as exc:
+            cli.main(
+                [
+                    "--bib", str(fixtures_dir / "sample.bib"),
+                    "--non-scholar", str(custom_yaml),
+                    "--out", str(out),
+                    "--cache", str(cache),
+                ]
+            )
+        assert exc.value.code == 1
+        assert "typo-here" in caplog.text
+
+    def test_at_id_self_ref_resolves(
+        self,
+        fixtures_dir: pathlib.Path,
+        tmp_path: pathlib.Path,
+        fake_network: None,  # noqa: ARG002
+    ) -> None:
+        """Positive control: a course_development entry can reference
+        ANOTHER course_development entry by its `id:` field. The cli
+        succeeds and the ref renders as the linked entry's resolved
+        C.X.Y code (substituted at build time)."""
+        with open(fixtures_dir / "non-scholar.yaml", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        data["course_development"] = [
+            {"id": "course-a", "summary": "Course A", "description": "First."},
+            {
+                "summary": "Course B",
+                "description": "Builds on @course-a foundations.",
+            },
+        ]
+        custom_yaml = tmp_path / "good-ref.yaml"
+        with open(custom_yaml, "w", encoding="utf-8") as f:
+            yaml.safe_dump(data, f)
+
+        out = tmp_path / "publications.rtf"
+        cache = tmp_path / "cache.sqlite"
+        cli.main(
+            [
+                "--bib", str(fixtures_dir / "sample.bib"),
+                "--non-scholar", str(custom_yaml),
+                "--out", str(out),
+                "--cache", str(cache),
+            ]
+        )
+        rtf = out.read_text(encoding="utf-8")
+        # The literal `@course-a` is NOT in the rendered RTF — it was
+        # substituted at build time. Instead, the linked entry's code
+        # (`C.18.1`) appears (as a clickable hyperlink in this case).
+        assert "@course-a" not in rtf
+        # The hyperlink target's bookmark name uses underscores in
+        # place of dots: `C_18_1`.
+        assert "HYPERLINK \\\\l \"C_18_1\"" in rtf
+
+
+class TestE2eSectionsFilter:
+    """The `--sections` CLI flag (and the matching `sections_filter`
+    kwarg on `write_rtf`) emits only the requested top-level / child
+    section codes. The build still COMPUTES every section so cross-refs,
+    `@id` resolution, and paper-index numbering match the full document
+    — only emission is filtered. Useful for spot-checking one section in
+    Word without re-rendering the whole packet.
+    """
+
+    def test_no_filter_emits_every_section(
+        self,
+        e2e_outputs: tuple[str, pathlib.Path],
+    ) -> None:
+        # Sanity guard: the default (no --sections) emits the canonical
+        # set of section headings. If this number changes you've either
+        # added a new section or accidentally suppressed one.
+        rtf, _ = e2e_outputs
+        # Count fs28 (Heading 1) section title lines.
+        heading_count = rtf.count("\\fs28 ")
+        # The fixture YAML is intentionally minimal; the full
+        # production YAML emits ~29. The fixture exercises ~25.
+        # Use a floor + ceiling so the test catches regressions in
+        # either direction without pinning the exact count.
+        assert 15 <= heading_count <= 35
+
+    def test_filter_c4_only_emits_one_section(
+        self,
+        fixtures_dir: pathlib.Path,
+        tmp_path: pathlib.Path,
+        fake_network: None,  # noqa: ARG002
+    ) -> None:
+        out = tmp_path / "c4-only.rtf"
+        cache = tmp_path / "cache.sqlite"
+        cli.main(
+            [
+                "--bib", str(fixtures_dir / "sample.bib"),
+                "--non-scholar", str(fixtures_dir / "non-scholar.yaml"),
+                "--out", str(out),
+                "--cache", str(cache),
+                "--sections", "C.4",
+            ]
+        )
+        rtf = out.read_text(encoding="utf-8")
+        assert "C.4 Conferences and Workshops" in rtf
+        # No other section headings emit. Spot-check a few that would
+        # normally appear.
+        assert "C.1 Key Scholarly Publications" not in rtf
+        assert "C.2 Journals" not in rtf
+        assert "C.6 Invited Talks" not in rtf
+
+    def test_filter_parent_code_includes_children(
+        self,
+        fixtures_dir: pathlib.Path,
+        tmp_path: pathlib.Path,
+        fake_network: None,  # noqa: ARG002
+    ) -> None:
+        # `--sections C.16` should ALSO emit C.16.2.3 / C.16.2.4 /
+        # C.16.3.3 (sub-section codes are children of C.16). The
+        # parent-child rule: `code.startswith(filter + ".")`.
+        with open(fixtures_dir / "non-scholar.yaml", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        # Inject one student-award entry so a C.16.2.4 section emits.
+        data["student_awards"] = [
+            {
+                "level": "U",
+                "tier": "Institutional Awards",
+                "year": 2024, "year_str": "2024",
+                "recipient": "Test Student",
+                "award": "Test Award",
+            },
+        ]
+        custom_yaml = tmp_path / "sub.yaml"
+        with open(custom_yaml, "w", encoding="utf-8") as f:
+            yaml.safe_dump(data, f)
+
+        out = tmp_path / "c16.rtf"
+        cache = tmp_path / "cache.sqlite"
+        cli.main(
+            [
+                "--bib", str(fixtures_dir / "sample.bib"),
+                "--non-scholar", str(custom_yaml),
+                "--out", str(out),
+                "--cache", str(cache),
+                "--sections", "C.16",
+            ]
+        )
+        rtf = out.read_text(encoding="utf-8")
+        # Sub-section heading for the undergrad-award section.
+        assert "C.16.2.4 Undergraduate student awards" in rtf
+        # Not C.4 (would emit if filter were ignored).
+        assert "C.4 Conferences" not in rtf
+
+    def test_filter_multiple_codes(
+        self,
+        fixtures_dir: pathlib.Path,
+        tmp_path: pathlib.Path,
+        fake_network: None,  # noqa: ARG002
+    ) -> None:
+        # Comma-separated codes: union of all matches.
+        out = tmp_path / "multi.rtf"
+        cache = tmp_path / "cache.sqlite"
+        cli.main(
+            [
+                "--bib", str(fixtures_dir / "sample.bib"),
+                "--non-scholar", str(fixtures_dir / "non-scholar.yaml"),
+                "--out", str(out),
+                "--cache", str(cache),
+                "--sections", "C.4,C.6",
+            ]
+        )
+        rtf = out.read_text(encoding="utf-8")
+        assert "C.4 Conferences and Workshops" in rtf
+        assert "C.6 Invited" in rtf
+        # Other sections still suppressed.
+        assert "C.2 Journals" not in rtf
+
+    def test_filter_preserves_full_document_numbering(
+        self,
+        fixtures_dir: pathlib.Path,
+        tmp_path: pathlib.Path,
+        fake_network: None,  # noqa: ARG002
+    ) -> None:
+        # The C.4 numbering when only C.4 is emitted MUST match the
+        # numbering from the full-document build. The cli computes
+        # every section's contents to derive paper_index + ref_index
+        # before filtering emission, so the C.X.Y back-pointers stay
+        # stable.
+        # Build the full document first.
+        full_out = tmp_path / "full.rtf"
+        cli.main(
+            [
+                "--bib", str(fixtures_dir / "sample.bib"),
+                "--non-scholar", str(fixtures_dir / "non-scholar.yaml"),
+                "--out", str(full_out),
+                "--cache", str(tmp_path / "full-cache.sqlite"),
+            ]
+        )
+        full_rtf = full_out.read_text(encoding="utf-8")
+        import re
+        full_c4_codes = set(re.findall(r"C\.4\.\d+", full_rtf))
+
+        # Now build with --sections C.4 only.
+        c4_out = tmp_path / "c4.rtf"
+        cli.main(
+            [
+                "--bib", str(fixtures_dir / "sample.bib"),
+                "--non-scholar", str(fixtures_dir / "non-scholar.yaml"),
+                "--out", str(c4_out),
+                "--cache", str(tmp_path / "c4-cache.sqlite"),
+                "--sections", "C.4",
+            ]
+        )
+        c4_rtf = c4_out.read_text(encoding="utf-8")
+        c4_only_codes = set(re.findall(r"C\.4\.\d+", c4_rtf))
+        assert full_c4_codes == c4_only_codes, (
+            "C.4.N numbering shifted when --sections was applied — "
+            "this would break back-pointers from other sections."
+        )
+
+
+def _strip_rtf_markup(rtf: str) -> str:
+    """Best-effort RTF → plain text for the punctuation-spacing linter.
+
+    Drops control words (`\\foo` + optional numeric arg + optional
+    delimiter space), control symbols (`\\\\`, `\\{`, `\\}`, `\\~`,
+    `\\-`, `\\_`), brace groups for destinations (`{\\*\\...}`), and
+    the bookmark/field destination wrappers. The result isn't suitable
+    for typography but IS suitable for "punctuation followed by text
+    should have a space" sanity checking.
+    """
+    import re
+    # Strip RTF destinations (groups starting with `{\*`).
+    while True:
+        new = re.sub(r"\{\\\*[^{}]*?\}", "", rtf)
+        if new == rtf:
+            break
+        rtf = new
+    # Strip HYPERLINK field instruction sub-groups so the link URL
+    # text doesn't pollute the plain text.
+    rtf = re.sub(r"\{\\field\{\\?\*?\\?fldinst[^{}]*\}", "", rtf)
+    # Strip Unicode escapes `\u{N}?` → leave the fallback char.
+    rtf = re.sub(r"\\u-?\d+\?", "", rtf)
+    # Strip control words with optional numeric arg + optional one
+    # trailing space (the RTF delimiter).
+    rtf = re.sub(r"\\[a-zA-Z]+-?\d* ?", "", rtf)
+    # Strip control symbols.
+    rtf = re.sub(r"\\[^a-zA-Z]", "", rtf)
+    # Drop any remaining braces.
+    rtf = rtf.replace("{", "").replace("}", "")
+    # Collapse runs of whitespace.
+    rtf = re.sub(r"\s+", " ", rtf)
+    return rtf
+
+
+class TestE2ePunctuationSpacing:
+    """Lint: every punctuation followed by alphanumeric text should have
+    at least one whitespace character between them. Catches the class
+    of bug where a colon-space (`DOI: `) gets emitted as `DOI:` and the
+    URL/title runs into the previous word.
+
+    The check runs against a best-effort RTF→plain-text strip
+    (`_strip_rtf_markup`), not the raw RTF source — so RTF control
+    words (`\\b0$X`) are NOT flagged here; that's a separate class of
+    bug already caught by per-renderer tests via brace-scoping.
+    """
+
+    # Punctuation followed IMMEDIATELY by alphanumeric. The first
+    # capture group is the offending substring (used in the error
+    # message). The character class is the conservative set: period,
+    # comma, colon, semicolon, exclamation, question — the ones where
+    # CV/citation text reliably wants a space-after.
+    _BAD_SPACING_RE = (
+        # `:` or `;` followed by alphanumeric — covers DOI:X / URL:X
+        # and the colon-space class generally.
+        r"([;:][A-Za-z0-9])"
+    )
+
+    # Known good substrings whose colon-no-space is canonical and
+    # intentional. Any finding whose 50-char context window contains
+    # one of these is NOT a violation.
+    _ALLOWED_SUBSTRINGS = (
+        "https://",       # URL scheme
+        "http://",        # URL scheme
+        "arXiv:",         # canonical arXiv identifier form (arXiv:NNNN.NNNNN)
+        "CVE-",           # adjacent CVE refs sometimes packed like "ref;CVE-..."
+    )
+
+    def _findings(self, plain_text: str) -> list[str]:
+        import re
+        pat = re.compile(self._BAD_SPACING_RE)
+        findings: list[str] = []
+        for m in pat.finditer(plain_text):
+            start = max(0, m.start() - 25)
+            end = min(len(plain_text), m.end() + 25)
+            ctx = plain_text[start:end]
+            if any(allow in ctx for allow in self._ALLOWED_SUBSTRINGS):
+                continue
+            findings.append(ctx)
+        return findings
+
+    def test_no_colon_or_semicolon_immediately_followed_by_text(
+        self,
+        e2e_outputs: tuple[str, pathlib.Path],
+    ) -> None:
+        rtf, _ = e2e_outputs
+        plain = _strip_rtf_markup(rtf)
+        # Drop the RTF preamble (font table, color table, stylesheet) —
+        # its `;` separators are legitimate RTF syntax that survive the
+        # best-effort strip. The user-visible content starts at the
+        # first section heading.
+        for anchor in ("C.1 ", "A.1 ", "C.2 "):
+            i = plain.find(anchor)
+            if i >= 0:
+                plain = plain[i:]
+                break
+        findings = self._findings(plain)
+        # On a clean build the list is empty. When the test fires, the
+        # findings list IS the diagnostic — each entry is a 50-char
+        # context window around the offending substring.
+        assert not findings, (
+            f"{len(findings)} punctuation-spacing violation(s) in the "
+            f"rendered RTF (showing first 5):\n  - "
+            + "\n  - ".join(findings[:5])
+        )

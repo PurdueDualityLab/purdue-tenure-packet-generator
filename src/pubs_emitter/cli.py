@@ -30,6 +30,13 @@ from .builders import (
     build_media_appearance,
     build_patent,
     build_service_entry,
+    build_course_development,
+    build_course_taught,
+    build_entrepreneurial_activity,
+    build_software_product,
+    build_student_award,
+    build_technology_transfer,
+    build_undergrad_products,
     build_student,
     build_thesis,
     build_under_review,
@@ -52,7 +59,9 @@ from .rtf import build_paper_index, write_rtf
 from .types import (
     BibEntry, Citation, ConferencePresentation, Grant, InvitedTalk, KeyWork,
     LeadershipRole, MediaAppearance, Patent, PostdocVisiting, Publications,
-    ServiceEntry, Student, UnderReview,
+    CourseDevelopment, CourseTaught, EntrepreneurialActivity,
+    ServiceEntry, SoftwareProduct, Student, StudentAward,
+    TechnologyTransfer, UndergradProduct, UnderReview,
 )
 from .venue import (
     EntryParseError,
@@ -217,6 +226,23 @@ def log_lookup_stats() -> None:
 # ----- CLI ----------------------------------------------------------------
 
 
+def _parse_sections_filter(arg: Optional[str]) -> Optional[set[str]]:
+    """Parse the `--sections` CLI flag into a set of section codes.
+
+    Returns `None` when the flag isn't supplied (signal: emit everything,
+    the default). Returns a set of trimmed code strings when supplied —
+    e.g. `"C.4, C.10, C.18"` → `{"C.4", "C.10", "C.18"}`.
+
+    The set is consumed by `write_rtf`'s skip logic; a section emits
+    when its code is in the set OR when it's a CHILD code of one in the
+    set (so `--sections C.16` also emits `C.16.2.3`, `C.16.2.4`,
+    `C.16.3.3`).
+    """
+    if not arg:
+        return None
+    return {s.strip() for s in arg.split(",") if s.strip()}
+
+
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="pubs-emitter",
@@ -266,6 +292,22 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help=(
             "Path to YAML side file with non-Scholar work (CVEs etc.). "
             "Bib stays Scholar-canonical; this file fills the gaps. Optional."
+        ),
+    )
+    parser.add_argument(
+        "--sections", metavar="CODES", default=None,
+        help=(
+            "Comma-separated list of section codes to emit (e.g. "
+            "'C.4,C.10,C.18'). Codes match the C.X heading codes from "
+            "SECTION_CODES (top-level or sub-section). When omitted, "
+            "ALL sections are emitted (default behavior). Sub-section "
+            "codes like 'C.16' also include their child codes "
+            "(C.16.2.3, C.16.2.4, C.16.3.3) automatically. The build "
+            "still computes every section (so cross-refs / @id "
+            "resolution / paper_index numbering match the full "
+            "document) — only emission is filtered. Useful for "
+            "spot-checking a single section in Word without re-rendering "
+            "the whole packet."
         ),
     )
     return parser.parse_args(argv)
@@ -359,7 +401,10 @@ def main(argv: Optional[list[str]] = None) -> None:
             # validate_non_scholar guarantees paper exists.
             assert paper is not None
             paper_cit = build_citation(conn, paper)
-            key_works.append(KeyWork(citation=paper_cit, impact=kw_yaml["impact"]))
+            key_works.append(KeyWork(
+                citation=paper_cit, impact=kw_yaml["impact"],
+                id=str(kw_yaml.get("id", "") or ""),
+            ))
 
         # Phase 4d: build invited-talks + leadership-roles + media-appearances from YAML.
         invited_talks: list[InvitedTalk] = [
@@ -401,6 +446,7 @@ def main(argv: Optional[list[str]] = None) -> None:
                 prior_affiliation=p.get("prior_affiliation", "") or "",
                 position_title_dates=p.get("position_title_dates", "") or "",
                 current_position=p.get("current_position", "") or "",
+                id=str(p.get("id", "") or ""),
             )
             for p in (non_scholar.get("postdocs_visiting") or [])
         ]
@@ -425,10 +471,41 @@ def main(argv: Optional[list[str]] = None) -> None:
             build_under_review(conn, e) for e in (non_scholar.get("under_review") or [])
         ]
         under_review.sort(key=lambda u: u.due_date)
+        # C.22: software products. Renderer sorts by year ASC.
+        software_products: list[SoftwareProduct] = [
+            build_software_product(e) for e in (non_scholar.get("software_products") or [])
+        ]
+        # C.16.2.4 / C.16.3.3: student awards / fellowships, level-routed.
+        student_awards: list[StudentAward] = [
+            build_student_award(e) for e in (non_scholar.get("student_awards") or [])
+        ]
+        # C.17 / C.18 / C.20 / C.21: empty-allowed YAML lists. C.18
+        # populated; C.17 + C.20 + C.21 currently empty (render "N/A" until
+        # the user populates them).
+        courses_taught: list[CourseTaught] = [
+            build_course_taught(e)
+            for e in (non_scholar.get("courses_taught") or [])
+        ]
+        course_development: list[CourseDevelopment] = [
+            build_course_development(e)
+            for e in (non_scholar.get("course_development") or [])
+        ]
+        entrepreneurial_activities: list[EntrepreneurialActivity] = [
+            build_entrepreneurial_activity(e)
+            for e in (non_scholar.get("entrepreneurial_activities") or [])
+        ]
+        technology_transfer: list[TechnologyTransfer] = [
+            build_technology_transfer(e)
+            for e in (non_scholar.get("technology_transfer") or [])
+        ]
 
-        # Chronological order (oldest first) within each section.
+        # Chronological order (oldest first), then alphabetical by venue
+        # WITHIN each year so co-located papers cluster (e.g. multiple
+        # USENIX papers in 2025 emit adjacently rather than interleaving
+        # with ICSE papers of the same year). Sort is stable, so ties on
+        # (year, venue) preserve the bib's insertion order.
         for section in publications:
-            publications[section].sort(key=lambda c: c.year)
+            publications[section].sort(key=lambda c: (c.year, c.venue.lower()))
         patents.sort(key=lambda p: p.year)
         key_works.sort(key=lambda kw: kw.citation.year)
         invited_talks.sort(key=lambda t: t.year)
@@ -450,6 +527,161 @@ def main(argv: Optional[list[str]] = None) -> None:
         key_work_index: dict[str, str] = {}
         for idx, kw in enumerate(key_works, 1):
             key_work_index[normalize_title(kw.citation.title)] = f"{kw_code}.{idx}"
+
+        # C.16.2.3: auto-derived from publications + bib by counting undergrad
+        # coauthors. MUST run after paper_index since each record carries the
+        # back-ref C.X.Y from paper_index.
+        undergrad_products: list[UndergradProduct] = build_undergrad_products(
+            conn, publications, paper_index, entries,
+        )
+
+        # ----- @id cross-reference resolution ---------------------------
+        # Build a global ref_index of (user-assigned id) → C.X.Y by walking
+        # every YAML-authored list in its FINAL render order. Then substitute
+        # `@id` tokens in registered prose fields throughout each list.
+        # See builders.resolve_refs + builders.PROSE_FIELDS_BY_TYPE.
+        from .builders import resolve_refs_in_list
+        from .rtf import index_student_awards
+
+        ref_index: dict[str, str] = {}
+        seen_ids: set[str] = set()
+
+        def _register(item: object, code: str) -> None:
+            item_id = str(getattr(item, "id", "") or "")
+            if not item_id:
+                return
+            if item_id in seen_ids:
+                log.error(
+                    "Duplicate @id %r — second occurrence assigned %s",
+                    item_id, code,
+                )
+                sys.exit(1)
+            seen_ids.add(item_id)
+            ref_index[item_id] = code
+
+        def _register_simple(items: list, section: Section) -> None:
+            code = SECTION_CODES[section]
+            for idx, item in enumerate(items, 1):
+                _register(item, f"{code}.{idx}")
+
+        # Bib citation keys: each bib entry's BibTeX `ID` (the `key` in
+        # `@inproceedings{key, ...}`) → the paper's resolved C.X.Y from
+        # paper_index. Held-internal theses (no paper_index entry) skip.
+        # Collision with a YAML id surfaces as the duplicate-ref error
+        # via _register.
+        for entry in entries:
+            bib_key = str(entry.get("ID", "") or "")
+            title = entry.get("title", "") or ""
+            if not bib_key or not title:
+                continue
+            code = paper_index.get(normalize_title(title))
+            if not code:
+                continue  # not emitted (e.g., thesis)
+            if bib_key in seen_ids:
+                log.error(
+                    "Duplicate @id %r: bib citation key collides with a "
+                    "YAML id. Rename one.", bib_key,
+                )
+                sys.exit(1)
+            seen_ids.add(bib_key)
+            ref_index[bib_key] = code
+
+        _register_simple(under_review, "Under Review")
+        _register_simple(key_works, "Key Works")
+        _register_simple(invited_talks, "Invited Talks")
+        _register_simple(leadership_roles, "Leadership Roles")
+        _register_simple(media_appearances, "Media Appearances")
+        _register_simple(grants_as_pi, "Grants PI")
+        _register_simple(grants_as_co_pi, "Grants Co-PI")
+        _register_simple(gifts, "Gifts")
+        _register_simple(internal_grants, "Internal Grants")
+        _register_simple(graduate_students, "Graduate Students")
+        _register_simple(postdocs_visiting, "Postdocs and Visiting Scholars")
+        _register_simple(undergraduate_students, "Undergraduate Students")
+        # C.16.2.4 / C.16.3.3 use the dedicated indexer to match the
+        # renderer's level + tier + year-DESC sort exactly.
+        for ref, award in index_student_awards(
+            "Undergraduate Student Awards", student_awards,
+        ):
+            _register(award, ref)
+        for ref, award in index_student_awards(
+            "Graduate Student Awards", student_awards,
+        ):
+            _register(award, ref)
+        _register_simple(courses_taught, "Courses Taught")
+        _register_simple(course_development, "Course Development")
+        _register_simple(entrepreneurial_activities, "Entrepreneurial Activities")
+        _register_simple(technology_transfer, "Technology Transfer")
+        _register_simple(software_products, "Software Products")
+        _register_simple(university_service, "University Service")
+        _register_simple(profession_service, "Profession Service")
+        _register_simple(national_service, "National Service")
+        _register_simple(other_service, "Other Service")
+
+        # Resolve `@id` refs in prose fields. Collect ALL unresolved refs
+        # before exiting so the user sees the full list in one pass.
+        _all_errors: list[tuple[str, int, str]] = []
+
+        def _resolve(items: list, type_name: str) -> list:
+            # link_format=True wraps each resolved code with sentinel chars
+            # so write_rtf's final pass can convert them to RTF hyperlinks.
+            new_items, errors = resolve_refs_in_list(
+                items, type_name, ref_index, link_format=True,
+            )
+            for idx, unresolved in errors:
+                _all_errors.append((type_name, idx, unresolved))
+            return new_items
+
+        under_review = _resolve(under_review, "UnderReview")
+        key_works = _resolve(key_works, "KeyWork")
+        invited_talks = _resolve(invited_talks, "InvitedTalk")
+        leadership_roles = _resolve(leadership_roles, "LeadershipRole")
+        media_appearances = _resolve(media_appearances, "MediaAppearance")
+        grants_as_pi = _resolve(grants_as_pi, "Grant")
+        grants_as_co_pi = _resolve(grants_as_co_pi, "Grant")
+        gifts = _resolve(gifts, "Grant")
+        internal_grants = _resolve(internal_grants, "Grant")
+        graduate_students = _resolve(graduate_students, "Student")
+        postdocs_visiting = _resolve(postdocs_visiting, "PostdocVisiting")
+        undergraduate_students = _resolve(undergraduate_students, "Student")
+        student_awards = _resolve(student_awards, "StudentAward")
+        courses_taught = _resolve(courses_taught, "CourseTaught")
+        course_development = _resolve(course_development, "CourseDevelopment")
+        entrepreneurial_activities = _resolve(
+            entrepreneurial_activities, "EntrepreneurialActivity",
+        )
+        technology_transfer = _resolve(technology_transfer, "TechnologyTransfer")
+        software_products = _resolve(software_products, "SoftwareProduct")
+        for svc_list_name, svc_var in (
+            ("university_service", university_service),
+            ("profession_service", profession_service),
+            ("national_service", national_service),
+            ("other_service", other_service),
+        ):
+            # Mutate the local binding to point to the resolved list.
+            new_svc = _resolve(svc_var, "ServiceEntry")
+            if svc_list_name == "university_service":
+                university_service = new_svc
+            elif svc_list_name == "profession_service":
+                profession_service = new_svc
+            elif svc_list_name == "national_service":
+                national_service = new_svc
+            else:
+                other_service = new_svc
+
+        if _all_errors:
+            for type_name, idx, unresolved in _all_errors:
+                log.error(
+                    "Unresolved @id ref @%s in %s[%d]; known ids: %s",
+                    unresolved, type_name, idx,
+                    sorted(ref_index.keys()) or "(none)",
+                )
+            sys.exit(1)
+        log.info(
+            "Resolved %d @id cross-references (%d registered ids)",
+            sum(1 for _ in seen_ids),
+            len(ref_index),
+        )
 
         log_phase("summary")
         log_section_summary(publications, patents)
@@ -481,6 +713,14 @@ def main(argv: Optional[list[str]] = None) -> None:
             national_service=national_service,
             other_service=other_service,
             under_review=under_review,
+            software_products=software_products,
+            student_awards=student_awards,
+            undergrad_products=undergrad_products,
+            entrepreneurial_activities=entrepreneurial_activities,
+            technology_transfer=technology_transfer,
+            course_development=course_development,
+            courses_taught=courses_taught,
+            sections_filter=_parse_sections_filter(args.sections),
         )
     finally:
         conn.close()
