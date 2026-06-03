@@ -77,6 +77,23 @@ CORRESPONDING_AUTHORS: dict[str, str] = dict(
 # is the only durable way to suppress entries the user doesn't want in the CV.
 BIB_IGNORE: list[str] = list(_conf.get("bib_ignore") or [])
 
+# Publications to suppress from the rendered packet — keyed by BibTeX
+# citation key (the stable identifier; titles change with edits, keys
+# don't). Distinct semantic from `bib_ignore` (which is "this entry
+# shouldn't exist in the bib at all"): `publication_hide` is "this
+# entry exists but I don't want to show it in THIS rendering of the
+# packet — trim by audience". Equivalent of the YAML-side
+# `show: false` field for service entries; both paths flow through
+# cli.py BEFORE numbering / paper_index assembly so hidden entries
+# leave no gaps and never become reachable cross-ref targets.
+PUBLICATION_HIDE: list[str] = list(_conf.get("publication_hide") or [])
+
+# Venue acronym → full name. Used by `build_service_entry` to expand the
+# FIRST occurrence of each acronym in a service description (C.23-C.26)
+# to "{full_name} ({acronym})". Sorted by length descending at lookup
+# time so compound acronyms (`ESEC/FSE`) match before substrings (`FSE`).
+VENUE_FULL_NAMES: dict[str, str] = dict(_conf.get("venue_full_names") or {})
+
 
 # ----- Code-side constants (not in YAML) -----------------------------------
 
@@ -163,10 +180,10 @@ SECTION_HEADINGS: dict[Section, str] = {
     "Internal Grants": "Internal competitive grants as PI or Co-PI",
     "Graduate Students": "Graduate students advised",
     "Postdocs and Visiting Scholars": "Mentoring of postdoctoral and visiting faculty scholars the candidate has directly supervised",
-    "Undergraduate Students": "Undergraduate students advised",
-    "Undergraduate Research Products": "Research products with undergraduate co-authors",
-    "Undergraduate Student Awards": "Undergraduate student awards and fellowships",
-    "Graduate Student Awards": "Graduate student awards and fellowships",
+    "Undergraduate Students": "Undergraduate research or any other student mentoring activities",
+    "Undergraduate Research Products": "Undergraduate Research Products and Authorship",
+    "Undergraduate Student Awards": "Undergraduate Awards, Fellowships, and Career Development",
+    "Graduate Student Awards": "Graduate Student Awards, Fellowships, Internships, and Placement",
     "Courses Taught": "Courses taught at Purdue and elsewhere and teaching scores",
     "Course Development": "Course development, within Purdue, or external short courses and workshops taught",
     "Patents": "Issued U.S. and International Patents",

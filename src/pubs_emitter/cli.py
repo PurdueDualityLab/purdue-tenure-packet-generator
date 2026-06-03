@@ -45,6 +45,7 @@ from .builders import (
 )
 from .config import (
     BIB_IGNORE,
+    PUBLICATION_HIDE,
     DEFAULT_DB_FILE,
     DEFAULT_MAX_WORKERS,
     DEFAULT_OUT_FILE,
@@ -125,6 +126,45 @@ def filter_ignored(entries: list[BibEntry], ignore_titles: list[str]) -> list[Bi
         for title in ignore_titles:
             if normalize_title(title) in unused:
                 log.warning("  · %s", title)
+    return kept
+
+
+def filter_hidden(entries: list[BibEntry], hide_keys: list[str]) -> list[BibEntry]:
+    """Drop bib entries whose citation key appears in `hide_keys`.
+
+    Distinct from `filter_ignored` (which matches by title): the hide list
+    is keyed by stable BibTeX citation keys so the suppression survives
+    title edits. Logged at INFO so the user sees which entries were
+    trimmed. Hidden entries are filtered BEFORE `paper_index` /
+    `key_work_index` / `ref_index` assembly so no cross-ref ever resolves
+    to a hidden paper and the visible-only sequence renders without gaps.
+
+    Also surfaces stale `publication_hide:` keys (listed but no longer
+    matched in the bib) so the user notices if Scholar's bibtex key
+    changed under us.
+    """
+    if not hide_keys:
+        return entries
+    hide_set = set(hide_keys)
+    seen: set[str] = set()
+    kept: list[BibEntry] = []
+    for e in entries:
+        key = e.get("ID", "")
+        if key in hide_set:
+            seen.add(key)
+            log.info("Filtered (publication_hide): %s — %s",
+                     key, e.get("title", "")[:80])
+            continue
+        kept.append(e)
+    unused = hide_set - seen
+    if unused:
+        log.warning(
+            "%d `publication_hide:` keys didn't match any bib citation key "
+            "(possibly Scholar renamed them):",
+            len(unused),
+        )
+        for key in unused:
+            log.warning("  · %s", key)
     return kept
 
 
@@ -327,7 +367,10 @@ def main(argv: Optional[list[str]] = None) -> None:
         seed_manual_links(conn, MANUAL_LINKS)
 
         log_phase("load input")
-        entries = filter_ignored(load_bib(args.bib), BIB_IGNORE)
+        entries = filter_hidden(
+            filter_ignored(load_bib(args.bib), BIB_IGNORE),
+            PUBLICATION_HIDE,
+        )
         # Load + validate YAML side file (CVEs etc.) before any network work.
         non_scholar = load_non_scholar(args.non_scholar)
         validate_non_scholar(non_scholar, entries)
@@ -454,17 +497,24 @@ def main(argv: Optional[list[str]] = None) -> None:
             build_student(s) for s in (non_scholar.get("undergraduate_students") or [])
         ]
         # Phase 4f: build the four service sections (C.23-C.26).
+        # Service entries: build all, then drop `show: false` BEFORE
+        # numbering / ref_index assembly so hidden entries don't consume
+        # a C.X.N slot and the visible-only sequence renders without gaps.
         university_service: list[ServiceEntry] = [
-            build_service_entry(e) for e in (non_scholar.get("university_service") or [])
+            s for s in (build_service_entry(e) for e in (non_scholar.get("university_service") or []))
+            if s.show
         ]
         profession_service: list[ServiceEntry] = [
-            build_service_entry(e) for e in (non_scholar.get("profession_service") or [])
+            s for s in (build_service_entry(e) for e in (non_scholar.get("profession_service") or []))
+            if s.show
         ]
         national_service: list[ServiceEntry] = [
-            build_service_entry(e) for e in (non_scholar.get("national_service") or [])
+            s for s in (build_service_entry(e) for e in (non_scholar.get("national_service") or []))
+            if s.show
         ]
         other_service: list[ServiceEntry] = [
-            build_service_entry(e) for e in (non_scholar.get("other_service") or [])
+            s for s in (build_service_entry(e) for e in (non_scholar.get("other_service") or []))
+            if s.show
         ]
         # A.1: in-flight submissions. Sorted ASC by `due_date` (empty → bottom).
         under_review: list[UnderReview] = [

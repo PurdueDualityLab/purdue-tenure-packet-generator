@@ -13,6 +13,7 @@ import pytest
 import yaml
 
 from pubs_emitter import cli, lookup
+from pubs_emitter.cli import filter_hidden
 
 
 @pytest.fixture
@@ -551,8 +552,10 @@ class TestE2eSectionsFilter:
             ]
         )
         rtf = out.read_text(encoding="utf-8")
-        # Sub-section heading for the undergrad-award section.
-        assert "C.16.2.4 Undergraduate student awards" in rtf
+        # Sub-section heading carries a `\\*\\bkmkstart C_16_2_4` wrap;
+        # check the bookmark + renamed heading text presence.
+        assert "bkmkstart C_16_2_4" in rtf
+        assert "Undergraduate Awards, Fellowships, and Career Development" in rtf
         # Not C.4 (would emit if filter were ignored).
         assert "C.4 Conferences" not in rtf
 
@@ -820,4 +823,103 @@ class TestE2eNumericalOrdering:
         assert not problems, (
             f"{len(problems)} ordering/density violation(s):\n  - "
             + "\n  - ".join(problems)
+        )
+
+    def test_full_emit_order_is_tuple_monotone(
+        self,
+        e2e_outputs: tuple[str, pathlib.Path],
+    ) -> None:
+        """The FULL ordered list of emitted bookmarks (across all sections)
+        must equal the same list sorted by code-tuple — i.e., C.16.1 must
+        appear before C.16.2, and C.16.2 before C.16.2.3, and C.16.2.3
+        before C.16.3.
+
+        The sibling `test_entry_codes_emit_in_sorted_order` only checks
+        within-parent (children of C.16.2). That misses the cross-depth
+        class: a sub-section's content emitting BEFORE its intermediate
+        parent. Canonical example (260603): C.16 renderer skipped
+        C.16.1 / C.16.2 entirely and jumped to C.16.2.3 — every
+        per-parent group was monotone, so the within-parent test
+        passed, but the rendered packet was visibly out of order.
+
+        A.* (Under Review appendix) is emitted LAST by design; this
+        test splits the C and A families and checks each independently.
+        """
+        rtf, _ = e2e_outputs
+        emitted: list[tuple[tuple[int, ...], str]] = []
+        for m in self._BOOKMARK_START_RE.finditer(rtf):
+            name = m.group(1)
+            parts = name.split("_")
+            if len(parts) < 2:
+                continue
+            try:
+                tup = (ord(parts[0]), *(int(p) for p in parts[1:]))
+            except ValueError:
+                continue
+            emitted.append((tup, name))
+
+        problems: list[str] = []
+        for family_char in ("C", "A"):
+            fam_code = ord(family_char)
+            in_family = [(t, n) for t, n in emitted if t[0] == fam_code]
+            if not in_family:
+                continue
+            emit_order_names = [n for _, n in in_family]
+            tuple_sorted_names = [
+                n for _, n in sorted(in_family, key=lambda x: x[0])
+            ]
+            if emit_order_names != tuple_sorted_names:
+                # Find first divergence for a useful error message.
+                for i, (got, expected) in enumerate(
+                    zip(emit_order_names, tuple_sorted_names)
+                ):
+                    if got != expected:
+                        got_dotted = got.replace("_", ".")
+                        exp_dotted = expected.replace("_", ".")
+                        problems.append(
+                            f"{family_char}.* family: position {i} emitted "
+                            f"{got_dotted}, but tuple-sorted order expects "
+                            f"{exp_dotted}"
+                        )
+                        break
+        assert not problems, (
+            f"{len(problems)} cross-section ordering violation(s):\n  - "
+            + "\n  - ".join(problems)
+        )
+
+
+class TestFilterHidden:
+    """Config-level `publication_hide:` filter — drops bib entries whose
+    citation key appears in the list before paper_index assembly, so the
+    visible sequence has no gaps and cross-refs never resolve to hidden
+    papers."""
+
+    def _entry(self, key: str, title: str) -> dict:
+        return {"ID": key, "title": title, "author": "X"}
+
+    def test_empty_hide_list_returns_entries_unchanged(self) -> None:
+        entries = [self._entry("k1", "A"), self._entry("k2", "B")]
+        assert filter_hidden(entries, []) == entries
+
+    def test_hidden_keys_dropped(self) -> None:
+        entries = [
+            self._entry("paper1", "A"),
+            self._entry("paper2", "B"),
+            self._entry("paper3", "C"),
+        ]
+        result = filter_hidden(entries, ["paper2"])
+        assert [e["ID"] for e in result] == ["paper1", "paper3"]
+
+    def test_stale_key_logged(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A `publication_hide:` key that doesn't match any bib entry
+        emits a WARNING — surfaces the case where Scholar renamed a key
+        under us so the user can update the config."""
+        entries = [self._entry("paper1", "A")]
+        import logging
+        with caplog.at_level(logging.WARNING, logger="pubs_emitter.cli"):
+            filter_hidden(entries, ["paper-nonexistent"])
+        assert any(
+            "paper-nonexistent" in rec.message for rec in caplog.records
         )

@@ -285,6 +285,19 @@ class TestBuildServiceEntry:
         assert e.year == 9999
         assert e.year_str == ""
 
+    def test_show_defaults_true(self) -> None:
+        e = build_service_entry({"description": "PC Member, ICSE", "year": 2025})
+        assert e.show is True
+
+    def test_show_false_preserved(self) -> None:
+        # The `show: false` field is read off the dict and survives onto
+        # the NamedTuple; cli.py filters at assembly time so entries with
+        # show=False never reach the renderer or ref_index.
+        e = build_service_entry(
+            {"description": "Sub-reviewer: minor venue", "year": 2018, "show": False},
+        )
+        assert e.show is False
+
     def test_latex_decoded_in_description(self) -> None:
         e = build_service_entry(
             {"description": "Host, Dr. {\\c{C}}akar visit", "year": 2025}

@@ -1325,7 +1325,11 @@ class TestRenderStudentAwardsSection:
             buf,
         )
         out = buf.getvalue()
-        assert "C.16.2.4 Undergraduate student awards and fellowships" in out
+        # Sub-section heading carries a bookmark wrap (`\\*\\bkmkstart C_16_2_4`)
+        # so the code and heading text are no longer one contiguous substring;
+        # check the two halves separately.
+        assert "bkmkstart C_16_2_4" in out
+        assert "Undergraduate Awards, Fellowships, and Career Development" in out
         # The old "These are students I mentored." preamble was dropped —
         # the section heading already conveys the context.
         assert "These are students I mentored" not in out
@@ -1342,7 +1346,8 @@ class TestRenderStudentAwardsSection:
             buf,
         )
         out = buf.getvalue()
-        assert "C.16.3.3 Graduate student awards and fellowships" in out
+        assert "bkmkstart C_16_3_3" in out
+        assert "Graduate Student Awards, Fellowships, Internships, and Placement" in out
         assert "C_16_3_3_1}.\\tab" in out
 
     def test_filters_by_level(self) -> None:
@@ -1672,7 +1677,8 @@ class TestRenderUndergradProductsSection:
         buf = io.StringIO()
         render_undergrad_products_section([self._p()], buf)
         out = buf.getvalue()
-        assert "C.16.2.3 Research products with undergraduate co-authors" in out
+        assert "bkmkstart C_16_2_3" in out
+        assert "Undergraduate Research Products and Authorship" in out
         # Entry code lives inside an RTF bookmark wrap; the period+\tab
         # follow the closing-bookmark markup.
         from pubs_emitter.rtf import _code_link
@@ -1680,19 +1686,35 @@ class TestRenderUndergradProductsSection:
         # The product's `ref` (`C.4.7`) is emitted as a styled link via
         # `_code_link` so it survives the post-write finalize as a
         # clickable hyperlink in the rendered RTF.
-        assert f"Paper {_code_link('C.4.7')} (2 undergraduate co-authors)" in out
+        assert (
+            f"Paper {_code_link('C.4.7')} has 2 undergraduate co-authors."
+            in out
+        )
 
     def test_singular_form(self) -> None:
         buf = io.StringIO()
         render_undergrad_products_section([self._p(n_coauthors=1)], buf)
-        assert "(1 undergraduate co-author)" in buf.getvalue()
+        assert "has 1 undergraduate co-author." in buf.getvalue()
 
     def test_lead_undergrad_tag(self) -> None:
         buf = io.StringIO()
         render_undergrad_products_section(
             [self._p(n_coauthors=1, lead_is_undergrad=True)], buf,
         )
-        assert "[undergraduate is lead author]" in buf.getvalue()
+        out = buf.getvalue()
+        assert "has 1 undergraduate co-author." in out
+        assert "This paper was led by an undergraduate." in out
+
+    def test_intro_paragraph_emitted(self) -> None:
+        """The intro before the numbered list points the reader at the
+        `U` superscript convention used elsewhere in the packet."""
+        buf = io.StringIO()
+        render_undergrad_products_section([self._p()], buf)
+        out = buf.getvalue()
+        assert "Undergraduate authors are marked" in out
+        # `\super U\nosupersub{}` is the actual marker; verify the
+        # superscript control words land in the intro paragraph.
+        assert "\\super U\\nosupersub" in out
 
     def test_empty_list_writes_nothing(self) -> None:
         """Unlike C.15/C.20/C.21 (which emit 'N/A'), C.16.2.3 silently skips

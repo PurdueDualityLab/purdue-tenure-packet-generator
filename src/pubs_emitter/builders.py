@@ -194,6 +194,20 @@ def build_citation(conn: sqlite3.Connection, entry: BibEntry) -> Citation:
     authors_rtf = ", ".join(formatted_authors)
     link = resolve_link(conn, entry, category, title, raw_authors, acronym)
 
+    # Append the venue acronym (`(JSS)`, `(ESEC/FSE)`, ...) to the cleaned
+    # venue string for the rendered packet. Tenure reviewers identify
+    # venues by their community-canonical nickname, so the parenthetical
+    # is load-bearing. Skip when the venue already ends with a `)` (book
+    # chapters carry publisher annotations like "Intermediate C
+    # Programming (CRC Press)") or already contains the acronym
+    # (preprints whose journal field is "arXiv preprint arXiv:NNNN").
+    if (
+        acronym
+        and acronym.lower() not in venue_str.lower()
+        and not venue_str.rstrip().endswith(")")
+    ):
+        venue_str = f"{venue_str} ({acronym})"
+
     return Citation(
         section=section,
         rank=rank,
@@ -686,21 +700,66 @@ def build_software_product(entry: dict) -> SoftwareProduct:
     )
 
 
+def expand_venue_acronyms(text: str, registry: dict[str, str]) -> str:
+    """Expand the FIRST occurrence of each registry acronym in `text` to
+    `"{full_name} ({acronym})"`. Subsequent occurrences in the same
+    string keep the bare acronym (rare in practice; most service entries
+    name the venue once).
+
+    Word-boundary semantics: the acronym must not be preceded or followed
+    by another acronym-like character (alphanumeric, underscore, slash,
+    hyphen). This lets compound acronyms ("ESEC/FSE") match before
+    substrings ("FSE"), and keeps acronyms inside hyphenated track names
+    ("ESEC/FSE-Artifact") expanding cleanly to
+    "{full ESEC/FSE name} (ESEC/FSE)-Artifact". Sort longest first so
+    "ESEC/FSE" is tested before "FSE".
+    """
+    if not text or not registry:
+        return text
+    for acronym in sorted(registry, key=len, reverse=True):
+        full_name = registry[acronym]
+        pattern = re.compile(
+            r"(?<![\w/\-])" + re.escape(acronym) + r"(?![\w/])"
+        )
+        # count=1 → expand FIRST occurrence only.
+        text, n = pattern.subn(f"{full_name} ({acronym})", text, count=1)
+    return text
+
+
 def build_service_entry(entry: dict) -> ServiceEntry:
     """Build a ServiceEntry from a YAML dict (C.23 / C.24 / C.25 / C.26).
 
     `year` field may be int (2025) or string ("2025, 2026, 2027" /
     "2024-2025" / "2023-present"). Empty / missing → year_str="", which
     suppresses the trailing year on render (used for journal reviewing).
+
+    Description goes through `expand_venue_acronyms` so YAML stays
+    compact ("Member of Program Committee, ICSE") and the rendered
+    output reads ("Member of Program Committee, {full ICSE name}
+    (ICSE)").
     """
+    from .config import VENUE_FULL_NAMES
     year_raw = entry.get("year", "")
     year_str = str(year_raw) if year_raw not in (None, "") else ""
+    # `year_display:` (OPTIONAL) overrides what's shown after the
+    # description — useful when the description already embeds the year
+    # inline (e.g., "Sub-reviewer: ASPLOS (2018), EuroSys (2018)") and a
+    # trailing "2018." would read redundantly. The `year:` field still
+    # drives the chronological sort. Setting `year_display: ""`
+    # suppresses the trailing year entirely.
+    if "year_display" in entry:
+        display = entry.get("year_display") or ""
+        year_str_display = str(display)
+    else:
+        year_str_display = year_str
     # `show: false` suppresses the entry from rendering; default True.
     show_raw = entry.get("show", True)
+    description = decode_latex(entry.get("description", "")).replace("\n", " ")
+    description = expand_venue_acronyms(description, VENUE_FULL_NAMES)
     return ServiceEntry(
         year=parse_year(year_str) if year_str else 9999,
-        year_str=year_str,
-        description=decode_latex(entry.get("description", "")).replace("\n", " "),
+        year_str=year_str_display,
+        description=description,
         id=str(entry.get("id", "") or ""),
         show=bool(show_raw),
     )

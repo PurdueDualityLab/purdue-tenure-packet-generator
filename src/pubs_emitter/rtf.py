@@ -246,13 +246,13 @@ def render_key_works_section(
     code = SECTION_CODES["Key Works"]
     heading = SECTION_HEADINGS["Key Works"]
     _emit_section_heading(out, code, heading)
+    indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(key_works)))
     expansion_done: set[str] = set()
     for idx, kw in enumerate(key_works, 1):
-        body = render_key_work_citation(kw, expansion_done, paper_index)
-        # Citation paragraph (hanging indent: first line at 0, continuation at 720).
-        out.write(f"\\pard\\li720\\fi-720 {_ref_anchor(f'{code}.{idx}')}.\\tab {body}\\par\n")
-        # Impact paragraph (indented block: both first line and continuation at 720).
-        out.write(f"\\pard\\li720\\fi0 {escape_rtf(kw.impact)}\\par\\par\n")
+        citation = render_key_work_citation(kw, expansion_done, paper_index)
+        _emit_list_item_with_body(
+            out, f"{code}.{idx}", citation, escape_rtf(kw.impact), indent=indent,
+        )
 
 
 def order_citations_for_emission(
@@ -1166,6 +1166,24 @@ def render_postdocs_section(
     out.write("\\pard\\par\n")
 
 
+def _service_section_intro(section: "Section") -> str:
+    """Per-section intro paragraph emitted between the C.23/24/25/26
+    heading and the numbered list. Returns "" when the section has no
+    intro (most cases). Hardcoded for now — the C.24 intro is the
+    only canonical one (added 260603 per user direction) and a
+    YAML-driven schema would be over-engineering for one entry.
+    Future additions: add to this dict, no other code changes needed.
+    """
+    intros: dict[str, str] = {
+        "Profession Service": (
+            "Davis's primary service to professional societies has been "
+            "through peer review. Following is a selected list. See also "
+            f"leadership roles in {_code_link('C.7')}."
+        ),
+    }
+    return intros.get(section, "")
+
+
 def render_service_section(
     section: Section,
     entries: list[ServiceEntry],
@@ -1176,12 +1194,19 @@ def render_service_section(
     Hanging-indent numbered list: `C.X.Y\\tab description. year.`
     When year_str is empty (ongoing service with no fixed date — typically
     journal reviewing) the trailing year + period is suppressed.
+
+    Sections may have an opt-in intro paragraph via
+    `_service_section_intro(section)` — emitted between the heading and
+    the numbered list. Currently only C.24 (Profession Service) has one.
     """
     if not entries:
         return
     code = SECTION_CODES[section]
     heading = SECTION_HEADINGS[section]
     _emit_section_heading(out, code, heading)
+    intro = _service_section_intro(section)
+    if intro:
+        out.write(f"\\pard\\sa120 {intro}\\par\\par\n")
     indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(entries)))
     for idx, entry in enumerate(entries, 1):
         body = escape_rtf(entry.description)
@@ -1295,25 +1320,45 @@ def render_undergrad_products_section(
 ) -> None:
     """C.16.2.3: research products with undergraduate co-authors.
 
-    Auto-derived from the bib; never authored in YAML. Each entry renders as
-    a numbered line: "{label} {ref} ({n} undergraduate co-author[s] [undergraduate
-    is lead author])". Empty list (no undergrad coauthors anywhere) → emit
-    nothing (no orphan heading; this is the per-section default — distinct
-    from C.15/C.20/C.21 which emit "N/A").
+    Auto-derived from the bib; never authored in YAML. Renders a brief
+    intro pointing the reader at the per-author `U` superscript marker
+    (the convention used in C.2/C.4/C.5 citations), followed by a
+    numbered list of full-sentence entries:
+
+      "Paper C.X.Y has N undergraduate co-author[s][. This paper was led
+      by an undergraduate]."
+
+    Empty list (no undergrad coauthors anywhere) → emit nothing (no
+    orphan heading; this is the per-section default — distinct from
+    C.15 / C.20 / C.21 which emit "N/A").
     """
     if not products:
         return
     code = SECTION_CODES["Undergraduate Research Products"]
     heading = SECTION_HEADINGS["Undergraduate Research Products"]
     _emit_section_heading(out, code, heading)
+    # Intro paragraph: explain the `U` superscript convention used
+    # elsewhere in the packet, so the reader knows the section is a
+    # summary, not a separate authorship claim.
+    intro = (
+        "Undergraduate authors are marked with a "
+        "{\\super U\\nosupersub{}} superscript in the associated "
+        "publication sections. This section provides a summary of "
+        "undergraduate participation."
+    )
+    out.write(f"\\pard\\sa120 {intro}\\par\\par\n")
     indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(products)))
     for idx, p in enumerate(products, 1):
         plural = "co-authors" if p.n_coauthors > 1 else "co-author"
-        lead_tag = " [undergraduate is lead author]" if p.lead_is_undergrad else ""
-        body = (
+        sentence_a = (
             f"{escape_rtf(p.product_label)} {_code_link(p.ref)} "
-            f"({p.n_coauthors} undergraduate {plural}{lead_tag})"
+            f"has {p.n_coauthors} undergraduate {plural}."
         )
+        sentence_b = (
+            " This paper was led by an undergraduate."
+            if p.lead_is_undergrad else ""
+        )
+        body = sentence_a + sentence_b
         _emit_list_item(out, f"{code}.{idx}", body, indent=indent)
 
 
@@ -1492,7 +1537,11 @@ def render_software_products_section(
     code = SECTION_CODES["Software Products"]
     heading = SECTION_HEADINGS["Software Products"]
     _emit_section_heading(out, code, heading)
-    for idx, p in enumerate(sorted(products, key=lambda x: x.year), 1):
+    sorted_products = sorted(products, key=lambda x: x.year)
+    indent = _hanging_indent_for_codes(
+        _section_codes_up_to(code, len(sorted_products))
+    )
+    for idx, p in enumerate(sorted_products, 1):
         # Header line: "C.22.N.\tab **name** (year_str)".
         # Brace-scope the bold so the close-brace ends `\b` AND emits a
         # literal space — bare `\b0 (year)` consumes its trailing space
@@ -1501,9 +1550,9 @@ def render_software_products_section(
         head = f"{{\\b {escape_rtf(p.name)}}}"
         if p.year_str:
             head += f" ({escape_rtf(p.year_str)})"
-        out.write(f"\\pard\\li720\\fi-720 {_ref_anchor(f'{code}.{idx}')}.\\tab {head}\\par\n")
-        # Body line: indented block paragraph for the description.
-        out.write(f"\\pard\\li720\\fi0 {escape_rtf(p.description)}\\par\\par\n")
+        _emit_list_item_with_body(
+            out, f"{code}.{idx}", head, escape_rtf(p.description), indent=indent,
+        )
 
 
 def render_patents_section(patents: list[Patent], out: IO[str]) -> None:
@@ -1669,31 +1718,114 @@ def _emit_list_item(
     The `_ref_anchor` wrap on the code makes the entry a bookmark target
     for `@id` and raw section-code cross-refs.
     """
+    # `\\tx{indent}` sets an EXPLICIT tab stop at the hanging-indent
+    # column. Without this, the `\\tab` after the label uses RTF's
+    # default 720-twip tab stops — so a 7-char label tabs to 720 (small
+    # gap) but an 8-char label spills past 720 and tabs to 1440 (huge
+    # gap), producing the ragged C.23.10+ layout the user flagged on
+    # 260603. With `\\tx{indent}` every body starts at the same column
+    # regardless of label width.
     out.write(
-        f"\\pard\\li{indent}\\fi-{indent} "
+        f"\\pard\\li{indent}\\fi-{indent}\\tx{indent} "
         f"{_ref_anchor(code)}.\\tab {body}\\par\\par\n"
     )
 
 
+def _emit_list_item_with_body(
+    out: IO[str], code: str, header: str, body_paragraph: str,
+    indent: int = 720,
+) -> None:
+    """Two-paragraph variant of `_emit_list_item` — used by C.1 Key Works
+    and C.22 Software Products, both of which lead with a short
+    hanging-indent citation/name line and then a block-indented
+    description paragraph below.
+
+    Same tab-stop discipline as `_emit_list_item`: explicit `\\tx{indent}`
+    so the header `\\tab` lands at the indent column regardless of label
+    width. Body paragraph uses `\\fi0` (no first-line outdent) so its
+    text starts AT the indent column too — visually aligned under the
+    header content, not under the label.
+
+    Caller computes `indent` once per section via
+    `_hanging_indent_for_codes` and passes it to every call so labels
+    align within the section.
+    """
+    out.write(
+        f"\\pard\\li{indent}\\fi-{indent}\\tx{indent} "
+        f"{_ref_anchor(code)}.\\tab {header}\\par\n"
+    )
+    out.write(
+        f"\\pard\\li{indent}\\fi0 {body_paragraph}\\par\\par\n"
+    )
+
+
+_HEADING_FONT_SIZE_BY_LEVEL: dict[int, int] = {
+    1: 28,   # C.1, C.2, ..., A.1 — top-level section
+    2: 26,   # C.16.1, C.16.2 — first-tier sub-section
+    3: 24,   # C.16.2.1, C.16.2.3 — second-tier sub-section
+    4: 22,   # C.16.2.3.1 etc. (rare; reserved)
+}
+_HEADING_INDENT_PER_LEVEL: int = 360  # twips per level (≈0.25")
+
+
+def _heading_level(code: str) -> int:
+    """Sub-section depth derived from dot count: C.16 → 1, C.16.1 → 2,
+    C.16.2.1 → 3. Caps at 4 to keep the font size readable for very deep
+    sub-sub-sections (none currently in use)."""
+    return min(code.count("."), 4)
+
+
 def _emit_section_heading(out: IO[str], code: str, heading: str) -> None:
-    """Section header paragraph styled as Word `Heading 1` (via stylesheet \\s1).
+    """Section / sub-section header paragraph.
+
+    The visual style scales by the code's depth: top-level headings (C.1,
+    C.2, ..., A.1) get the largest font (fs28) with no indent; sub-section
+    headings step down in font size AND step in by 360 twips per level so
+    the outline reads as a nested structure. C.16.1 ("Overview") indents
+    once relative to C.16; C.16.2.1 ("VIP") indents twice; etc.
 
     `\\pard\\plain` resets paragraph formatting; `\\s1` applies the named
-    style from the stylesheet; the explicit `\\b\\fs28` ensures the heading
-    renders correctly even if Word's stylesheet inheritance is unusual.
+    style from the stylesheet; the explicit `\\b\\fs{N}` ensures the
+    heading renders correctly even if Word's stylesheet inheritance is
+    unusual. The trailing `\\pard\\plain\\fs24\\par` re-baselines the
+    body paragraph that follows.
 
-    Top-level codes (single dot: `C.1`, `C.2`, ..., `A.1`) get a leading
-    blank paragraph for visual breathing room before the next major
-    section. Sub-section codes (multi-dot: `C.16.2.3` etc.) skip the
+    Top-level codes get a leading blank paragraph for visual breathing
+    room before the next major section. Sub-section codes skip the
     leading blank — they nest directly under their parent's flow.
     """
-    is_top_level = code.count(".") == 1
-    if is_top_level:
+    level = _heading_level(code)
+    indent = (level - 1) * _HEADING_INDENT_PER_LEVEL
+    font_size = _HEADING_FONT_SIZE_BY_LEVEL.get(level, 22)
+    if level == 1:
         out.write("\\pard\\plain\\fs24\\par\n")
+    # Top-level codes (C.1, C.16, A.1) render the code as plain text —
+    # they're never cross-ref targets (no `@C.16` use case) and skipping
+    # the bookmark wrap keeps the heading-text assertions in existing
+    # tests stable. Sub-section codes (C.16.1, C.16.2.1, ...) ARE
+    # cross-ref targets (the user-supplied 260603 C.16 outline uses
+    # them as in-doc anchors) so they get `_ref_anchor` wraps.
+    code_text = code if level == 1 else _ref_anchor(code)
     out.write(
-        f"\\pard\\plain\\s1\\b\\fs28 {code} {heading}\\par\n"
+        f"\\pard\\plain\\li{indent}\\s1\\b\\fs{font_size} "
+        f"{code_text} {heading}\\par\n"
         f"\\pard\\plain\\fs24\\par\n"
     )
+
+
+def _emit_placeholder_subsection(
+    out: IO[str], code: str, title: str,
+) -> None:
+    """Emit a sub-section heading whose CONTENT is intentionally empty,
+    used for C.16 outline slots that don't have prose yet. The heading
+    appears (so the reader sees the planned structure) followed by an
+    indented blank paragraph — content for that slot is added later by
+    filling in the YAML / editing this call site. The blank paragraph
+    matches the heading's indent so future-added content lines up.
+    """
+    _emit_section_heading(out, code, title)
+    indent = (_heading_level(code) - 1) * _HEADING_INDENT_PER_LEVEL
+    out.write(f"\\pard\\li{indent}\\par\\par\n")
 
 
 def write_rtf(
@@ -1891,9 +2023,19 @@ def write_rtf(
             render_grants_section("Gifts", gifts, out)
         if _emit("Internal Grants"):
             render_grants_section("Internal Grants", internal_grants, out)
+        # Sections C.14 → C.16 — kept in numeric (C.14, C.15, C.16) order
+        # so the bookmark stream emits tuple-monotone. C.16's entire
+        # subtree (C.16.1 / C.16.2 / C.16.2.* / C.16.3 / C.16.3.*) emits
+        # contiguously inside the C.16 block, before C.17.
         if _emit("Graduate Students"):
             render_students_section(
                 "Graduate Students", graduate_students, bib_entries, paper_index, out,
+                under_review=under_review,
+                under_review_index=under_review_index,
+            )
+        if _emit("Postdocs and Visiting Scholars"):
+            render_postdocs_section(
+                postdocs_visiting, bib_entries, paper_index, out,
                 under_review=under_review,
                 under_review_index=under_review_index,
             )
@@ -1904,12 +2046,40 @@ def write_rtf(
                 under_review=under_review,
                 under_review_index=under_review_index,
             )
-        if _emit("Postdocs and Visiting Scholars"):
-            render_postdocs_section(
-                postdocs_visiting, bib_entries, paper_index, out,
-                under_review=under_review,
-                under_review_index=under_review_index,
+            # C.16 outline: placeholders for prose subsections + inline
+            # emit of the auto-derived data sub-sections (C.16.2.3 / C.16.2.4
+            # / C.16.3.3) so the whole mentoring tree reads top-down per
+            # the user-supplied 260603 structure.
+            _emit_placeholder_subsection(out, "C.16.1", "Overview")
+            _emit_placeholder_subsection(
+                out, "C.16.2", "Undergraduate Student Mentoring",
             )
+            _emit_placeholder_subsection(
+                out, "C.16.2.1", "Vertically Integrated Projects",
+            )
+            _emit_placeholder_subsection(
+                out, "C.16.2.2", "Other Undergraduate Research Pathways",
+            )
+            if _emit("Undergraduate Research Products"):
+                render_undergrad_products_section(undergrad_products, out)
+            if _emit("Undergraduate Student Awards"):
+                render_student_awards_section(
+                    "Undergraduate Student Awards", student_awards, out,
+                )
+            _emit_placeholder_subsection(
+                out, "C.16.3", "Graduate Student Mentoring",
+            )
+            _emit_placeholder_subsection(
+                out, "C.16.3.1", "Thesis Advising and Research Supervision",
+            )
+            _emit_placeholder_subsection(
+                out, "C.16.3.2",
+                "Graduate Student Research Leadership and Publications",
+            )
+            if _emit("Graduate Student Awards"):
+                render_student_awards_section(
+                    "Graduate Student Awards", student_awards, out,
+                )
         # C.17 sits BEFORE C.18 — render the courses-taught table first.
         if _emit("Courses Taught"):
             render_courses_taught_section(courses_taught, out)
@@ -1922,18 +2092,6 @@ def write_rtf(
         if _emit("Technology Transfer"):
             render_technology_transfer_section(
                 technology_transfer, paper_index, out,
-            )
-        # C.16.2.3 sits in the mentoring flow with the other C.16-cluster
-        # subsections; emit it just before the C.16.2.4 + C.16.3.3 awards.
-        if _emit("Undergraduate Research Products"):
-            render_undergrad_products_section(undergrad_products, out)
-        if _emit("Undergraduate Student Awards"):
-            render_student_awards_section(
-                "Undergraduate Student Awards", student_awards, out,
-            )
-        if _emit("Graduate Student Awards"):
-            render_student_awards_section(
-                "Graduate Student Awards", student_awards, out,
             )
         if _emit("Software Products"):
             render_software_products_section(software_products, out)

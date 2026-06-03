@@ -57,6 +57,17 @@ graduate_students:
 
 undergraduate_students: []
 
+# course_development entries → produce C.18.N bookmarks that must emit
+# AFTER C.16.* bookmarks. Without these the e2e ordering test
+# (`test_full_emit_order_is_tuple_monotone`) passes trivially because
+# C.18 has no bookmarks in the fixture; the violating class lives in
+# the live data only. Added 260603 to plug the coverage gap.
+course_development:
+  - summary: "Test course re-design"
+    description: "Test course development entry covering syllabus refresh."
+  - summary: "Test curricular reform"
+    description: "Test curricular reform entry."
+
 university_service:
   - description: "Member, Test Faculty Committee"
     year: 2024
