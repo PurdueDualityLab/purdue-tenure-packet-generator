@@ -343,6 +343,24 @@ comes AFTER `\intbl` on the same paragraph:
 `\pard\intbl\qr $123,456\cell` — no need for a closing `\ql` because
 the next cell's `\pard` resets paragraph alignment.
 
+**Control words eat their trailing space — brace-scope to preserve it.**
+`\b0 Total: $5,000` renders as `Total:$5,000` because `\b0` consumes the
+space as a delimiter (RTF spec: a control word ends at the first
+non-letter, and a single space after a control word is the delimiter,
+not output). Same trap for `\i0`, `\ul0`, etc. Fix: brace-scope the
+toggle so the space is OUTSIDE the control-word's scope:
+
+```
+{\b Total:} $5,000        # ✓ "Total: $5,000"
+\b Total:\b0  $5,000      # ✗ "Total:$5,000" (space eaten by \b0)
+\b Total:\b0\~$5,000      # ✓ "Total: $5,000" (\~ is a non-breaking literal space)
+```
+
+Canonical incidents: Grant Row 1 `{\b C.10.1.}` (was emitting
+`C.10.1.SaTC` with no space), Grant Row 3 `{\b Co-PI:}`, italic venue
+emission `{\i Venue} in 2019`. Whenever you're about to write
+`\b0 <text>` or `\i0 <text>`, stop and brace-scope instead.
+
 **Cell borders** are a separate must-have. The 4-side border block
 `_CELL_BORDER_BLOCK` (`\clbrdrt\brdrs\brdrw15\clbrdrb...\clbrdrr...`)
 goes BEFORE each `\cellx` position in the row definition section.
@@ -448,7 +466,25 @@ first cell carrying `\clmgf` (merge-first) and the rest carrying
   when "redundant" loses signal.
 - **The bib is read-only / Scholar-canonical.** Don't add CVEs / talks /
   grants to it; they go in `non-scholar-work.yaml`. Don't add custom fields
-  you'd hate to lose on the next Scholar export.
+  you'd hate to lose on the next Scholar export. **Manual edits inside
+  bib entries (adding missed coauthors, fixing pages, correcting venue
+  acronyms) get CLOBBERED on the next Scholar re-export** — Scholar
+  overwrites the whole file. For anything you want to survive a
+  re-export, use the durable override paths:
+  * **Wrong / missing DOI** → `manual_links:` in `assets/config.yaml`
+    (an empty-string value SUPPRESSES a Crossref fuzzy-match; the
+    `liu2026regular` case).
+  * **Wrong / missing venue acronym mapping** → `ranks:` in
+    `assets/config.yaml`.
+  * **Missing coauthor for student-matcher / undergrad-count purposes**
+    → add the canonical full-name to `students.G` / `students.U` in
+    `assets/config.yaml` (the matcher reads canonical-side, not bib-side).
+  * **Author list corrections that Scholar genuinely got wrong** (e.g.
+    Scholar dropped a coauthor entirely) → still edit the bib, but
+    document the edit in a comment so future-self knows to re-apply
+    after Scholar re-export. There's no durable override for the
+    author list itself; the bib edit IS the source of truth and the
+    re-export is the regression vector.
 - **`format_inventors` returns RTF-marked-up text; do NOT `escape_rtf` it.**
   The patent table cell's `\b ...\b0` markup must survive to the output.
   `render_patents_section` skips escaping for that cell specifically.

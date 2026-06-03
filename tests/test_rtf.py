@@ -1260,7 +1260,10 @@ class TestRenderStudentAwardsSection:
         # The old "These are students I mentored." preamble was dropped —
         # the section heading already conveys the context.
         assert "These are students I mentored" not in out
-        assert "C.16.2.4.1\\tab" in out
+        # Bookmark-wrapped code followed by `.\tab` is the canonical
+        # `_emit_list_item` shape; the bookmark-end is the unique anchor
+        # confirming the entry was emitted as a numbered list item.
+        assert "C_16_2_4_1}.\\tab" in out
 
     def test_grad_section_emits_c1633_code(self) -> None:
         buf = io.StringIO()
@@ -1271,7 +1274,7 @@ class TestRenderStudentAwardsSection:
         )
         out = buf.getvalue()
         assert "C.16.3.3 Graduate student awards and fellowships" in out
-        assert "C.16.3.3.1\\tab" in out
+        assert "C_16_3_3_1}.\\tab" in out
 
     def test_filters_by_level(self) -> None:
         """The mixed list goes to BOTH calls; each filters by its own level."""
@@ -1307,8 +1310,8 @@ class TestRenderStudentAwardsSection:
         institutional_pos = out.index("Institutional Awards\\b0")
         assert national_pos < institutional_pos
         # Counter is section-wide: B (in National tier) gets .1, A gets .2.
-        assert "C.16.2.4.1\\tab B" in out
-        assert "C.16.2.4.2\\tab A" in out
+        assert "C_16_2_4_1}.\\tab B" in out
+        assert "C_16_2_4_2}.\\tab A" in out
 
     def test_within_tier_year_desc(self) -> None:
         buf = io.StringIO()
@@ -1327,9 +1330,9 @@ class TestRenderStudentAwardsSection:
         old_pos = out.index("Old, Test Award")
         assert new_pos < mid_pos < old_pos
         # Numbering reflects the sorted order, not the input order.
-        assert "C.16.2.4.1\\tab New" in out
-        assert "C.16.2.4.2\\tab Mid" in out
-        assert "C.16.2.4.3\\tab Old" in out
+        assert "C_16_2_4_1}.\\tab New" in out
+        assert "C_16_2_4_2}.\\tab Mid" in out
+        assert "C_16_2_4_3}.\\tab Old" in out
 
     def test_year_in_parens(self) -> None:
         buf = io.StringIO()

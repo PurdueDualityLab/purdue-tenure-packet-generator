@@ -210,6 +210,13 @@ def build_citation(conn: sqlite3.Connection, entry: BibEntry) -> Citation:
 # `email@example.com` is left untouched.
 
 _REF_PATTERN = re.compile(r"(?<![\w])@([a-zA-Z][a-zA-Z0-9_-]*)")
+# Raw section-code syntax: `@C.16.2.1`, `@A.1`, `@C.10`, etc. — matches a
+# capital letter, dot, then one-or-more numeric segments. Disjoint from
+# `_REF_PATTERN` (which disallows dots) and from `@@` escape (different
+# prefix). Used for cross-refs to sections whose backing YAML entry doesn't
+# exist yet (the bookmark target may not be present, in which case the
+# click falls through — same trade-off as cross-refs into table sections).
+_RAW_CODE_PATTERN = re.compile(r"(?<![\w])@([A-Z]\.\d+(?:\.\d+)*)")
 _REF_ESCAPE_SENTINEL = "\x00__AT_AT_ESCAPE__\x00"
 
 # When `link_format=True`, resolved refs emit `\x01CODE\x02` sentinels
@@ -266,6 +273,13 @@ def resolve_refs(
     protected = text.replace("@@", _REF_ESCAPE_SENTINEL)
     unresolved: list[str] = []
 
+    def _sub_raw_code(match: "re.Match[str]") -> str:
+        # Raw section code — no lookup needed; bookmark may not exist.
+        code = match.group(1)
+        if link_format:
+            return f"{REF_LINK_OPEN}{code}{REF_LINK_CLOSE}"
+        return code
+
     def _sub(match: "re.Match[str]") -> str:
         ref_id = match.group(1)
         if ref_id in ref_index:
@@ -276,7 +290,10 @@ def resolve_refs(
         unresolved.append(ref_id)
         return match.group(0)  # leave as-is so it's visible in error report
 
-    substituted = _REF_PATTERN.sub(_sub, protected)
+    # Raw section codes first so `@C.16.2.1` doesn't get partially matched
+    # as `@C` by the id pattern (which disallows dots).
+    substituted = _RAW_CODE_PATTERN.sub(_sub_raw_code, protected)
+    substituted = _REF_PATTERN.sub(_sub, substituted)
     # Restore literal `@`.
     substituted = substituted.replace(_REF_ESCAPE_SENTINEL, "@")
     return substituted, unresolved
@@ -374,8 +391,18 @@ def build_grant(entry: dict) -> Grant:
 
 
 def build_student(entry: dict) -> Student:
-    """Build a Student record from a YAML dict (used for both C.14 and C.16)."""
+    """Build a Student record from a YAML dict (used for both C.14 and C.16).
+
+    `aliases:` is an OPTIONAL list of alternate names used in the bib /
+    A.1 author lists when the student appears under a different last
+    name (accent fold, hyphenation drop, or short form). LaTeX-decoded
+    for accent normalization, then stored as a tuple on the record.
+    """
     grad_year = int(entry.get("grad_year", 9999) or 9999)
+    aliases = tuple(
+        decode_latex(str(a)).replace("\n", " ")
+        for a in (entry.get("aliases") or [])
+    )
     return Student(
         grad_year=grad_year,
         grad_display=str(entry.get("graduation", "") or ""),
@@ -385,6 +412,7 @@ def build_student(entry: dict) -> Student:
         position=decode_latex(entry.get("position", "") or "").replace("\n", " "),
         co_advisor=decode_latex(entry.get("co_advisor", "") or "").replace("\n", " "),
         id=str(entry.get("id", "") or ""),
+        aliases=aliases,
     )
 
 
@@ -433,6 +461,9 @@ def build_under_review(conn: sqlite3.Connection, entry: dict) -> UnderReview:
         authors_rtf=", ".join(formatted),
         venue=decode_latex(entry.get("venue", "")).replace("\n", " "),
         pages=str(entry.get("pages", "") or ""),
+        # Persist the bib-form author tuple so the student-table linker
+        # can match A.1 entries the same way it matches C.X bib entries.
+        raw_authors=tuple(a.strip() for a in author_list),
         id=str(entry.get("id", "") or ""),
     )
 

@@ -112,7 +112,20 @@ class ConferencePresentation(NamedTuple):
 
 
 class Student(NamedTuple):
-    """A C.14 graduate student record. Related publications are auto-derived."""
+    """A C.14 graduate student record. Related publications are auto-derived.
+
+    `aliases`: OPTIONAL list of alternate names the student appears under
+    in the bib / A.1 author lists. Needed when bib entries use a
+    different last name (accent fold, hyphenation drop, or just an
+    earlier-publication shorter form). The C.14 "Related Publications"
+    column scans bib + A.1 author lists for `name` AND every alias and
+    unions the results. Match semantics: structural (last-name equality
+    + initials-prefix), same as the canonical name match — applied once
+    per alias. Example: Ricardo's bib forms include "Méndez, Ricardo
+    Andrés Calvo" (canonical), "Mendez, ..." (ASCII-folded), "Calvo,
+    Ricardo" (short form) — three different last names; aliases capture
+    the latter two.
+    """
     grad_year: int           # sort key (use 9999 for ongoing students)
     grad_display: str        # "2025 Spring" / "ongoing" / etc.
     name: str
@@ -121,6 +134,7 @@ class Student(NamedTuple):
     position: str            # current job + affiliation (optional)
     co_advisor: str = ""     # set when role == "Co-Chair"; renders "(with NAME)" in Role column
     id: str = ""             # OPTIONAL cross-ref id; @id resolves to "C.14.N" / "C.16.N"
+    aliases: tuple[str, ...] = ()  # alternate bib forms for pub-back-mapping
 
 
 class GrantPerson(NamedTuple):
@@ -190,12 +204,16 @@ class UnderReview(NamedTuple):
     with no known date use "9999-99-99" so they sort to the bottom.
     `authors_rtf` carries the per-author RTF markup (bold-for-me, G / # / *
     role markers) from `format_author`; YAML stores raw author names.
+    `raw_authors` carries the bib-form names (pre-format_author) so the
+    student-table "Related Publications" column can match A.1 entries
+    against student records the same way it matches bib entries.
     """
     due_date: str        # YYYY-MM-DD; sort key
     title: str
     authors_rtf: str
     venue: str
     pages: str           # e.g., "30 pages"
+    raw_authors: tuple[str, ...] = ()  # bib-form strings, one per author
     id: str = ""         # OPTIONAL cross-ref id; @id resolves to "A.1.N" at build time
 
 

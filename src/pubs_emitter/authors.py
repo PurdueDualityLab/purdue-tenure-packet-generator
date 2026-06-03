@@ -36,8 +36,20 @@ def lookup_student_type(conn: sqlite3.Connection, bib_name: str) -> str:
     return ""
 
 
+_NAME_SUFFIXES: frozenset[str] = frozenset({"Jr", "Jr.", "Sr", "Sr.", "II", "III", "IV"})
+
+
 def parse_name_parts(bib_name: str) -> tuple[str, list[str]]:
-    """Parse 'Last, First Middle' or 'First Middle Last' → (last, [first_parts])."""
+    """Parse 'Last, First Middle' or 'First Middle Last' → (last, [first_parts]).
+
+    Generational suffixes (Jr, Sr, II, III, IV) are grouped with the
+    preceding last-name token rather than treated as a standalone last
+    name. Without this, natural-order "William P Maxam III" parses as
+    last="III" and the student matcher fails to associate the row with
+    bib entries like "Maxam III, William P" (last="Maxam III"). Comma-
+    form input passes through unchanged — BibTeX's "Last, First" shape
+    already keeps the suffix on the last-name side.
+    """
     if "," in bib_name:
         parts = [p.strip() for p in bib_name.split(",")]
         last = parts[0]
@@ -46,6 +58,11 @@ def parse_name_parts(bib_name: str) -> tuple[str, list[str]]:
         parts = bib_name.split()
         last = parts[-1]
         firsts = parts[:-1]
+        # Suffix on the END of natural-order input: grab the previous
+        # token and merge ("William P Maxam III" → last="Maxam III").
+        if last in _NAME_SUFFIXES and firsts:
+            last = f"{firsts[-1]} {last}"
+            firsts = firsts[:-1]
     return last, firsts
 
 

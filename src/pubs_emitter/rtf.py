@@ -294,9 +294,7 @@ def render_under_review_section(
         # Sentinel "9999-99-99" means no known deadline → suppress the marker.
         if ur.due_date and ur.due_date != "9999-99-99":
             body += f" \\ul Due: {escape_rtf(ur.due_date)}\\ulnone."
-        out.write(
-            f"\\pard\\li720\\fi-720 {_ref_anchor(f'{code}.{idx}')}.\\tab {body}\\par\\par\n"
-        )
+        _emit_list_item(out, f"{code}.{idx}", body)
 
 
 # C.5 "Other publications and products" subcategory map. Each Citation's
@@ -365,10 +363,7 @@ def render_other_pubs_section(
             body = render_citation(
                 cit, expansion_done, paper_index, key_work_index,
             )
-            out.write(
-                f"\\pard\\li720\\fi-720 "
-                f"{_ref_anchor(f'{code}.{idx}')}.\\tab {body}\\par\\par\n"
-            )
+            _emit_list_item(out, f"{code}.{idx}", body)
 
 
 def render_invited_talk(talk: InvitedTalk) -> str:
@@ -391,8 +386,7 @@ def render_invited_talks_section(talks: list[InvitedTalk], out: IO[str]) -> None
     heading = SECTION_HEADINGS["Invited Talks"]
     _emit_section_heading(out, code, heading)
     for idx, talk in enumerate(talks, 1):
-        body = render_invited_talk(talk)
-        out.write(f"\\pard\\li720\\fi-720 {_ref_anchor(f'{code}.{idx}')}.\\tab {body}\\par\\par\n")
+        _emit_list_item(out, f"{code}.{idx}", render_invited_talk(talk))
 
 
 def render_leadership_role(role: LeadershipRole) -> str:
@@ -414,8 +408,7 @@ def render_leadership_section(roles: list[LeadershipRole], out: IO[str]) -> None
     heading = SECTION_HEADINGS["Leadership Roles"]
     _emit_section_heading(out, code, heading)
     for idx, role in enumerate(roles, 1):
-        body = render_leadership_role(role)
-        out.write(f"\\pard\\li720\\fi-720 {_ref_anchor(f'{code}.{idx}')}.\\tab {body}\\par\\par\n")
+        _emit_list_item(out, f"{code}.{idx}", render_leadership_role(role))
 
 
 _CONF_PRES_NOTE = (
@@ -481,8 +474,10 @@ def render_conference_presentations_section(
         return parse_year(bib.get("year", "") if bib else "")
     sorted_pres = sorted(presentations, key=_year)
     for idx, p in enumerate(sorted_pres, 1):
-        body = render_conference_presentation(p, bib_entries, paper_index)
-        out.write(f"\\pard\\li720\\fi-720 {_ref_anchor(f'{code}.{idx}')}.\\tab {body}\\par\\par\n")
+        _emit_list_item(
+            out, f"{code}.{idx}",
+            render_conference_presentation(p, bib_entries, paper_index),
+        )
 
 
 def render_media_appearance(media: MediaAppearance) -> str:
@@ -499,8 +494,7 @@ def render_media_appearances_section(media: list[MediaAppearance], out: IO[str])
     heading = SECTION_HEADINGS["Media Appearances"]
     _emit_section_heading(out, code, heading)
     for idx, m in enumerate(media, 1):
-        body = render_media_appearance(m)
-        out.write(f"\\pard\\li720\\fi-720 {_ref_anchor(f'{code}.{idx}')}.\\tab {body}\\par\\par\n")
+        _emit_list_item(out, f"{code}.{idx}", render_media_appearance(m))
 
 
 def _format_usd(amount: int) -> str:
@@ -747,39 +741,90 @@ def render_grants_section(
         out.write("\\pard\\par\n")  # blank paragraph between grant tables
 
 
+def _author_matches_any(
+    bib_author: str, candidates: list[tuple[str, str]],
+) -> bool:
+    """Structural match: bib author against any (last_norm, initials) candidate.
+
+    Candidate side carries the canonical-name + alias forms pre-parsed.
+    Match semantics same as `authors.lookup_student_type`: last name
+    equal, bib initials a prefix of candidate's initials.
+    """
+    from .latex import decode_latex as _decode
+    decoded = _decode(bib_author.strip())
+    b_last, b_firsts = parse_name_parts(decoded)
+    b_last_norm = b_last.lower()
+    b_initials = "".join(f[0].upper() for f in b_firsts if f)
+    for c_last_norm, c_initials in candidates:
+        if b_last_norm != c_last_norm:
+            continue
+        if not b_initials or c_initials.startswith(b_initials):
+            return True
+    return False
+
+
+def _build_name_candidates(names: list[str]) -> list[tuple[str, str]]:
+    """Pre-parse `(last_norm, initials)` tuples for a list of name strings.
+
+    The C.14 column scans every bib entry's authors against the
+    canonical name + aliases of one student; pre-parsing the candidates
+    once per student amortizes the parse cost across N bib entries.
+    """
+    out: list[tuple[str, str]] = []
+    for n in names:
+        if not n:
+            continue
+        last, firsts = parse_name_parts(n)
+        out.append((last.lower(), "".join(f[0].upper() for f in firsts if f)))
+    return out
+
+
 def _student_pub_refs(
     student_name: str,
     bib_entries: list[BibEntry],
     paper_index: dict[str, str],
+    *,
+    aliases: tuple[str, ...] = (),
+    under_review: Optional[list["UnderReview"]] = None,
+    under_review_index: Optional[dict[int, str]] = None,
 ) -> list[str]:
-    """Find all bib papers this student co-authored; return their C.X.Y refs.
+    """Find all C.X.Y / A.1.N refs for papers this student co-authored.
 
-    Structural match: same algorithm as authors.lookup_student_type (last name
-    equal, bib initials a prefix of student initials).
+    Scans the bib (C.2/C.3/C.4/C.5 sourced) AND the A.1 under-review list
+    (when supplied). Match semantics: structural — last-name equality +
+    canonical-initials.startswith(bib-initials), as in
+    `authors.lookup_student_type`. Aliases extend the candidate set so
+    students whose bib forms use different last names (accent fold,
+    short form) are matched once per alias.
+
+    Output is sorted: C.* refs first (by section + idx), then A.1 refs.
     """
     from .venue import normalize_title
-    from .latex import decode_latex
-    s_last, s_firsts = parse_name_parts(student_name)
-    s_last_norm = s_last.lower()
-    s_initials = "".join(f[0].upper() for f in s_firsts if f)
+    candidates = _build_name_candidates([student_name, *aliases])
     refs: list[str] = []
     for entry in bib_entries:
         raw = entry.get("author", "")
         for author in raw.split(" and "):
-            decoded = decode_latex(author.strip())
-            b_last, b_firsts = parse_name_parts(decoded)
-            if b_last.lower() != s_last_norm:
-                continue
-            b_initials = "".join(f[0].upper() for f in b_firsts if f)
-            if not b_initials or s_initials.startswith(b_initials):
+            if _author_matches_any(author, candidates):
                 title = entry.get("title", "")
                 ref = paper_index.get(normalize_title(title)) if title else None
                 if ref:
                     refs.append(ref)
                 break  # this author matched; don't scan other authors of same paper
-    # Sort by section then index for stable output (C.2.* before C.4.*).
+    if under_review and under_review_index is not None:
+        for i, ur in enumerate(under_review):
+            ref = under_review_index.get(i)
+            if not ref:
+                continue
+            for author in ur.raw_authors:
+                if _author_matches_any(author, candidates):
+                    refs.append(ref)
+                    break
     def _key(r: str) -> tuple[int, ...]:
-        return tuple(int(x) for x in r.replace("C.", "").split("."))
+        # C.X.Y refs sort first (prefix "0"), A.1.N refs after (prefix "1").
+        prefix = 0 if r.startswith("C.") else 1
+        body = r.replace("C.", "").replace("A.", "")
+        return (prefix, *(int(x) for x in body.split(".")))
     return sorted(set(refs), key=_key)
 
 
@@ -893,9 +938,16 @@ def _render_student_data_row(
     bib_entries: list[BibEntry],
     paper_index: dict[str, str],
     cellx: list[int],
+    under_review: Optional[list[UnderReview]] = None,
+    under_review_index: Optional[dict[int, str]] = None,
 ) -> str:
     """One 6-cell data row for a student."""
-    pubs = _student_pub_refs(s.name, bib_entries, paper_index)
+    pubs = _student_pub_refs(
+        s.name, bib_entries, paper_index,
+        aliases=s.aliases,
+        under_review=under_review,
+        under_review_index=under_review_index,
+    )
     pubs_cell = ", ".join(pubs) if pubs else ""
     role_cell = (
         f"{s.role} (with {s.co_advisor})" if s.co_advisor else s.role
@@ -924,6 +976,8 @@ def render_students_section(
     bib_entries: list[BibEntry],
     paper_index: dict[str, str],
     out: IO[str],
+    under_review: Optional[list[UnderReview]] = None,
+    under_review_index: Optional[dict[int, str]] = None,
 ) -> None:
     """C.14 / C.16 student-table renderer.
 
@@ -951,7 +1005,11 @@ def render_students_section(
         if tier != prev_tier:
             out.write(_render_student_tier_divider(tier, cellx))
             prev_tier = tier
-        out.write(_render_student_data_row(s, bib_entries, paper_index, cellx))
+        out.write(_render_student_data_row(
+            s, bib_entries, paper_index, cellx,
+            under_review=under_review,
+            under_review_index=under_review_index,
+        ))
     out.write("\\pard\\par\n")
 
 
@@ -966,6 +1024,8 @@ def render_postdocs_section(
     bib_entries: list[BibEntry],
     paper_index: dict[str, str],
     out: IO[str],
+    under_review: Optional[list[UnderReview]] = None,
+    under_review_index: Optional[dict[int, str]] = None,
 ) -> None:
     """C.15 renderer. Empty list → section heading + indented "N/A" so the
     section still appears in the packet (Purdue convention) rather than
@@ -1001,7 +1061,11 @@ def render_postdocs_section(
     out.write("".join(parts))
 
     for p in sorted(postdocs, key=lambda x: x.year):
-        pubs = _student_pub_refs(p.name, bib_entries, paper_index)
+        pubs = _student_pub_refs(
+            p.name, bib_entries, paper_index,
+            under_review=under_review,
+            under_review_index=under_review_index,
+        )
         pubs_cell = ", ".join(pubs) if pubs else ""
         cells = [
             escape_rtf(p.name),
@@ -1043,7 +1107,7 @@ def render_service_section(
         if entry.year_str:
             body += f". {escape_rtf(entry.year_str)}"
         body += "."
-        out.write(f"\\pard\\li720\\fi-720 {_ref_anchor(f'{code}.{idx}')}.\\tab {body}\\par\\par\n")
+        _emit_list_item(out, f"{code}.{idx}", body)
 
 
 # Canonical tier order — entries with tier strings outside this tuple sort
@@ -1141,8 +1205,7 @@ def render_student_awards_section(
         body = f"{escape_rtf(a.recipient)}, {escape_rtf(a.award)}"
         if a.year_str:
             body += f" ({escape_rtf(a.year_str)})"
-        out.write(f"\\pard\\li720\\fi-720 {ref}\\tab {body}\\par\n")
-    out.write("\\pard\\par\n")
+        _emit_list_item(out, ref, body)
 
 
 def render_undergrad_products_section(
@@ -1168,8 +1231,7 @@ def render_undergrad_products_section(
             f"{escape_rtf(p.product_label)} {_code_link(p.ref)} "
             f"({p.n_coauthors} undergraduate {plural}{lead_tag})"
         )
-        out.write(f"\\pard\\li720\\fi-720 {_ref_anchor(f'{code}.{idx}')}.\\tab {body}\\par\n")
-    out.write("\\pard\\par\n")
+        _emit_list_item(out, f"{code}.{idx}", body)
 
 
 def _ct_cell(value: object) -> str:
@@ -1251,7 +1313,7 @@ def render_course_development_section(
         return
     for idx, a in enumerate(activities, 1):
         body = f"\\b {escape_rtf(a.summary)}\\b0: {escape_rtf(a.description)}"
-        out.write(f"\\pard\\li720\\fi-720 {_ref_anchor(f'{code}.{idx}')}.\\tab {body}\\par\\par\n")
+        _emit_list_item(out, f"{code}.{idx}", body)
 
 
 def render_entrepreneurial_activities_section(
@@ -1271,7 +1333,7 @@ def render_entrepreneurial_activities_section(
         return
     for idx, a in enumerate(activities, 1):
         body = f"\\b {escape_rtf(a.summary)}\\b0: {escape_rtf(a.description)}"
-        out.write(f"\\pard\\li720\\fi-720 {_ref_anchor(f'{code}.{idx}')}.\\tab {body}\\par\\par\n")
+        _emit_list_item(out, f"{code}.{idx}", body)
 
 
 def render_technology_transfer_section(
@@ -1346,11 +1408,15 @@ def render_software_products_section(
     heading = SECTION_HEADINGS["Software Products"]
     _emit_section_heading(out, code, heading)
     for idx, p in enumerate(sorted(products, key=lambda x: x.year), 1):
-        # Header line: "C.22.N.\tab **name** (year_str)"
-        head = f"\\b {escape_rtf(p.name)}\\b0"
+        # Header line: "C.22.N.\tab **name** (year_str)".
+        # Brace-scope the bold so the close-brace ends `\b` AND emits a
+        # literal space — bare `\b0 (year)` consumes its trailing space
+        # as the control-word delimiter, producing "safe-regex(2018-...)"
+        # with no gap. Same trap as the Grant Row 1 / Total: $X cases.
+        head = f"{{\\b {escape_rtf(p.name)}}}"
         if p.year_str:
             head += f" ({escape_rtf(p.year_str)})"
-        out.write(f"\\pard\\li720\\fi-720 {_ref_anchor(f'{code}.{idx}')}.\\tab{head}\\par\n")
+        out.write(f"\\pard\\li720\\fi-720 {_ref_anchor(f'{code}.{idx}')}.\\tab {head}\\par\n")
         # Body line: indented block paragraph for the description.
         out.write(f"\\pard\\li720\\fi0 {escape_rtf(p.description)}\\par\\par\n")
 
@@ -1440,6 +1506,42 @@ def _finalize_ref_hyperlinks(rtf: str) -> str:
     return _REF_SENTINEL_PATTERN.sub(_sub, rtf)
 
 
+def _emit_list_item(out: IO[str], code: str, body: str) -> None:
+    """Canonical hanging-indent numbered list entry — the C.6 talks shape.
+
+    Renders as:
+        \\pard\\li720\\fi-720 {bookmarked-code}.\\tab {body}\\par\\par
+
+    The 720-twip (½") hanging indent puts the entry code in the left
+    gutter; body text wraps in the indented column. Trailing `\\par\\par`
+    inserts one blank paragraph between entries (the spacing the user
+    ratified on the C.6 talks layout — applies uniformly to every
+    paragraph-based numbered section).
+
+    Use this for every "numbered list" section emission:
+      * C.6 Invited Talks
+      * C.7 Leadership Roles
+      * C.8 Media Appearances
+      * C.9 Conference Presentations
+      * C.16.2.3 Undergrad Research Products
+      * C.16.2.4 / C.16.3.3 Student Awards (within each tier sub-block)
+      * C.18 Course Development
+      * C.20 Entrepreneurial Activities
+      * C.23 / C.24 / C.25 / C.26 Service
+
+    Distinct from table-shaped sections (C.14 students, C.17 courses
+    taught, C.19 patents, C.21 technology transfer) which use `RtfTable`.
+    Distinct from C.22 Software Products which uses a deliberate
+    two-paragraph header+body shape.
+
+    The `_ref_anchor` wrap on the code makes the entry a bookmark target
+    for `@id` and raw section-code cross-refs.
+    """
+    out.write(
+        f"\\pard\\li720\\fi-720 {_ref_anchor(code)}.\\tab {body}\\par\\par\n"
+    )
+
+
 def _emit_section_heading(out: IO[str], code: str, heading: str) -> None:
     """Section header paragraph styled as Word `Heading 1` (via stylesheet \\s1).
 
@@ -1527,6 +1629,13 @@ def write_rtf(
     technology_transfer = technology_transfer or []
     course_development = course_development or []
     courses_taught = courses_taught or []
+    # A.1 index — maps each under_review entry's position in the
+    # (already-sorted-upstream) list to its emitted "A.1.{N}" code.
+    # The student-table renderer scans this to thread A.1 refs into
+    # each student's "Related Publications" cell alongside C.X.Y refs.
+    under_review_index: dict[int, str] = {
+        i: f"A.1.{i + 1}" for i in range(len(under_review))
+    }
     # Per-section emission filter (set by --sections CLI flag). Returns
     # True for every section when no filter is supplied (default — emit
     # everything). When a filter is set, a section emits iff its code is
@@ -1620,10 +1729,7 @@ def write_rtf(
             expansion_done: set[str] = set()
             for idx, cit in enumerate(citations, 1):
                 body = render_citation(cit, expansion_done, paper_index, key_work_index)
-                # Hanging indent: first line flush, continuation indented to 720 twips.
-                out.write(
-                    f"\\pard\\li720\\fi-720 {_ref_anchor(f'{code}.{idx}')}.\\tab {body}\\par\\par\n"
-                )
+                _emit_list_item(out, f"{code}.{idx}", body)
 
         # C.5 with subcategory subheadings; flat sequential numbering.
         if _emit("Other publications and products"):
@@ -1652,14 +1758,22 @@ def write_rtf(
         if _emit("Graduate Students"):
             render_students_section(
                 "Graduate Students", graduate_students, bib_entries, paper_index, out,
+                under_review=under_review,
+                under_review_index=under_review_index,
             )
         if _emit("Undergraduate Students"):
             render_students_section(
                 "Undergraduate Students", undergraduate_students,
                 bib_entries, paper_index, out,
+                under_review=under_review,
+                under_review_index=under_review_index,
             )
         if _emit("Postdocs and Visiting Scholars"):
-            render_postdocs_section(postdocs_visiting, bib_entries, paper_index, out)
+            render_postdocs_section(
+                postdocs_visiting, bib_entries, paper_index, out,
+                under_review=under_review,
+                under_review_index=under_review_index,
+            )
         # C.17 sits BEFORE C.18 — render the courses-taught table first.
         if _emit("Courses Taught"):
             render_courses_taught_section(courses_taught, out)

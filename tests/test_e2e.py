@@ -670,18 +670,20 @@ class TestE2ePunctuationSpacing:
     bug already caught by per-renderer tests via brace-scoping.
     """
 
-    # Punctuation followed IMMEDIATELY by alphanumeric. The first
-    # capture group is the offending substring (used in the error
-    # message). The character class is the conservative set: period,
-    # comma, colon, semicolon, exclamation, question — the ones where
-    # CV/citation text reliably wants a space-after.
+    # Punctuation followed IMMEDIATELY by text. Three classes:
+    #   `:` or `;` then alphanumeric  — DOI:X / URL:X / colon-space class
+    #   LETTER then `(`               — "safe-regex(2018-...)" class (the
+    #                                    `\b0`-eats-trailing-space bug).
+    #                                    Digit-then-`(` is intentionally
+    #                                    excluded: "Journal, 199(3)" is the
+    #                                    canonical volume(issue) notation.
+    #   `)` then `(`                  — "(name.com)(year)" class (renderer
+    #                                    concatenation without separator)
     _BAD_SPACING_RE = (
-        # `:` or `;` followed by alphanumeric — covers DOI:X / URL:X
-        # and the colon-space class generally.
-        r"([;:][A-Za-z0-9])"
+        r"([;:][A-Za-z0-9]|[A-Za-z]\(|\)\()"
     )
 
-    # Known good substrings whose colon-no-space is canonical and
+    # Known good substrings whose missing-space is canonical and
     # intentional. Any finding whose 50-char context window contains
     # one of these is NOT a violation.
     _ALLOWED_SUBSTRINGS = (
@@ -727,4 +729,95 @@ class TestE2ePunctuationSpacing:
             f"{len(findings)} punctuation-spacing violation(s) in the "
             f"rendered RTF (showing first 5):\n  - "
             + "\n  - ".join(findings[:5])
+        )
+
+
+class TestE2eNumericalOrdering:
+    """Emitted entry codes must appear in monotone-increasing order per
+    parent section. Within any C.X (or C.X.Y) section, the entries
+    bookmarked as C.X.1, C.X.2, ... must appear in that order in the
+    rendered RTF — and the numbering must be dense (1, 2, 3, ...; no
+    gaps, no out-of-order). Catches regressions in:
+
+      * The `_emit_list_item` helper (any callsite emitting out of
+        the canonical-sort order)
+      * `enumerate(..., 1)` getting replaced by something that skips
+        or restarts the index
+      * Subcategory grouping (e.g., C.5) accidentally restarting the
+        section-wide counter when crossing a subheading
+      * Tier grouping (C.16.2.4 / C.16.3.3) restarting the counter
+        between tiers
+    """
+
+    # Bookmark-name form of every emitted entry code. Bookmarks are
+    # written by `_ref_anchor` as `\\*\\bkmkstart C_X_Y_Z}` — the
+    # opening marker is the canonical extraction anchor.
+    _BOOKMARK_START_RE = __import__("re").compile(
+        r"\\\*\\bkmkstart ([A-Z][\d_]+)"
+    )
+
+    def _entries_by_parent(
+        self, rtf: str,
+    ) -> dict[tuple[int, ...], list[tuple[int, ...]]]:
+        """Group every emitted bookmark code by its parent code.
+
+        Each bookmark name like `C_16_2_4_1` becomes the tuple
+        `(C, 16, 2, 4, 1)`; its parent is `(C, 16, 2, 4)`. Returns a map
+        `parent → [child_tuple, ...]` preserving emission order so the
+        test can assert per-parent monotone-increasing suffix sequences.
+        Single-segment "parents" (`(C,)` / `(A,)`) get a `C.X` family.
+        """
+        groups: dict[tuple[int, ...], list[tuple[int, ...]]] = {}
+        for match in self._BOOKMARK_START_RE.finditer(rtf):
+            name = match.group(1)
+            parts = name.split("_")
+            if len(parts) < 2:
+                continue
+            try:
+                code_tuple: tuple[int, ...] = (
+                    ord(parts[0]),
+                    *(int(p) for p in parts[1:]),
+                )
+            except ValueError:
+                continue  # not a section code (some other bookmark)
+            parent = code_tuple[:-1]
+            groups.setdefault(parent, []).append(code_tuple)
+        return groups
+
+    def test_entry_codes_emit_in_sorted_order(
+        self,
+        e2e_outputs: tuple[str, pathlib.Path],
+    ) -> None:
+        """For every section that emits numbered entries, the entry codes
+        must appear in monotone-increasing order AND be a dense 1..N
+        sequence."""
+        rtf, _ = e2e_outputs
+        groups = self._entries_by_parent(rtf)
+        problems: list[str] = []
+        for parent, codes in sorted(groups.items()):
+            # Only check sections that actually emit numbered entries
+            # (parent has 1+ segments; we look at the last segment of
+            # each child). Skip groups with just one entry — order is
+            # trivially correct.
+            if len(codes) < 2:
+                continue
+            suffixes = [c[-1] for c in codes]
+            # Reconstruct the parent code for diagnostic clarity.
+            parent_dotted = (
+                chr(parent[0]) + "." + ".".join(str(p) for p in parent[1:])
+                if len(parent) > 1 else chr(parent[0])
+            )
+            if suffixes != sorted(suffixes):
+                problems.append(
+                    f"{parent_dotted}: out-of-order suffixes {suffixes}"
+                )
+            expected = list(range(1, len(suffixes) + 1))
+            if suffixes != expected:
+                problems.append(
+                    f"{parent_dotted}: non-dense numbering "
+                    f"{suffixes} (expected {expected})"
+                )
+        assert not problems, (
+            f"{len(problems)} ordering/density violation(s):\n  - "
+            + "\n  - ".join(problems)
         )
