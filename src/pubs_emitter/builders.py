@@ -695,11 +695,14 @@ def build_service_entry(entry: dict) -> ServiceEntry:
     """
     year_raw = entry.get("year", "")
     year_str = str(year_raw) if year_raw not in (None, "") else ""
+    # `show: false` suppresses the entry from rendering; default True.
+    show_raw = entry.get("show", True)
     return ServiceEntry(
         year=parse_year(year_str) if year_str else 9999,
         year_str=year_str,
         description=decode_latex(entry.get("description", "")).replace("\n", " "),
         id=str(entry.get("id", "") or ""),
+        show=bool(show_raw),
     )
 
 

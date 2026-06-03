@@ -332,6 +332,9 @@ def render_under_review_section(
     code = SECTION_CODES["Under Review"]
     heading = SECTION_HEADINGS["Under Review"]
     _emit_section_heading(out, code, heading)
+    indent = _hanging_indent_for_codes(
+        _section_codes_up_to(code, len(under_review))
+    )
     for idx, ur in enumerate(under_review, 1):
         body = (
             f"{ur.authors_rtf}. {escape_rtf(ur.title)}. "
@@ -343,7 +346,7 @@ def render_under_review_section(
         # Sentinel "9999-99-99" means no known deadline → suppress the marker.
         if ur.due_date and ur.due_date != "9999-99-99":
             body += f" \\ul Due: {escape_rtf(ur.due_date)}\\ulnone."
-        _emit_list_item(out, f"{code}.{idx}", body)
+        _emit_list_item(out, f"{code}.{idx}", body, indent=indent)
 
 
 # C.5 "Other publications and products" subcategory map. Each Citation's
@@ -389,6 +392,7 @@ def render_other_pubs_section(
     ordered = order_citations_for_emission(
         "Other publications and products", citations,
     )
+    indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(ordered)))
     expansion_done: set[str] = set()
     prev_subcat: Optional[str] = None
     for idx, cit in enumerate(ordered, 1):
@@ -402,7 +406,7 @@ def render_other_pubs_section(
         body = render_citation(
             cit, expansion_done, paper_index, key_work_index,
         )
-        _emit_list_item(out, f"{code}.{idx}", body)
+        _emit_list_item(out, f"{code}.{idx}", body, indent=indent)
 
 
 def render_invited_talk(talk: InvitedTalk) -> str:
@@ -424,8 +428,9 @@ def render_invited_talks_section(talks: list[InvitedTalk], out: IO[str]) -> None
     code = SECTION_CODES["Invited Talks"]
     heading = SECTION_HEADINGS["Invited Talks"]
     _emit_section_heading(out, code, heading)
+    indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(talks)))
     for idx, talk in enumerate(talks, 1):
-        _emit_list_item(out, f"{code}.{idx}", render_invited_talk(talk))
+        _emit_list_item(out, f"{code}.{idx}", render_invited_talk(talk), indent=indent)
 
 
 def render_leadership_role(role: LeadershipRole) -> str:
@@ -446,8 +451,9 @@ def render_leadership_section(roles: list[LeadershipRole], out: IO[str]) -> None
     code = SECTION_CODES["Leadership Roles"]
     heading = SECTION_HEADINGS["Leadership Roles"]
     _emit_section_heading(out, code, heading)
+    indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(roles)))
     for idx, role in enumerate(roles, 1):
-        _emit_list_item(out, f"{code}.{idx}", render_leadership_role(role))
+        _emit_list_item(out, f"{code}.{idx}", render_leadership_role(role), indent=indent)
 
 
 _CONF_PRES_NOTE = (
@@ -512,10 +518,12 @@ def render_conference_presentations_section(
         bib = _bib_entry_by_title_local(bib_entries, p.paper_title)
         return parse_year(bib.get("year", "") if bib else "")
     sorted_pres = sorted(presentations, key=_year)
+    indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(sorted_pres)))
     for idx, p in enumerate(sorted_pres, 1):
         _emit_list_item(
             out, f"{code}.{idx}",
             render_conference_presentation(p, bib_entries, paper_index),
+            indent=indent,
         )
 
 
@@ -532,8 +540,9 @@ def render_media_appearances_section(media: list[MediaAppearance], out: IO[str])
     code = SECTION_CODES["Media Appearances"]
     heading = SECTION_HEADINGS["Media Appearances"]
     _emit_section_heading(out, code, heading)
+    indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(media)))
     for idx, m in enumerate(media, 1):
-        _emit_list_item(out, f"{code}.{idx}", render_media_appearance(m))
+        _emit_list_item(out, f"{code}.{idx}", render_media_appearance(m), indent=indent)
 
 
 def _format_usd(amount: int) -> str:
@@ -1173,12 +1182,13 @@ def render_service_section(
     code = SECTION_CODES[section]
     heading = SECTION_HEADINGS[section]
     _emit_section_heading(out, code, heading)
+    indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(entries)))
     for idx, entry in enumerate(entries, 1):
         body = escape_rtf(entry.description)
         if entry.year_str:
             body += f". {escape_rtf(entry.year_str)}"
         body += "."
-        _emit_list_item(out, f"{code}.{idx}", body)
+        _emit_list_item(out, f"{code}.{idx}", body, indent=indent)
 
 
 # Canonical tier order — entries with tier strings outside this tuple sort
@@ -1261,6 +1271,7 @@ def render_student_awards_section(
     code = SECTION_CODES[section_key]
     heading = SECTION_HEADINGS[section_key]
     _emit_section_heading(out, code, heading)
+    indent = _hanging_indent_for_codes([ref for ref, _ in indexed])
     # Emit tier subheadings as we walk the indexed list — tier changes are
     # detected by previous-tier comparison so we don't re-sort here.
     prev_tier: Optional[str] = None
@@ -1276,7 +1287,7 @@ def render_student_awards_section(
         body = f"{escape_rtf(a.recipient)}, {escape_rtf(a.award)}"
         if a.year_str:
             body += f" ({escape_rtf(a.year_str)})"
-        _emit_list_item(out, ref, body)
+        _emit_list_item(out, ref, body, indent=indent)
 
 
 def render_undergrad_products_section(
@@ -1295,6 +1306,7 @@ def render_undergrad_products_section(
     code = SECTION_CODES["Undergraduate Research Products"]
     heading = SECTION_HEADINGS["Undergraduate Research Products"]
     _emit_section_heading(out, code, heading)
+    indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(products)))
     for idx, p in enumerate(products, 1):
         plural = "co-authors" if p.n_coauthors > 1 else "co-author"
         lead_tag = " [undergraduate is lead author]" if p.lead_is_undergrad else ""
@@ -1302,7 +1314,7 @@ def render_undergrad_products_section(
             f"{escape_rtf(p.product_label)} {_code_link(p.ref)} "
             f"({p.n_coauthors} undergraduate {plural}{lead_tag})"
         )
-        _emit_list_item(out, f"{code}.{idx}", body)
+        _emit_list_item(out, f"{code}.{idx}", body, indent=indent)
 
 
 def _ct_cell(value: object) -> str:
@@ -1382,9 +1394,10 @@ def render_course_development_section(
     if not activities:
         out.write("\\pard\\li720 N/A\\par\\par\n")
         return
+    indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(activities)))
     for idx, a in enumerate(activities, 1):
         body = f"\\b {escape_rtf(a.summary)}\\b0: {escape_rtf(a.description)}"
-        _emit_list_item(out, f"{code}.{idx}", body)
+        _emit_list_item(out, f"{code}.{idx}", body, indent=indent)
 
 
 def render_entrepreneurial_activities_section(
@@ -1402,9 +1415,10 @@ def render_entrepreneurial_activities_section(
     if not activities:
         out.write("\\pard\\li720 N/A\\par\\par\n")
         return
+    indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(activities)))
     for idx, a in enumerate(activities, 1):
         body = f"\\b {escape_rtf(a.summary)}\\b0: {escape_rtf(a.description)}"
-        _emit_list_item(out, f"{code}.{idx}", body)
+        _emit_list_item(out, f"{code}.{idx}", body, indent=indent)
 
 
 def render_technology_transfer_section(
@@ -1501,9 +1515,18 @@ def render_patents_section(patents: list[Patent], out: IO[str]) -> None:
 
     table = RtfTable(column_widths=PATENT_TABLE_WIDTHS)
     table.add_header(["Title", "Co-Inventors", "Issue Date", "Number", "Impact"])
-    for p in patents:
+    for idx, p in enumerate(patents, 1):
+        # Title cell leads with bookmarked `C.19.N.` (same shape as grant
+        # Row 1) so each patent has a parseable cross-ref code and `@id`
+        # refs can resolve to a specific patent. Brace-scoped bold keeps
+        # the trailing space literal (the `\b0 X` delimiter-eats-space
+        # trap from CLAUDE.md).
+        entry_code = f"{code}.{idx}"
+        title_cell = (
+            f"{{\\b {_ref_anchor(entry_code)}.}} {escape_rtf(p.title)}"
+        )
         table.add_row([
-            escape_rtf(p.title),
+            title_cell,
             p.co_inventors,  # already RTF-marked (\b for me); escaping would clobber it
             escape_rtf(p.date),
             escape_rtf(p.number),
@@ -1577,17 +1600,55 @@ def _finalize_ref_hyperlinks(rtf: str) -> str:
     return _REF_SENTINEL_PATTERN.sub(_sub, rtf)
 
 
-def _emit_list_item(out: IO[str], code: str, body: str) -> None:
+def _hanging_indent_for_codes(codes: list[str]) -> int:
+    """Compute the per-section hanging-indent (in twips) that fits the
+    longest entry code without the label overflowing the tab column.
+
+    Empirically: Times New Roman 12pt renders at ~100 twips per character.
+    The visible label is `{code}.` (code + trailing period). The historic
+    720-twip default fits up to 7 visible chars (single-dot codes like
+    `C.6.9.` or 2-digit `C.26.9.`). At 8+ chars the label spills past the
+    tab column and the `\\tab` jumps to the next stop (typically 1440),
+    producing the ragged layout the user flagged on C.26.10-19 (260603).
+
+    Returns a twips value rounded up to a multiple of 360 (½ tab stop) so
+    consecutive sections with similar code lengths land on the same
+    column boundary.
+    """
+    if not codes:
+        return 720
+    max_visible_chars = max(len(c) for c in codes) + 1  # +1 for trailing period
+    if max_visible_chars <= 7:
+        return 720
+    # 110 twips/char + 80 twips tab buffer; round up to next 360-twip mark.
+    raw = max_visible_chars * 110 + 80
+    return max(720, ((raw + 359) // 360) * 360)
+
+
+def _section_codes_up_to(code_prefix: str, n: int) -> list[str]:
+    """Convenience: enumerate `{code_prefix}.1` … `{code_prefix}.n` strings.
+    Used by every renderer that emits a contiguous numbered list."""
+    return [f"{code_prefix}.{i}" for i in range(1, n + 1)]
+
+
+def _emit_list_item(
+    out: IO[str], code: str, body: str, indent: int = 720,
+) -> None:
     """Canonical hanging-indent numbered list entry — the C.6 talks shape.
 
     Renders as:
-        \\pard\\li720\\fi-720 {bookmarked-code}.\\tab {body}\\par\\par
+        \\pard\\li{indent}\\fi-{indent} {bookmarked-code}.\\tab {body}\\par\\par
 
-    The 720-twip (½") hanging indent puts the entry code in the left
-    gutter; body text wraps in the indented column. Trailing `\\par\\par`
-    inserts one blank paragraph between entries (the spacing the user
-    ratified on the C.6 talks layout — applies uniformly to every
-    paragraph-based numbered section).
+    The hanging indent puts the entry code in the left gutter; body text
+    wraps in the indented column. The default 720 twips (½") fits codes
+    up to ~7 visible chars; pass a larger `indent` for sections whose
+    longest code overflows (use `_hanging_indent_for_codes` to derive it).
+    Within ONE section, every call must use the same `indent` so labels
+    align — derive once per section, pass to every entry.
+
+    Trailing `\\par\\par` inserts one blank paragraph between entries
+    (the spacing the user ratified on the C.6 talks layout — applies
+    uniformly to every paragraph-based numbered section).
 
     Use this for every "numbered list" section emission:
       * C.6 Invited Talks
@@ -1609,7 +1670,8 @@ def _emit_list_item(out: IO[str], code: str, body: str) -> None:
     for `@id` and raw section-code cross-refs.
     """
     out.write(
-        f"\\pard\\li720\\fi-720 {_ref_anchor(code)}.\\tab {body}\\par\\par\n"
+        f"\\pard\\li{indent}\\fi-{indent} "
+        f"{_ref_anchor(code)}.\\tab {body}\\par\\par\n"
     )
 
 
@@ -1797,10 +1859,13 @@ def write_rtf(
             heading = SECTION_HEADINGS[section]
             _emit_section_heading(out, code, heading)
 
-            expansion_done: set[str] = set()
+            expansion_done = set()
+            indent = _hanging_indent_for_codes(
+                _section_codes_up_to(code, len(citations))
+            )
             for idx, cit in enumerate(citations, 1):
                 body = render_citation(cit, expansion_done, paper_index, key_work_index)
-                _emit_list_item(out, f"{code}.{idx}", body)
+                _emit_list_item(out, f"{code}.{idx}", body, indent=indent)
 
         # C.5 with subcategory subheadings; flat sequential numbering.
         if _emit("Other publications and products"):

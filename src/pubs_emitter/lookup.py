@@ -37,11 +37,21 @@ log = logging.getLogger(__name__)
 
 
 def extract_patent_number(note: str) -> tuple[str, str]:
-    """('US Patent 11,176,090', '11176090') from the bib note; ('','') on failure."""
+    """('US Patent 11,176,090', '11176090') from the bib note; ('','') on failure.
+
+    Handles two USPTO number shapes:
+      * Issued patents: "US Patent 11,176,090" — digit/comma form.
+      * Application + provisional numbers: "US Patent App. 17/325,057" —
+        slash-then-digit-comma form (the SSSS/NNN,NNN shape USPTO uses
+        for in-flight applications). The digit class now allows `/` so
+        the second-regex fallback captures the full number; `\\D` cleanup
+        strips both slashes and commas to produce the digits-only clean
+        key used by `patent_impacts` YAML lookups.
+    """
     m = re.search(r"(US\s+Patent\s+([\d,]+))", note, re.IGNORECASE)
     if m:
         return m.group(1), re.sub(r"\D", "", m.group(2))
-    m = re.search(r"([\d][\d,]*)", note)
+    m = re.search(r"([\d][\d,/]*)", note)
     if m:
         return note.strip(), re.sub(r"\D", "", m.group(1))
     return "", ""

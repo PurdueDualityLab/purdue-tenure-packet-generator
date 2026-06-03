@@ -400,11 +400,19 @@ class ServiceEntry(NamedTuple):
     `year_str` is the display string: "2025", "2025, 2026, 2027",
     "2024-2025", "2023-present", or "" for ongoing service with no fixed date
     (e.g. journal reviewing).
+
+    `show: false` hides this entry from rendering — useful for trimming the
+    packet by audience (e.g., minor reviewing roles for a tenure-and-
+    promotion-to-full audience but not for a tenure-only one). Hidden
+    entries don't register in `ref_index` and don't consume a C.X.N slot;
+    visible entries renumber accordingly so the rendered output has no
+    gaps.
     """
     year: int            # sort key; 9999 when year_str is empty
     year_str: str        # display
     description: str
     id: str = ""         # OPTIONAL cross-ref id; @id resolves to "C.23.N" / "C.24.N" / "C.25.N" / "C.26.N"
+    show: bool = True    # set false to suppress this entry from the rendered packet
 
 
 class NetworkTask(NamedTuple):
