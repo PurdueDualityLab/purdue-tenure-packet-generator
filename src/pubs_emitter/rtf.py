@@ -260,7 +260,7 @@ def _career_phase_for_year(year: int) -> str:
 
 _CAREER_PHASE_LABELS: dict[str, str] = {
     "phd": "PhD studies at Virginia Tech",
-    "ap":  "Assistant Professor at Purdue",
+    "ap":  "Assistant Professor at Purdue University",
 }
 
 
