@@ -164,7 +164,10 @@ class TestRenderCitation:
         assert "A Conference Paper" in out
         assert r"\i " in out and r"\i0" in out  # italic venue
         assert "DOI:" in out
-        assert "Venue rank: Tier 1" in out  # peer-reviewed section → prefix
+        # Peer-reviewed section → "Venue rank:" prefix. The space inside
+        # "Tier N" is an RTF non-breaking space (`\~`) so the digit can't
+        # orphan onto the next line — preserve that form here.
+        assert "Venue rank: Tier\\~1" in out
 
     def test_non_ranked_section_no_prefix(self) -> None:
         cit = _citation(section="Other publications and products", rank="Preprint")
@@ -1663,6 +1666,36 @@ class TestRenderKeyWorksSection:
         buf = io.StringIO()
         render_key_works_section([], paper_index={}, out=buf)
         assert buf.getvalue() == ""
+
+    def test_emits_author_marker_legend_after_heading(self) -> None:
+        """C.1 must lead with a Notation legend explaining each per-author
+        marker the citation renderer produces. Mirror the actual marker
+        semantics (`authors.format_author`): Bold = candidate, * =
+        corresponding author, # = senior co-author / advisor, G = grad
+        student, U = undergrad student."""
+        buf = io.StringIO()
+        kw = KeyWork(citation=_citation(title="X"), impact="impact")
+        render_key_works_section(
+            [kw], paper_index={"x": "C.4.1"}, out=buf,
+        )
+        out = buf.getvalue()
+        # Legend appears AFTER the C.1 heading but BEFORE the first entry.
+        legend_idx = out.index("Notation:")
+        first_entry_idx = out.index("C.1.1")
+        assert legend_idx < first_entry_idx
+        # Each marker is described in plain English so the reader doesn't
+        # have to know the bib-side convention.
+        assert "candidate" in out          # bold
+        assert "corresponding author" in out  # *
+        assert "PhD or postdoc advisor" in out  # # (verbatim phrasing)
+        assert "graduate student" in out   # G
+        assert "undergraduate student" in out  # U
+        # Superscript markup mirrors `format_author` so the legend visually
+        # matches the citation form below it.
+        assert "\\super *\\nosupersub{}" in out
+        assert "\\super #\\nosupersub{}" in out
+        assert "\\super G\\nosupersub{}" in out
+        assert "\\super U\\nosupersub{}" in out
 
 
 class TestRenderUndergradProductsSection:

@@ -190,8 +190,14 @@ def render_citation(
     # Tier marker: underlined, NOT italicized, period after.
     # "Venue rank: " prefix only for peer-reviewed venue categories
     # (Journals + Conferences); bare label for everything else.
+    # `Tier N` is kept atomic via an RTF non-breaking space (`\~`) so
+    # the digit doesn't orphan onto the next line — caught 260603 on
+    # the "Sense of time" USENIX citation. Other multi-word labels
+    # ("Technical report", "Security disclosure", "Book chapter") may
+    # wrap naturally — the awkward case is digit-orphaning.
     prefix = "Venue rank: " if cit.section in RANKED_SECTIONS else ""
-    body += f" \\ul {prefix}{TIER_LABELS[cit.rank]}\\ulnone."
+    tier_label = TIER_LABELS[cit.rank].replace("Tier ", "Tier\\~")
+    body += f" \\ul {prefix}{tier_label}\\ulnone."
     if cit.back_ref_title and paper_index:
         ref = paper_index.get(normalize_title(cit.back_ref_title))
         if ref:
@@ -230,6 +236,59 @@ def render_key_work_citation(
     return body
 
 
+def _emit_author_marker_legend(out: IO[str]) -> None:
+    """Notation block — explains the per-author markup the citation
+    renderer (`authors.format_author`) emits across every C.X section.
+
+    Markers in lock-step with `format_author` (`src/pubs_emitter/authors.py`):
+      * **Bold**           → candidate (Davis), via the `ME` config list
+      * `*` (superscript)  → corresponding author (`is_last=True` by default,
+                              overridable via `CORRESPONDING_AUTHORS`)
+      * `#` (superscript)  → senior co-author / PhD or post-doc advisor,
+                              via the `advisors` config list
+      * `G` (superscript)  → graduate student supervised by Davis
+                              (`STUDENTS["G"]` ∪ YAML `graduate_students`)
+      * `U` (superscript)  → undergraduate student supervised by Davis
+                              (`STUDENTS["U"]`)
+
+    Rendered as an italic header line + 5 indented bullet entries; the
+    superscripts in each bullet use the same `\\super`/`\\nosupersub{{}}`
+    markup `format_author` produces so the legend visually matches the
+    actual citation form. Italic notation block is set apart from the
+    surrounding numbered list shape.
+    """
+    bullet_li = 1080
+    bullet_fi = -360
+    bullet_tx = 1080
+    out.write(
+        f"\\pard\\li{bullet_li}\\i Notation:\\i0\\par\n"
+    )
+
+    def _bullet(rtf_body: str) -> None:
+        out.write(
+            f"\\pard\\li{bullet_li}\\fi{bullet_fi}\\tx{bullet_tx} "
+            f"\\u8226?\\tab {rtf_body}\\par\n"
+        )
+
+    _bullet("\\b Bold\\b0  denotes the candidate (James C. Davis).")
+    _bullet(
+        "\\super *\\nosupersub{} denotes the corresponding author."
+    )
+    _bullet(
+        "\\super #\\nosupersub{} denotes PhD or postdoc advisor."
+    )
+    _bullet(
+        "\\super G\\nosupersub{} denotes a graduate student supervised "
+        "by the candidate."
+    )
+    _bullet(
+        "\\super U\\nosupersub{} denotes an undergraduate student "
+        "supervised by the candidate."
+    )
+    # Trailing blank for visual spacing before the first entry.
+    out.write("\\pard\\par\n")
+
+
 def render_key_works_section(
     key_works: list[KeyWork],
     paper_index: dict[str, str],
@@ -241,13 +300,16 @@ def render_key_works_section(
       2. Indented block paragraph: impact text, NOT italic, indented under the citation.
 
     Two real paragraphs (not `\\line` soft-breaks) so Word paste preserves
-    the layout cleanly.
+    the layout cleanly. The author-marker legend (Bold / * / # / G / U)
+    is emitted ONCE here, just below the C.1 heading, since C.1 is the
+    first section that displays formatted citations.
     """
     if not key_works:
         return
     code = SECTION_CODES["Key Works"]
     heading = SECTION_HEADINGS["Key Works"]
     _emit_section_heading(out, code, heading)
+    _emit_author_marker_legend(out)
     indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(key_works)))
     expansion_done: set[str] = set()
     for idx, kw in enumerate(key_works, 1):
