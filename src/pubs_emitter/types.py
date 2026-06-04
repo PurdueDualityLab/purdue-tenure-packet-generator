@@ -16,6 +16,19 @@ Category = Literal[
 Rank = str
 
 Section = Literal[
+    # Section III (front matter) — A.1-A.7. Codes A.1-A.7 here REUSE the
+    # "A." prefix that Section V (Under Review) also uses; the two trees
+    # coexist because the doc's Roman-numeral top sections (III vs V)
+    # disambiguate them. Cross-refs to Section V's A.1.N render as
+    # "Section V, A.1.N"; the Section III tree has no @id resolution yet.
+    "Identifiers",
+    "Degrees",
+    "Positions at Purdue",
+    "Positions at Other Institutions",
+    "Licenses",
+    "Awards",
+    "Professional Memberships",
+    # Section V (appendix) — Products under review.
     "Under Review",
     "Key Works",
     "Journals",
@@ -428,3 +441,99 @@ class NetworkTask(NamedTuple):
 
 
 Publications = dict[Section, list[Citation]]
+
+
+# ----- Candidate Information (Section III front matter, A.1-A.7) ----------
+
+
+class Identifiers(NamedTuple):
+    """A.1: name + scholarly identifier URLs.
+
+    Renders as a bullet list with bold field labels. `orcid` and
+    `google_scholar` MUST be URLs; the renderer wraps them in clickable
+    RTF HYPERLINK fields. Empty fields are skipped (no orphan bullet).
+    """
+    name: str
+    orcid: str            # URL — rendered as hyperlink
+    google_scholar: str   # URL — rendered as hyperlink
+
+
+class Degree(NamedTuple):
+    """A.2.N: one earned degree.
+
+    Renders as: "{institution}, {years}. {degree}. {thesis_kind}:
+    /italic thesis_title/, supervised by {advisor}." Thesis bits are
+    omitted when `thesis_title` is empty (degrees without a thesis).
+    """
+    institution: str
+    years: str
+    degree: str
+    thesis_kind: str   # "Undergraduate thesis" / "Doctoral thesis" / ""
+    thesis_title: str  # italicized in output
+    advisor: str       # display name incl. "Dr."/"Prof." prefix
+
+
+class OtherPosition(NamedTuple):
+    """A.4.N: one position at another institution / organization.
+
+    Renders as: "{title}, {years}. {organization} ({acronym})." The
+    parenthetical acronym is omitted when `acronym` is empty.
+    """
+    title: str
+    years: str
+    organization: str
+    acronym: str       # parenthetical short form; "" → no parenthetical
+
+
+class ProfessionalMembership(NamedTuple):
+    """A.7.N: one professional-society membership.
+
+    Renders as: "{level}, {organization} ({acronym})." Common levels:
+    "Member", "Senior Member", "Fellow". Parenthetical acronym is
+    omitted when `acronym` is empty.
+    """
+    level: str
+    organization: str
+    acronym: str
+
+
+class Award(NamedTuple):
+    """A.6.N: one award / recognition.
+
+    Rendered as one row in the A.6 table (3 columns: Name | Date | Significance).
+    Awards are split into two tier groups — EXTERNAL and INTERNAL — each
+    running in independent chronological order. The within-group sort is
+    by `year` ascending; within a year, by YAML order (stable).
+
+    `significance` is the "Brief Description of Significance" cell text;
+    it accepts `@bibkey` / `@id` / `@C.X.Y` cross-references and gets
+    routed through `resolve_refs_in_list` at build time so the rendered
+    cell carries clickable hyperlinks.
+    """
+    year: int                                # sort key
+    year_str: str                            # display ("2018" / "2024-25")
+    tier: Literal["external", "internal"]    # routes to EXTERNAL / INTERNAL group
+    name: str                                # award title (rendered verbatim)
+    significance: str                        # description; supports @-refs
+    id: str = ""                             # optional cross-ref id → A.6.N
+
+
+class CandidateInformation(NamedTuple):
+    """Section III aggregate — the full front-matter payload (A.1-A.7).
+
+    Loaded once from `assets/candidate-information.yaml`. Sub-sections:
+      * `identifiers`              → A.1 (Identifiers NamedTuple)
+      * `degrees`                  → A.2 (list[Degree])
+      * `positions_at_purdue`      → A.3 (free-form prose string)
+      * `positions_at_other`       → A.4 (list[OtherPosition])
+      * `licenses`                 → A.5 (free-form prose; "N/A" allowed)
+      * `awards`                   → A.6 (list[Award], 2 tiers)
+      * `professional_memberships` → A.7 (list[ProfessionalMembership])
+    """
+    identifiers: Identifiers
+    degrees: list[Degree]
+    positions_at_purdue: str
+    positions_at_other: list[OtherPosition]
+    licenses: str
+    awards: list[Award]
+    professional_memberships: list[ProfessionalMembership]

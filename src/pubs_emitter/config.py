@@ -98,6 +98,20 @@ VENUE_FULL_NAMES: dict[str, str] = dict(_conf.get("venue_full_names") or {})
 # ----- Code-side constants (not in YAML) -----------------------------------
 
 SECTION_ORDER: list[Section] = [
+    # Section III front matter (A.1-A.7; A.6 intentionally absent — handled
+    # outside this generator). Emitted before all C.* sections at the top
+    # of the doc, under an "A. GENERAL INFORMATION" group heading.
+    "Identifiers",
+    "Degrees",
+    "Positions at Purdue",
+    "Positions at Other Institutions",
+    "Licenses",
+    "Awards",
+    "Professional Memberships",
+    # Section V appendix — products under review. Emitted last per the
+    # original appendix discipline. The A.1 code here REUSES the prefix
+    # the front matter uses; the doc's Roman-numeral parent section
+    # disambiguates ("Section III, A.1" vs "Section V, A.1").
     "Under Review",
     "Key Works",
     "Journals",
@@ -131,6 +145,17 @@ SECTION_ORDER: list[Section] = [
 ]
 
 SECTION_CODES: dict[Section, str] = {
+    # Section III front matter — A.X codes shared with Section V; the
+    # Roman parent disambiguates at cross-ref render time.
+    "Identifiers": "A.1",
+    "Degrees": "A.2",
+    "Positions at Purdue": "A.3",
+    "Positions at Other Institutions": "A.4",
+    "Licenses": "A.5",
+    "Awards": "A.6",
+    "Professional Memberships": "A.7",
+    # Section V appendix — bare code is A.1 too; cross-refs render with
+    # the explicit "Section V, " prefix to disambiguate from A.1 above.
     "Under Review": "A.1",
     "Key Works": "C.1",
     "Journals": "C.2",
@@ -164,6 +189,16 @@ SECTION_CODES: dict[Section, str] = {
 }
 
 SECTION_HEADINGS: dict[Section, str] = {
+    # Section III front matter — text mirrors the Purdue template
+    # sub-section labels (matches the user's source-of-truth screenshots).
+    "Identifiers": "Name and any appropriate scholarly identifiers (include ORCID).",
+    "Degrees": "Degrees.",
+    "Positions at Purdue": "Positions at Purdue.",
+    "Positions at Other Institutions": "Positions at other institutions or organizations.",
+    "Licenses": "Licenses, registrations, and certificates.",
+    "Awards": "Recognitions (honors and awards) and the significance of these recognitions.",
+    "Professional Memberships": "Membership in professional organizations.",
+    # Section V appendix.
     "Under Review": "Products under review (e.g. papers, books, software)",
     "Key Works": "Key Scholarly Publications or Patents",
     "Journals": "Journals",
@@ -238,6 +273,9 @@ NO_DOI_ACRONYM_PREFIXES: tuple[str, ...] = ("USENIX",)
 # Defaults overridable via CLI.
 DEFAULT_OUT_FILE = "publications.rtf"
 DEFAULT_DB_FILE = "lookup_cache.sqlite"
+# Section III front matter source (A.1-A.7). Override via CLI --candidate-info.
+# Missing file → front matter is silently skipped (no error).
+DEFAULT_CANDIDATE_INFO_FILE = "assets/candidate-information.yaml"
 DEFAULT_MAX_WORKERS = 8
 
 # Patent table column widths in twips (1440 twips = 1 inch).

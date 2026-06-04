@@ -70,6 +70,11 @@ def e2e_outputs(
             "--non-scholar", str(yaml),
             "--out", str(out),
             "--cache", str(cache),
+            # Skip Section III front matter — the prod YAML's @-refs target
+            # real bib keys that aren't in the small test bib. E2e tests that
+            # exercise A.X rendering live in test_rtf.py with hand-built
+            # CandidateInformation fixtures.
+            "--candidate-info", "",
         ]
     )
     return out.read_text(encoding="utf-8"), out
@@ -328,6 +333,7 @@ class TestE2eGrantTotalsExtended:
                 "--non-scholar", str(custom_yaml),
                 "--out", str(out),
                 "--cache", str(cache),
+                "--candidate-info", "",
             ]
         )
         rtf = out.read_text(encoding="utf-8")
@@ -375,6 +381,7 @@ class TestE2eUnresolvedAtIdRef:
                     "--non-scholar", str(custom_yaml),
                     "--out", str(out),
                     "--cache", str(cache),
+                    "--candidate-info", "",
                 ]
             )
         # The cli exits 1 (failure) when refs don't resolve.
@@ -417,6 +424,7 @@ class TestE2eUnresolvedAtIdRef:
                     "--non-scholar", str(custom_yaml),
                     "--out", str(out),
                     "--cache", str(cache),
+                    "--candidate-info", "",
                 ]
             )
         assert exc.value.code == 1
@@ -453,6 +461,7 @@ class TestE2eUnresolvedAtIdRef:
                 "--non-scholar", str(custom_yaml),
                 "--out", str(out),
                 "--cache", str(cache),
+                "--candidate-info", "",
             ]
         )
         rtf = out.read_text(encoding="utf-8")
@@ -505,6 +514,7 @@ class TestE2eSectionsFilter:
                 "--out", str(out),
                 "--cache", str(cache),
                 "--sections", "C.4",
+                "--candidate-info", "",
             ]
         )
         rtf = out.read_text(encoding="utf-8")
@@ -549,6 +559,7 @@ class TestE2eSectionsFilter:
                 "--out", str(out),
                 "--cache", str(cache),
                 "--sections", "C.16",
+                "--candidate-info", "",
             ]
         )
         rtf = out.read_text(encoding="utf-8")
@@ -575,6 +586,7 @@ class TestE2eSectionsFilter:
                 "--out", str(out),
                 "--cache", str(cache),
                 "--sections", "C.4,C.6",
+                "--candidate-info", "",
             ]
         )
         rtf = out.read_text(encoding="utf-8")
@@ -602,6 +614,7 @@ class TestE2eSectionsFilter:
                 "--non-scholar", str(fixtures_dir / "non-scholar.yaml"),
                 "--out", str(full_out),
                 "--cache", str(tmp_path / "full-cache.sqlite"),
+                "--candidate-info", "",
             ]
         )
         full_rtf = full_out.read_text(encoding="utf-8")
@@ -617,6 +630,7 @@ class TestE2eSectionsFilter:
                 "--out", str(c4_out),
                 "--cache", str(tmp_path / "c4-cache.sqlite"),
                 "--sections", "C.4",
+                "--candidate-info", "",
             ]
         )
         c4_rtf = c4_out.read_text(encoding="utf-8")

@@ -17,11 +17,13 @@ from .config import (
     TIER_LABELS,
 )
 from .types import (
-    BibEntry, Citation, ConferencePresentation, CourseDevelopment,
-    CourseTaught, EntrepreneurialActivity, Grant, GrantPerson, InvitedTalk,
-    KeyWork, LeadershipRole, MediaAppearance, Patent, PostdocVisiting,
-    Publications, Section, ServiceEntry, SoftwareProduct, Student,
-    StudentAward, TechnologyTransfer, UndergradProduct, UnderReview,
+    Award, BibEntry, CandidateInformation, Citation, ConferencePresentation,
+    CourseDevelopment, CourseTaught, Degree, EntrepreneurialActivity, Grant,
+    GrantPerson, Identifiers, InvitedTalk, KeyWork, LeadershipRole,
+    MediaAppearance, OtherPosition, Patent, PostdocVisiting,
+    ProfessionalMembership, Publications, Section, ServiceEntry,
+    SoftwareProduct, Student, StudentAward, TechnologyTransfer,
+    UndergradProduct, UnderReview,
 )
 from .authors import parse_name_parts
 from .venue import parse_venue
@@ -312,6 +314,310 @@ def build_paper_index(publications: Publications) -> dict[str, str]:
             if cit.title:
                 index[normalize_title(cit.title)] = f"{SECTION_CODES[section]}.{idx}"
     return index
+
+
+def _emit_group_heading(out: IO[str], code: str, title: str) -> None:
+    """Emit a top-level Roman-numeral group heading ("A. GENERAL INFORMATION",
+    "C. SCHOLARLY CONTRIBUTIONS", etc.). Larger than `_emit_section_heading`'s
+    level-1 (fs32 vs fs28) so the visual hierarchy is: GROUP > section > sub.
+    No bookmark — these headings aren't cross-ref targets.
+    """
+    out.write("\\pard\\plain\\fs24\\par\n")
+    out.write(
+        f"\\pard\\plain\\s1\\b\\fs32 {code} {title}\\par\n"
+        f"\\pard\\plain\\fs24\\par\n"
+    )
+
+
+def _emit_external_url(label: str, url: str) -> str:
+    """Inline RTF HYPERLINK targeting an external URL.
+
+    Returns an RTF fragment (no surrounding paragraph) suitable for splicing
+    into a paragraph. `label` renders unmodified before the link; the link
+    itself shows the URL as its own display text with the `\\cs1 Hyperlink`
+    character style so Word copy-paste preserves the blue/underline.
+    """
+    # \cs1 + \cf1\ul = belt-and-suspenders: named char style for Word
+    # clipboard transit + inline fallback for basic RTF viewers.
+    return (
+        f"{label}{{\\field{{\\*\\fldinst HYPERLINK \"{url}\"}}"
+        f"{{\\fldrslt {{\\cs1\\cf1\\ul {escape_rtf(url)}}}}}}}"
+    )
+
+
+def _render_a1_identifiers(out: IO[str], ident: Identifiers) -> None:
+    """A.1 sub-renderer — bullet list with bold field labels.
+
+    Shape per bullet: "• {bold label}: {value or URL hyperlink}". Empty
+    fields are SKIPPED entirely (no orphan bullet). The bullet character
+    is the Unicode \\u2022 escape; the hanging indent matches the existing
+    numbered-list shape (li1080, fi-360, tx1080) so visually the bullets
+    land in the same column as A.2.1 / A.4.1 / etc. labels.
+    """
+    bullet_li = 1080      # body indent
+    bullet_fi = -360      # hanging outdent for the bullet char
+    bullet_tx = 1080      # tab stop = body indent
+
+    def _bullet(label: str, body_rtf: str) -> None:
+        out.write(
+            f"\\pard\\li{bullet_li}\\fi{bullet_fi}\\tx{bullet_tx} "
+            f"\\u8226?\\tab \\b {escape_rtf(label)}\\b0 : {body_rtf}\\par\n"
+        )
+
+    if ident.name:
+        _bullet("Name", escape_rtf(ident.name))
+    if ident.orcid:
+        _bullet("ORCID", _emit_external_url("", ident.orcid))
+    if ident.google_scholar:
+        _bullet("Google Scholar", _emit_external_url("", ident.google_scholar))
+    # Trailing blank for visual spacing before A.2.
+    out.write("\\pard\\par\n")
+
+
+def _render_a2_degrees(out: IO[str], degrees: list[Degree]) -> None:
+    """A.2 sub-renderer — numbered list (A.2.1, A.2.2, ...).
+
+    Per-entry body: "{institution}, {years}. {degree}. {thesis_kind}:
+    /italic thesis_title/, supervised by {advisor}." Thesis bits are
+    omitted when `thesis_title` is empty (degrees without a thesis).
+    """
+    if not degrees:
+        out.write("\\pard\\li720 N/A\\par\\par\n")
+        return
+    code = SECTION_CODES["Degrees"]
+    indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(degrees)))
+    for idx, d in enumerate(degrees, 1):
+        body = f"{escape_rtf(d.institution)}, {escape_rtf(d.years)}. {escape_rtf(d.degree)}."
+        if d.thesis_title:
+            thesis_label = d.thesis_kind or "Thesis"
+            body += (
+                f" {escape_rtf(thesis_label)}: \\i {escape_rtf(d.thesis_title)}\\i0"
+            )
+            if d.advisor:
+                body += f", supervised by {escape_rtf(d.advisor)}"
+            body += "."
+        _emit_list_item(out, f"{code}.{idx}", body, indent=indent)
+
+
+def _render_a3_positions_at_purdue(out: IO[str], prose: str) -> None:
+    """A.3 sub-renderer — single free-form paragraph (no numbering).
+
+    The screenshot shows a single-line "Assistant Professor, 2020-2026"
+    with no numbered child. We mirror that exactly: emit as an indented
+    paragraph. Empty string → "N/A".
+    """
+    text = prose.strip() if prose else ""
+    if not text:
+        text = "N/A"
+    out.write(f"\\pard\\li720 {escape_rtf(text)}\\par\\par\n")
+
+
+def _render_a4_positions_at_other(out: IO[str], positions: list[OtherPosition]) -> None:
+    """A.4 sub-renderer — numbered list (A.4.1, A.4.2, ...).
+
+    Per-entry body: "{title}, {years}. {organization} ({acronym})." The
+    parenthetical acronym is omitted when `acronym` is empty.
+    """
+    if not positions:
+        out.write("\\pard\\li720 N/A\\par\\par\n")
+        return
+    code = SECTION_CODES["Positions at Other Institutions"]
+    indent = _hanging_indent_for_codes(
+        _section_codes_up_to(code, len(positions))
+    )
+    for idx, p in enumerate(positions, 1):
+        body = (
+            f"{escape_rtf(p.title)}, {escape_rtf(p.years)}. "
+            f"{escape_rtf(p.organization)}"
+        )
+        if p.acronym:
+            body += f" ({escape_rtf(p.acronym)})"
+        body += "."
+        _emit_list_item(out, f"{code}.{idx}", body, indent=indent)
+
+
+def _render_a5_licenses(out: IO[str], prose: str) -> None:
+    """A.5 sub-renderer — single free-form paragraph (no numbering).
+
+    Empty string → "N/A" (matches the user's source-of-truth screenshot).
+    """
+    text = prose.strip() if prose else ""
+    if not text:
+        text = "N/A"
+    out.write(f"\\pard\\li720 {escape_rtf(text)}\\par\\par\n")
+
+
+# A.6 table column widths (twips). Sum = 9360 = 6.5" usable on US Letter.
+# Matches the user's source-of-truth doc layout: roughly Name 35%, Date 12%,
+# Significance 53%.
+_AWARDS_TABLE_WIDTHS: list[int] = [3360, 1100, 4900]
+
+
+def index_awards(awards: list[Award]) -> list[tuple[str, Award]]:
+    """Walk the awards list in tier-grouped + chrono order and yield
+    `(A.6.N, award)` for each visible entry.
+
+    Mirrors the renderer's emit order so the cli `_register` pass can
+    build ref_index keys that match the rendered numbering exactly.
+    Order: ALL externals (chrono asc) THEN ALL internals (chrono asc).
+    Within a year, stable YAML order is preserved.
+    """
+    code = SECTION_CODES["Awards"]
+    externals = sorted(
+        [a for a in awards if a.tier == "external"], key=lambda a: a.year,
+    )
+    internals = sorted(
+        [a for a in awards if a.tier == "internal"], key=lambda a: a.year,
+    )
+    out: list[tuple[str, Award]] = []
+    n = 0
+    for a in externals + internals:
+        n += 1
+        out.append((f"{code}.{n}", a))
+    return out
+
+
+def _render_a6_awards(out: IO[str], awards: list[Award]) -> None:
+    """A.6 sub-renderer — 3-column table with EXTERNAL + INTERNAL groups.
+
+    Columns: Name | Date | Significance. Each tier group leads with a
+    bold-header divider row carrying the column titles ("EXTERNAL
+    RECOGNITIONS / DATE / BRIEF DESCRIPTION OF SIGNIFICANCE"). Within a
+    tier the rows are chronologically ascending by `year`; YAML order
+    breaks year ties (stable sort).
+
+    `significance` may carry @-refs (resolved upstream in
+    `resolve_refs_in_list`, so the field already contains pipe-form
+    sentinels by the time this renderer runs — they pass through
+    verbatim and `_finalize_ref_hyperlinks` turns them into clickable
+    hyperlinks during the post-pass).
+
+    Numbering: A.6.1, A.6.2, ... runs flat across both tiers in emit
+    order (externals first, then internals). Matches `index_awards`.
+    """
+    if not awards:
+        out.write("\\pard\\li720 N/A\\par\\par\n")
+        return
+
+    externals = sorted(
+        [a for a in awards if a.tier == "external"], key=lambda a: a.year,
+    )
+    internals = sorted(
+        [a for a in awards if a.tier == "internal"], key=lambda a: a.year,
+    )
+
+    code = SECTION_CODES["Awards"]
+    table = RtfTable(_AWARDS_TABLE_WIDTHS)
+    n = 0
+
+    def _emit_group(label: str, group: list[Award]) -> None:
+        nonlocal n
+        # Group divider — a bold "category" row spanning the same 3 columns.
+        # The DATE + SIGNIFICANCE column headers repeat per group so the
+        # user can scan either group standalone (matches the screenshot).
+        table.add_header([label, "DATE", "BRIEF DESCRIPTION OF SIGNIFICANCE"])
+        for a in group:
+            n += 1
+            # Each row's first cell carries the bookmark anchor for A.6.N.
+            name_cell = (
+                f"{_ref_anchor(f'{code}.{n}')} {escape_rtf(a.name)}"
+            )
+            date_cell = escape_rtf(a.year_str or str(a.year))
+            # Significance may already carry sentinel-wrapped refs from
+            # resolve_refs_in_list; escape_rtf preserves them (sentinels
+            # are <0x80 and not in the escape set).
+            sig_cell = escape_rtf(a.significance)
+            table.add_row([name_cell, date_cell, sig_cell])
+
+    _emit_group("EXTERNAL RECOGNITIONS", externals)
+    _emit_group("INTERNAL RECOGNITIONS", internals)
+
+    out.write(table.render())
+    # Trailing blank for visual spacing before A.7.
+    out.write("\\pard\\par\n")
+
+
+def _render_a7_memberships(
+    out: IO[str], memberships: list[ProfessionalMembership],
+) -> None:
+    """A.7 sub-renderer — numbered list (A.7.1, A.7.2, ...).
+
+    Per-entry body: "{level}, {organization} ({acronym})." The
+    parenthetical acronym is omitted when `acronym` is empty.
+    """
+    if not memberships:
+        out.write("\\pard\\li720 N/A\\par\\par\n")
+        return
+    code = SECTION_CODES["Professional Memberships"]
+    indent = _hanging_indent_for_codes(
+        _section_codes_up_to(code, len(memberships))
+    )
+    for idx, m in enumerate(memberships, 1):
+        body = (
+            f"{escape_rtf(m.level)}, {escape_rtf(m.organization)}"
+        )
+        if m.acronym:
+            body += f" ({escape_rtf(m.acronym)})"
+        _emit_list_item(out, f"{code}.{idx}", body, indent=indent)
+
+
+def render_candidate_information_section(
+    candidate_info: CandidateInformation, out: IO[str],
+) -> None:
+    """Emit Section III front matter — A.1 through A.7 (A.6 skipped).
+
+    Order:
+        A. GENERAL INFORMATION  (group heading, fs32)
+        A.1 Identifiers          (bullet list)
+        A.2 Degrees              (numbered)
+        A.3 Positions at Purdue  (prose)
+        A.4 Positions at other   (numbered)
+        A.5 Licenses             (prose; "N/A" allowed)
+        A.7 Memberships          (numbered)
+
+    A.6 is intentionally absent — that sub-section is handled outside
+    this generator. The "A.6 gap" is visible in the rendered output by
+    design (Purdue template convention: skip but don't renumber).
+    """
+    _emit_group_heading(out, "A.", "GENERAL INFORMATION")
+
+    _emit_section_heading(
+        out, SECTION_CODES["Identifiers"], SECTION_HEADINGS["Identifiers"],
+    )
+    _render_a1_identifiers(out, candidate_info.identifiers)
+
+    _emit_section_heading(
+        out, SECTION_CODES["Degrees"], SECTION_HEADINGS["Degrees"],
+    )
+    _render_a2_degrees(out, candidate_info.degrees)
+
+    _emit_section_heading(
+        out, SECTION_CODES["Positions at Purdue"],
+        SECTION_HEADINGS["Positions at Purdue"],
+    )
+    _render_a3_positions_at_purdue(out, candidate_info.positions_at_purdue)
+
+    _emit_section_heading(
+        out, SECTION_CODES["Positions at Other Institutions"],
+        SECTION_HEADINGS["Positions at Other Institutions"],
+    )
+    _render_a4_positions_at_other(out, candidate_info.positions_at_other)
+
+    _emit_section_heading(
+        out, SECTION_CODES["Licenses"], SECTION_HEADINGS["Licenses"],
+    )
+    _render_a5_licenses(out, candidate_info.licenses)
+
+    _emit_section_heading(
+        out, SECTION_CODES["Awards"], SECTION_HEADINGS["Awards"],
+    )
+    _render_a6_awards(out, candidate_info.awards)
+
+    _emit_section_heading(
+        out, SECTION_CODES["Professional Memberships"],
+        SECTION_HEADINGS["Professional Memberships"],
+    )
+    _render_a7_memberships(out, candidate_info.professional_memberships)
 
 
 def render_under_review_section(
@@ -836,16 +1142,18 @@ def _student_pub_refs(
     under_review: Optional[list["UnderReview"]] = None,
     under_review_index: Optional[dict[int, str]] = None,
 ) -> list[str]:
-    """Find all C.X.Y / A.1.N refs for papers this student co-authored.
+    """Find all C.X.Y / Section V, A.1.N refs for papers this student co-authored.
 
-    Scans the bib (C.2/C.3/C.4/C.5 sourced) AND the A.1 under-review list
-    (when supplied). Match semantics: structural — last-name equality +
+    Scans the bib (C.2/C.3/C.4/C.5 sourced) AND the Section V, A.1 under-review
+    list (when supplied). Match semantics: structural — last-name equality +
     canonical-initials.startswith(bib-initials), as in
     `authors.lookup_student_type`. Aliases extend the candidate set so
     students whose bib forms use different last names (accent fold,
     short form) are matched once per alias.
 
     Output is sorted: C.* refs first (by section + idx), then A.1 refs.
+    Each ref may be either a bare code ("C.4.7") or pipe-form
+    ("display|bookmark") — the sort uses the bookmark portion as its key.
     """
     from .venue import normalize_title
     candidates = _build_name_candidates([student_name, *aliases])
@@ -870,8 +1178,10 @@ def _student_pub_refs(
                     break
     def _key(r: str) -> tuple[int, ...]:
         # C.X.Y refs sort first (prefix "0"), A.1.N refs after (prefix "1").
-        prefix = 0 if r.startswith("C.") else 1
-        body = r.replace("C.", "").replace("A.", "")
+        # Pipe-form values store "display|bookmark"; key off the bookmark.
+        bookmark = r.split("|", 1)[1] if "|" in r else r
+        prefix = 0 if bookmark.startswith("C.") else 1
+        body = bookmark.replace("C.", "").replace("A.", "")
         return (prefix, *(int(x) for x in body.split(".")))
     return sorted(set(refs), key=_key)
 
@@ -1631,9 +1941,20 @@ def _finalize_ref_hyperlinks(rtf: str) -> str:
     as a link in Word even before clicking. Color 1 is declared in the
     `\\colortbl` at the top of `write_rtf` and is the same blue used for
     external DOI/URL hyperlinks elsewhere in the doc.
+
+    Pipe-form support: the sentinel may carry `display|bookmark_code`
+    (pipe-delimited). When present, the LHS is the user-visible display
+    text, the RHS is the bare bookmark target. Used to render
+    "Section V, A.1.3" as the visible string while still hyperlinking
+    to the bare `A_1_3` bookmark. Without a pipe, display = bookmark
+    (existing behavior).
     """
     def _sub(match: "re.Match[str]") -> str:
-        code = match.group(1)
+        text = match.group(1)
+        if "|" in text:
+            display, code = text.split("|", 1)
+        else:
+            display, code = text, text
         bookmark = code.replace(".", "_")
         # Use the `\cs1` Hyperlink character style (defined in the
         # stylesheet) — survives Word copy-paste because Word maps the
@@ -1644,7 +1965,7 @@ def _finalize_ref_hyperlinks(rtf: str) -> str:
         # RTF parsers) — Word ignores them when the named style applies.
         return (
             f'{{\\field{{\\*\\fldinst HYPERLINK \\\\l "{bookmark}"}}'
-            f'{{\\fldrslt {{\\cs1\\cf1\\ul {code}}}}}}}'
+            f'{{\\fldrslt {{\\cs1\\cf1\\ul {display}}}}}}}'
         )
     return _REF_SENTINEL_PATTERN.sub(_sub, rtf)
 
@@ -1859,6 +2180,7 @@ def write_rtf(
     technology_transfer: Optional[list[TechnologyTransfer]] = None,
     course_development: Optional[list[CourseDevelopment]] = None,
     courses_taught: Optional[list[CourseTaught]] = None,
+    candidate_info: Optional[CandidateInformation] = None,
     sections_filter: Optional[set[str]] = None,
 ) -> None:
     log.info("Generating RTF file: %s", path)
@@ -1894,12 +2216,18 @@ def write_rtf(
     technology_transfer = technology_transfer or []
     course_development = course_development or []
     courses_taught = courses_taught or []
-    # A.1 index — maps each under_review entry's position in the
-    # (already-sorted-upstream) list to its emitted "A.1.{N}" code.
-    # The student-table renderer scans this to thread A.1 refs into
-    # each student's "Related Publications" cell alongside C.X.Y refs.
+    # Section V, A.1 index — maps each under_review entry's position in
+    # the (already-sorted-upstream) list to its emitted code in the
+    # pipe-form "Section V, A.1.{N}|A.1.{N}". The pipe-form is honored
+    # by `_finalize_ref_hyperlinks` (display=LHS, bookmark target=RHS)
+    # so the rendered student-table cell shows "Section V, A.1.3" while
+    # hyperlinking to the bare-code bookmark on the under-review entry.
+    # Sort logic in `_student_pub_refs` keys off the bookmark portion
+    # (after the pipe) so the ordering invariant is preserved.
+    ur_code = SECTION_CODES["Under Review"]
     under_review_index: dict[int, str] = {
-        i: f"A.1.{i + 1}" for i in range(len(under_review))
+        i: f"Section V, {ur_code}.{i + 1}|{ur_code}.{i + 1}"
+        for i in range(len(under_review))
     }
     # Per-section emission filter (set by --sections CLI flag). Returns
     # True for every section when no filter is supplied (default — emit
@@ -1949,9 +2277,28 @@ def write_rtf(
             r"}"
         )
 
+        # Section III front matter — A. GENERAL INFORMATION (A.1-A.7;
+        # A.6 absent by design). Emitted at the TOP per the Purdue
+        # tenure-template layout. Skipped silently when no candidate-info
+        # YAML was loaded (CLI `--candidate-info` flag).
+        if candidate_info is not None:
+            sections_in_front = {
+                "Identifiers", "Degrees", "Positions at Purdue",
+                "Positions at Other Institutions", "Licenses", "Awards",
+                "Professional Memberships",
+            }
+            # The full front matter is emitted when ANY of its sub-sections
+            # passes the --sections filter; rendering individual A.X
+            # sub-sections in isolation isn't supported (the renderer is
+            # one shot covering all of A.1-A.7).
+            if any(_emit(s) for s in sections_in_front):  # type: ignore[arg-type]
+                render_candidate_information_section(candidate_info, out)
+
         # C.1 highlight section first (it's a curated promotion list);
-        # then the rest of SECTION_ORDER; then A.1 (Appendix: products
-        # under review) is emitted LAST so it reads as an appendix.
+        # then the rest of SECTION_ORDER; then Section V, A.1 (Appendix:
+        # products under review) is emitted LAST so it reads as an
+        # appendix. (The "A.1" code here is reused from Section III's
+        # A.1 — see the disambiguation note at the top of write_rtf.)
         if _emit("Key Works"):
             render_key_works_section(key_works, paper_index, out)
 
@@ -1962,6 +2309,10 @@ def write_rtf(
         for section in SECTION_ORDER:
             # Special-section renderers handle these via their own data structures.
             if section in (
+                # Section III front matter (handled by render_candidate_information_section).
+                "Identifiers", "Degrees", "Positions at Purdue",
+                "Positions at Other Institutions", "Licenses", "Awards",
+                "Professional Memberships",
                 "Under Review",
                 "Other publications and products",
                 "Key Works", "Invited Talks", "Leadership Roles",

@@ -26,11 +26,13 @@ from .lookup import (
     fetch_patent_date,
 )
 from .types import (
-    BibEntry, Category, Citation, ConferencePresentation, CourseDevelopment,
-    CourseTaught, EntrepreneurialActivity, Grant, GrantPerson,
-    InvitedTalk, LeadershipRole, MediaAppearance, Patent, Publications, Rank,
-    Section, ServiceEntry, SoftwareProduct, Student, StudentAward,
-    TechnologyTransfer, UndergradProduct, UnderReview,
+    Award, BibEntry, CandidateInformation, Category, Citation,
+    ConferencePresentation, CourseDevelopment, CourseTaught, Degree,
+    EntrepreneurialActivity, Grant, GrantPerson, Identifiers, InvitedTalk,
+    LeadershipRole, MediaAppearance, OtherPosition, Patent,
+    ProfessionalMembership, Publications, Rank, Section, ServiceEntry,
+    SoftwareProduct, Student, StudentAward, TechnologyTransfer,
+    UndergradProduct, UnderReview,
 )
 from .venue import (
     CVE_ID_RE,
@@ -274,6 +276,7 @@ PROSE_FIELDS_BY_TYPE: dict[str, tuple[str, ...]] = {
     "CourseDevelopment": ("summary", "description"),
     "CourseTaught": ("title", "responsibility"),
     "UnderReview": ("title", "venue"),
+    "Award": ("name", "significance"),
     "ServiceEntry": ("description",),
     "PostdocVisiting": ("position_title_dates", "current_position"),
     "Student": ("position",),
@@ -926,6 +929,195 @@ def build_patent(
 
 
 # ----- Non-Scholar YAML (CVE) loader + validator + builder ----------------
+
+
+def load_candidate_information(path: Optional[str]) -> Optional[CandidateInformation]:
+    """Load Section III front matter from YAML; return None if file missing.
+
+    Schema is the `candidate_information:` mapping documented in
+    `assets/candidate-information.yaml`. A missing path is NOT an error
+    (skip emission of A.1-A.7); a missing FILE at the supplied path IS
+    an error (user explicitly asked for it). Empty fields in the YAML
+    default to "" / [] so callers can rely on the tuple shape.
+
+    Validation errors (wrong types, missing required keys) are collected
+    and surfaced together via sys.exit(1) so the user sees the full
+    list in one pass, matching `validate_non_scholar`'s pattern.
+    """
+    if not path:
+        return None
+    if not os.path.exists(path):
+        log.warning(
+            "Candidate-info YAML file not found at %s — skipping Section III "
+            "front matter (A.1-A.7).", path,
+        )
+        return None
+    log.info("Loading candidate-information from %s", path)
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        log.error(
+            "Candidate-info YAML root must be a mapping; got %s",
+            type(data).__name__,
+        )
+        sys.exit(1)
+    raw = data.get("candidate_information")
+    if raw is None:
+        log.error(
+            "Candidate-info YAML must contain a `candidate_information:` "
+            "top-level key. See assets/candidate-information.yaml for shape.",
+        )
+        sys.exit(1)
+    if not isinstance(raw, dict):
+        log.error(
+            "`candidate_information:` must be a mapping; got %s",
+            type(raw).__name__,
+        )
+        sys.exit(1)
+    return build_candidate_information(raw)
+
+
+def build_candidate_information(raw: dict) -> CandidateInformation:
+    """Convert the validated raw YAML mapping into a typed CandidateInformation.
+
+    Collects ALL schema violations before exiting so the user sees the full
+    error list in one pass. Empty / missing sub-sections default to
+    sensible empties: empty string for prose, empty list for entry-lists,
+    empty Identifiers for A.1 if `identifiers:` is missing entirely.
+    """
+    errors: list[str] = []
+
+    def _str(d: dict, key: str, *, default: str = "") -> str:
+        v = d.get(key, default)
+        if v is None:
+            return default
+        if not isinstance(v, str):
+            errors.append(
+                f"candidate_information.{key}: must be a string; "
+                f"got {type(v).__name__}",
+            )
+            return default
+        return v
+
+    ident_raw = raw.get("identifiers") or {}
+    if not isinstance(ident_raw, dict):
+        errors.append(
+            f"candidate_information.identifiers: must be a mapping; "
+            f"got {type(ident_raw).__name__}",
+        )
+        ident_raw = {}
+    identifiers = Identifiers(
+        name=_str(ident_raw, "name"),
+        orcid=_str(ident_raw, "orcid"),
+        google_scholar=_str(ident_raw, "google_scholar"),
+    )
+
+    def _list(key: str) -> list:
+        v = raw.get(key) or []
+        if not isinstance(v, list):
+            errors.append(
+                f"candidate_information.{key}: must be a list; "
+                f"got {type(v).__name__}",
+            )
+            return []
+        return v
+
+    degrees: list[Degree] = []
+    for i, d in enumerate(_list("degrees")):
+        if not isinstance(d, dict):
+            errors.append(
+                f"candidate_information.degrees[{i}]: must be a mapping; "
+                f"got {type(d).__name__}",
+            )
+            continue
+        degrees.append(Degree(
+            institution=_str(d, "institution"),
+            years=_str(d, "years"),
+            degree=_str(d, "degree"),
+            thesis_kind=_str(d, "thesis_kind"),
+            thesis_title=_str(d, "thesis_title"),
+            advisor=_str(d, "advisor"),
+        ))
+
+    other_positions: list[OtherPosition] = []
+    for i, p in enumerate(_list("positions_at_other")):
+        if not isinstance(p, dict):
+            errors.append(
+                f"candidate_information.positions_at_other[{i}]: must be a "
+                f"mapping; got {type(p).__name__}",
+            )
+            continue
+        other_positions.append(OtherPosition(
+            title=_str(p, "title"),
+            years=_str(p, "years"),
+            organization=_str(p, "organization"),
+            acronym=_str(p, "acronym"),
+        ))
+
+    awards: list[Award] = []
+    for i, a in enumerate(_list("awards")):
+        if not isinstance(a, dict):
+            errors.append(
+                f"candidate_information.awards[{i}]: must be a mapping; "
+                f"got {type(a).__name__}",
+            )
+            continue
+        tier_raw = _str(a, "tier")
+        if tier_raw not in ("external", "internal"):
+            errors.append(
+                f"candidate_information.awards[{i}].tier: must be "
+                f"'external' or 'internal'; got {tier_raw!r}",
+            )
+            continue
+        year_raw = a.get("year")
+        try:
+            year_int = int(year_raw) if year_raw is not None else 9999
+        except (TypeError, ValueError):
+            errors.append(
+                f"candidate_information.awards[{i}].year: must be an int "
+                f"or coercible; got {year_raw!r}",
+            )
+            continue
+        # year_str optional — default to str(year) for display.
+        year_str = _str(a, "year_str") or str(year_int)
+        awards.append(Award(
+            year=year_int,
+            year_str=year_str,
+            tier=tier_raw,  # type: ignore[arg-type]
+            name=_str(a, "name"),
+            significance=_str(a, "significance"),
+            id=_str(a, "id"),
+        ))
+
+    memberships: list[ProfessionalMembership] = []
+    for i, m in enumerate(_list("professional_memberships")):
+        if not isinstance(m, dict):
+            errors.append(
+                f"candidate_information.professional_memberships[{i}]: must "
+                f"be a mapping; got {type(m).__name__}",
+            )
+            continue
+        memberships.append(ProfessionalMembership(
+            level=_str(m, "level"),
+            organization=_str(m, "organization"),
+            acronym=_str(m, "acronym"),
+        ))
+
+    if errors:
+        log.error("Candidate-info schema errors:")
+        for e in errors:
+            log.error("  · %s", e)
+        sys.exit(1)
+
+    return CandidateInformation(
+        identifiers=identifiers,
+        degrees=degrees,
+        positions_at_purdue=_str(raw, "positions_at_purdue"),
+        positions_at_other=other_positions,
+        licenses=_str(raw, "licenses"),
+        awards=awards,
+        professional_memberships=memberships,
+    )
 
 
 def load_non_scholar(path: Optional[str]) -> dict:

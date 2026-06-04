@@ -7,9 +7,11 @@ import pytest
 
 from pubs_emitter.rtf import (
     RtfTable,
+    _finalize_ref_hyperlinks,
     _student_tier,
     apply_acronym_expansions,
     build_paper_index,
+    render_candidate_information_section,
     render_citation,
     render_conference_presentation,
     render_grants_section,
@@ -28,16 +30,22 @@ from pubs_emitter.rtf import (
     render_undergrad_products_section,
 )
 from pubs_emitter.types import (
+    Award,
+    CandidateInformation,
     Citation,
     ConferencePresentation,
+    Degree,
     EntrepreneurialActivity,
     Grant,
     GrantPerson,
+    Identifiers,
     InvitedTalk,
     KeyWork,
     LeadershipRole,
     MediaAppearance,
+    OtherPosition,
     PostdocVisiting,
+    ProfessionalMembership,
     ServiceEntry,
     Student,
     StudentAward,
@@ -1876,3 +1884,277 @@ class TestRefAnchorAndHyperlinkFinalize:
         # Both reference the same bookmark name.
         assert "bkmkstart C_16_2_3" in anchor
         assert "HYPERLINK \\\\l \"C_16_2_3\"" in link
+
+
+# ----- Section III front matter (A.1-A.7) ---------------------------------
+
+
+class TestRenderCandidateInformationSection:
+    """Section III A.X front matter — bullets for A.1, numbered for A.2/A.4/A.7,
+    prose for A.3/A.5. A.6 is intentionally absent.
+    """
+
+    def _ci(self, **overrides) -> CandidateInformation:
+        base = CandidateInformation(
+            identifiers=Identifiers(
+                name="James C. Davis, PhD",
+                orcid="https://orcid.org/0000-0003-2495-686X",
+                google_scholar="https://scholar.google.com/citations?user=X",
+            ),
+            degrees=[
+                Degree(
+                    institution="Clarkson University",
+                    years="2008-2012",
+                    degree="BSc CS",
+                    thesis_kind="Undergraduate thesis",
+                    thesis_title="Some Title",
+                    advisor="Dr. T. Nishikawa",
+                ),
+            ],
+            positions_at_purdue="Assistant Professor, 2020-2026",
+            positions_at_other=[
+                OtherPosition(
+                    title="Software Engineer", years="2012-2017",
+                    organization="International Business Machines",
+                    acronym="IBM",
+                ),
+            ],
+            licenses="N/A",
+            awards=[],
+            professional_memberships=[
+                ProfessionalMembership(
+                    level="Member",
+                    organization="Association for Computing Machinery",
+                    acronym="ACM",
+                ),
+                ProfessionalMembership(
+                    level="Senior Member",
+                    organization="Institute of Electrical and Electronics Engineers",
+                    acronym="IEEE",
+                ),
+            ],
+        )
+        return base._replace(**overrides) if overrides else base
+
+    def test_emits_group_heading_and_all_section_headings(self) -> None:
+        buf = io.StringIO()
+        render_candidate_information_section(self._ci(), buf)
+        out = buf.getvalue()
+        # Top-level "A. GENERAL INFORMATION" group heading.
+        assert "A. GENERAL INFORMATION" in out
+        # Each A.X sub-section heading text.
+        assert "A.1 Name and any appropriate scholarly identifiers" in out
+        assert "A.2 Degrees." in out
+        assert "A.3 Positions at Purdue." in out
+        assert "A.4 Positions at other institutions or organizations." in out
+        assert "A.5 Licenses, registrations, and certificates." in out
+        assert "A.6 Recognitions" in out
+        assert "A.7 Membership in professional organizations." in out
+
+    def test_a1_renders_as_bullet_list_with_bold_labels(self) -> None:
+        buf = io.StringIO()
+        render_candidate_information_section(self._ci(), buf)
+        out = buf.getvalue()
+        # Bullet char (舦?) + bold labels Name:, ORCID:, Google Scholar:.
+        assert "\\u8226?" in out
+        assert "\\b Name\\b0" in out
+        assert "\\b ORCID\\b0" in out
+        assert "\\b Google Scholar\\b0" in out
+        # Identifier URLs become RTF HYPERLINK fields, not bare text.
+        assert 'HYPERLINK "https://orcid.org/0000-0003-2495-686X"' in out
+        assert 'HYPERLINK "https://scholar.google.com/citations?user=X"' in out
+        # No A.1.N codes are emitted (bullets, not numbered).
+        assert "A.1.1" not in out
+
+    def test_a2_numbered_with_italic_thesis(self) -> None:
+        buf = io.StringIO()
+        render_candidate_information_section(self._ci(), buf)
+        out = buf.getvalue()
+        # Code "A.2.1" emitted as a bookmark-wrapped numbered-list item.
+        assert "A.2.1" in out
+        assert "\\*\\bkmkstart A_2_1" in out
+        # Thesis title in italics + advisor suffix.
+        assert "\\i Some Title\\i0" in out
+        assert "supervised by Dr. T. Nishikawa" in out
+
+    def test_a3_prose_no_numbering(self) -> None:
+        buf = io.StringIO()
+        render_candidate_information_section(self._ci(), buf)
+        out = buf.getvalue()
+        # A.3 emits the literal prose line; no A.3.1 child.
+        assert "Assistant Professor, 2020-2026" in out
+        assert "A.3.1" not in out
+        assert "\\*\\bkmkstart A_3_1" not in out
+
+    def test_a4_numbered_with_acronym_parenthetical(self) -> None:
+        buf = io.StringIO()
+        render_candidate_information_section(self._ci(), buf)
+        out = buf.getvalue()
+        assert "A.4.1" in out
+        assert "\\*\\bkmkstart A_4_1" in out
+        assert "International Business Machines (IBM)." in out
+
+    def test_a5_renders_na_when_empty(self) -> None:
+        buf = io.StringIO()
+        render_candidate_information_section(self._ci(licenses=""), buf)
+        out = buf.getvalue()
+        # Literal "N/A" prose; no A.5.1 numbering.
+        assert "N/A" in out
+        assert "A.5.1" not in out
+
+    def test_a7_numbered_increments_and_emits_acronym(self) -> None:
+        buf = io.StringIO()
+        render_candidate_information_section(self._ci(), buf)
+        out = buf.getvalue()
+        assert "A.7.1" in out
+        assert "A.7.2" in out
+        assert "\\*\\bkmkstart A_7_1" in out
+        assert "Association for Computing Machinery (ACM)" in out
+        assert "Institute of Electrical and Electronics Engineers (IEEE)" in out
+
+    def test_emit_order_is_a1_a2_a3_a4_a5_a6_a7(self) -> None:
+        """A.1 → A.2 → A.3 → A.4 → A.5 → A.6 → A.7. Matches the Purdue
+        front-matter sub-section order verbatim."""
+        buf = io.StringIO()
+        render_candidate_information_section(self._ci(), buf)
+        out = buf.getvalue()
+        positions = [out.index(h) for h in (
+            "A.1 Name and any",
+            "A.2 Degrees.",
+            "A.3 Positions at Purdue.",
+            "A.4 Positions at other",
+            "A.5 Licenses,",
+            "A.6 Recognitions",
+            "A.7 Membership in",
+        )]
+        assert positions == sorted(positions)
+
+
+class TestRenderA6Awards:
+    """A.6 table — EXTERNAL + INTERNAL tier groups, chronological within each,
+    flat A.6.N numbering across groups (externals first, then internals).
+    Significance cell may carry @-resolved sentinel-form refs."""
+
+    def _ci_with_awards(self, awards: list[Award]) -> CandidateInformation:
+        return CandidateInformation(
+            identifiers=Identifiers(name="X", orcid="", google_scholar=""),
+            degrees=[], positions_at_purdue="", positions_at_other=[],
+            licenses="", awards=awards, professional_memberships=[],
+        )
+
+    def _award(self, **kwargs) -> Award:
+        base = dict(
+            year=2024, year_str="2024", tier="external",
+            name="Some Award", significance="Some significance.",
+        )
+        base.update(kwargs)
+        return Award(**base)
+
+    def test_emits_two_group_headers_when_both_tiers_present(self) -> None:
+        buf = io.StringIO()
+        render_candidate_information_section(self._ci_with_awards([
+            self._award(tier="external", name="Ext"),
+            self._award(tier="internal", name="Int"),
+        ]), buf)
+        out = buf.getvalue()
+        assert "EXTERNAL RECOGNITIONS" in out
+        assert "INTERNAL RECOGNITIONS" in out
+        assert out.index("EXTERNAL") < out.index("INTERNAL")
+
+    def test_externals_emit_before_internals(self) -> None:
+        buf = io.StringIO()
+        render_candidate_information_section(self._ci_with_awards([
+            self._award(tier="internal", name="Int2026", year=2026),
+            self._award(tier="external", name="Ext2024", year=2024),
+        ]), buf)
+        out = buf.getvalue()
+        assert out.index("Ext2024") < out.index("Int2026")
+
+    def test_within_tier_chronological_ascending(self) -> None:
+        buf = io.StringIO()
+        render_candidate_information_section(self._ci_with_awards([
+            self._award(tier="external", name="Newer", year=2025),
+            self._award(tier="external", name="Older", year=2018),
+        ]), buf)
+        out = buf.getvalue()
+        assert out.index("Older") < out.index("Newer")
+
+    def test_a6_n_codes_flat_across_tiers(self) -> None:
+        buf = io.StringIO()
+        render_candidate_information_section(self._ci_with_awards([
+            self._award(tier="external", name="E1", year=2018),
+            self._award(tier="external", name="E2", year=2020),
+            self._award(tier="internal", name="I1", year=2022),
+        ]), buf)
+        out = buf.getvalue()
+        # Externals numbered first (A.6.1, A.6.2), internal continues (A.6.3).
+        assert "\\*\\bkmkstart A_6_1" in out
+        assert "\\*\\bkmkstart A_6_2" in out
+        assert "\\*\\bkmkstart A_6_3" in out
+
+    def test_empty_awards_renders_na(self) -> None:
+        buf = io.StringIO()
+        render_candidate_information_section(self._ci_with_awards([]), buf)
+        out = buf.getvalue()
+        # Heading still emitted; body is the indented N/A placeholder.
+        assert "A.6 Recognitions" in out
+        # No table row markup when empty.
+        assert "EXTERNAL RECOGNITIONS" not in out
+
+    def test_columns_header_says_date_and_significance(self) -> None:
+        buf = io.StringIO()
+        render_candidate_information_section(self._ci_with_awards([
+            self._award(tier="external"),
+        ]), buf)
+        out = buf.getvalue()
+        assert "DATE" in out
+        assert "BRIEF DESCRIPTION OF SIGNIFICANCE" in out
+
+
+class TestIndexAwards:
+    """The `index_awards` helper must yield (A.6.N, award) tuples in the
+    SAME order as the renderer emits them, so cli's ref_index can register
+    matching codes for @id resolution."""
+
+    def test_externals_numbered_first(self) -> None:
+        from pubs_emitter.rtf import index_awards
+        a1 = Award(year=2025, year_str="2025", tier="internal", name="I", significance="")
+        a2 = Award(year=2018, year_str="2018", tier="external", name="E", significance="")
+        result = index_awards([a1, a2])
+        assert result == [("A.6.1", a2), ("A.6.2", a1)]
+
+    def test_within_tier_chronological(self) -> None:
+        from pubs_emitter.rtf import index_awards
+        a1 = Award(year=2024, year_str="2024", tier="external", name="Later", significance="")
+        a2 = Award(year=2018, year_str="2018", tier="external", name="Earlier", significance="")
+        result = index_awards([a1, a2])
+        assert [r for r, _ in result] == ["A.6.1", "A.6.2"]
+        assert result[0][1].name == "Earlier"
+        assert result[1][1].name == "Later"
+
+
+class TestFinalizeRefHyperlinksPipeForm:
+    """Pipe-form sentinel: `\\x01display|bookmark_code\\x02` → display = LHS,
+    bookmark target = RHS. Enables "Section V, A.1.3" display + "A_1_3"
+    bookmark target without changing the bookmark namespace."""
+
+    def test_pipe_form_splits_display_and_bookmark(self) -> None:
+        from pubs_emitter.builders import REF_LINK_CLOSE, REF_LINK_OPEN
+        out = _finalize_ref_hyperlinks(
+            f"prefix {REF_LINK_OPEN}Section V, A.1.3|A.1.3{REF_LINK_CLOSE} suffix",
+        )
+        # Display text = "Section V, A.1.3"; bookmark = "A_1_3".
+        assert 'HYPERLINK \\\\l "A_1_3"' in out
+        assert "Section V, A.1.3" in out
+        # No stray pipe in the output.
+        assert "|" not in out
+
+    def test_bare_form_unchanged(self) -> None:
+        """Backward compat: bare sentinels keep working (display=bookmark)."""
+        from pubs_emitter.builders import REF_LINK_CLOSE, REF_LINK_OPEN
+        out = _finalize_ref_hyperlinks(
+            f"{REF_LINK_OPEN}C.4.7{REF_LINK_CLOSE}",
+        )
+        assert 'HYPERLINK \\\\l "C_4_7"' in out
+        # Display is bare code in the link's fldrslt segment.
+        assert "C.4.7" in out

@@ -40,12 +40,14 @@ from .builders import (
     build_student,
     build_thesis,
     build_under_review,
+    load_candidate_information,
     load_non_scholar,
     validate_non_scholar,
 )
 from .config import (
     BIB_IGNORE,
     PUBLICATION_HIDE,
+    DEFAULT_CANDIDATE_INFO_FILE,
     DEFAULT_DB_FILE,
     DEFAULT_MAX_WORKERS,
     DEFAULT_OUT_FILE,
@@ -335,6 +337,15 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--candidate-info", metavar="PATH",
+        default=DEFAULT_CANDIDATE_INFO_FILE,
+        help=(
+            "Path to the Section III front-matter YAML (A.1-A.7). "
+            "Default: %(default)s. Pass an empty string ('') to skip front "
+            "matter entirely (renders just C.X and Section V)."
+        ),
+    )
+    parser.add_argument(
         "--sections", metavar="CODES", default=None,
         help=(
             "Comma-separated list of section codes to emit (e.g. "
@@ -374,6 +385,9 @@ def main(argv: Optional[list[str]] = None) -> None:
         # Load + validate YAML side file (CVEs etc.) before any network work.
         non_scholar = load_non_scholar(args.non_scholar)
         validate_non_scholar(non_scholar, entries)
+        # Section III front matter (A.1-A.7). Optional — None when no YAML
+        # path is supplied or the file is missing.
+        candidate_info = load_candidate_information(args.candidate_info or None)
 
         # Populate students AFTER loading non-scholar YAML so we can union the
         # rich C.14 graduate_students names into STUDENTS["G"] for marker matching.
@@ -591,7 +605,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         # `@id` tokens in registered prose fields throughout each list.
         # See builders.resolve_refs + builders.PROSE_FIELDS_BY_TYPE.
         from .builders import resolve_refs_in_list
-        from .rtf import index_student_awards
+        from .rtf import index_awards, index_student_awards
 
         ref_index: dict[str, str] = {}
         seen_ids: set[str] = set()
@@ -636,7 +650,15 @@ def main(argv: Optional[list[str]] = None) -> None:
             seen_ids.add(bib_key)
             ref_index[bib_key] = code
 
-        _register_simple(under_review, "Under Review")
+        # Under-review entries live under Section V; the bare code "A.1.N"
+        # collides with the Section III front-matter A.1 prefix, so we
+        # disambiguate at cross-ref render time by storing the value as
+        # "Section V, A.1.N|A.1.N" — the pipe-form is honored by
+        # _finalize_ref_hyperlinks (display=LHS, bookmark target=RHS).
+        ur_code = SECTION_CODES["Under Review"]
+        for idx, ur in enumerate(under_review, 1):
+            bare = f"{ur_code}.{idx}"
+            _register(ur, f"Section V, {bare}|{bare}")
         _register_simple(key_works, "Key Works")
         _register_simple(invited_talks, "Invited Talks")
         _register_simple(leadership_roles, "Leadership Roles")
@@ -658,6 +680,11 @@ def main(argv: Optional[list[str]] = None) -> None:
             "Graduate Student Awards", student_awards,
         ):
             _register(award, ref)
+        # A.6 awards: use the dedicated indexer to match the renderer's
+        # tier-group + chrono sort exactly (externals first, then internals).
+        if candidate_info is not None and candidate_info.awards:
+            for ref, award in index_awards(candidate_info.awards):
+                _register(award, ref)
         _register_simple(courses_taught, "Courses Taught")
         _register_simple(course_development, "Course Development")
         _register_simple(entrepreneurial_activities, "Entrepreneurial Activities")
@@ -695,6 +722,11 @@ def main(argv: Optional[list[str]] = None) -> None:
         postdocs_visiting = _resolve(postdocs_visiting, "PostdocVisiting")
         undergraduate_students = _resolve(undergraduate_students, "Student")
         student_awards = _resolve(student_awards, "StudentAward")
+        # A.6 awards: live INSIDE candidate_info, so rebuild the NamedTuple
+        # with the resolved list. Skip when no candidate_info was loaded.
+        if candidate_info is not None and candidate_info.awards:
+            resolved_awards = _resolve(list(candidate_info.awards), "Award")
+            candidate_info = candidate_info._replace(awards=resolved_awards)
         courses_taught = _resolve(courses_taught, "CourseTaught")
         course_development = _resolve(course_development, "CourseDevelopment")
         entrepreneurial_activities = _resolve(
@@ -770,6 +802,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             technology_transfer=technology_transfer,
             course_development=course_development,
             courses_taught=courses_taught,
+            candidate_info=candidate_info,
             sections_filter=_parse_sections_filter(args.sections),
         )
     finally:

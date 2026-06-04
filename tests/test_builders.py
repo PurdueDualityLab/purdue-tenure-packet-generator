@@ -8,6 +8,7 @@ from __future__ import annotations
 import pytest
 
 from pubs_emitter.builders import (
+    build_candidate_information,
     build_grant,
     build_invited_talk,
     build_leadership_role,
@@ -19,6 +20,7 @@ from pubs_emitter.builders import (
     format_bib_date,
     format_details,
     format_iso_date,
+    load_candidate_information,
     load_non_scholar,
     parse_year,
     validate_non_scholar,
@@ -707,3 +709,157 @@ class TestResolveRefs:
         )
         assert leftalone == "@missing"
         assert unresolved == ["missing"]
+
+
+class TestBuildCandidateInformation:
+    """Schema validation for the A.X front matter (loaded from
+    `assets/candidate-information.yaml`)."""
+
+    def _yaml_root(self, **overrides) -> dict:
+        base = {
+            "identifiers": {
+                "name": "James C. Davis, PhD",
+                "orcid": "https://orcid.org/0000-0003-2495-686X",
+                "google_scholar": "https://scholar.google.com/citations?user=X",
+            },
+            "degrees": [
+                {
+                    "institution": "Clarkson University",
+                    "years": "2008-2012",
+                    "degree": "BSc CS",
+                    "thesis_kind": "Undergraduate thesis",
+                    "thesis_title": "Some Title",
+                    "advisor": "Dr. Nishikawa",
+                },
+            ],
+            "positions_at_purdue": "Assistant Professor, 2020-2026",
+            "positions_at_other": [
+                {
+                    "title": "Software Engineer",
+                    "years": "2012-2017",
+                    "organization": "IBM",
+                    "acronym": "",
+                },
+            ],
+            "licenses": "N/A",
+            "professional_memberships": [
+                {
+                    "level": "Member",
+                    "organization": "Association for Computing Machinery",
+                    "acronym": "ACM",
+                },
+            ],
+        }
+        base.update(overrides)
+        return base
+
+    def test_round_trips_all_fields(self) -> None:
+        ci = build_candidate_information(self._yaml_root())
+        assert ci.identifiers.name == "James C. Davis, PhD"
+        assert ci.identifiers.orcid.startswith("https://orcid.org/")
+        assert len(ci.degrees) == 1
+        assert ci.degrees[0].institution == "Clarkson University"
+        assert ci.positions_at_purdue == "Assistant Professor, 2020-2026"
+        assert len(ci.positions_at_other) == 1
+        assert ci.positions_at_other[0].acronym == ""
+        assert ci.licenses == "N/A"
+        assert len(ci.professional_memberships) == 1
+        assert ci.professional_memberships[0].acronym == "ACM"
+
+    def test_empty_sections_default_to_empty(self) -> None:
+        """All sub-sections are optional; missing keys → empty defaults."""
+        ci = build_candidate_information({})
+        assert ci.identifiers.name == ""
+        assert ci.degrees == []
+        assert ci.positions_at_purdue == ""
+        assert ci.positions_at_other == []
+        assert ci.licenses == ""
+        assert ci.awards == []
+        assert ci.professional_memberships == []
+
+    def test_awards_round_trip_with_refs(self) -> None:
+        ci = build_candidate_information({
+            "awards": [
+                {
+                    "tier": "external", "year": 2018,
+                    "name": "IBM Sig Contributor",
+                    "significance": "See @somepaper.",
+                },
+                {
+                    "tier": "internal", "year": 2021,
+                    "name": "VIP Mentor",
+                    "significance": "See @C.16.2.1.",
+                },
+            ],
+        })
+        assert len(ci.awards) == 2
+        assert ci.awards[0].tier == "external"
+        assert ci.awards[0].year == 2018
+        assert ci.awards[0].year_str == "2018"  # auto-derived from year
+        assert "@somepaper" in ci.awards[0].significance
+        assert ci.awards[1].tier == "internal"
+
+    def test_award_invalid_tier_exits(self) -> None:
+        with pytest.raises(SystemExit):
+            build_candidate_information({
+                "awards": [{"tier": "WHATEVER", "year": 2020,
+                            "name": "X", "significance": "Y"}],
+            })
+
+    def test_award_missing_year_uses_sentinel(self) -> None:
+        # Missing year → 9999 sentinel (sorts to end).
+        ci = build_candidate_information({
+            "awards": [{"tier": "external", "name": "X", "significance": "Y"}],
+        })
+        assert ci.awards[0].year == 9999
+
+    def test_wrong_type_for_identifiers_exits(self) -> None:
+        with pytest.raises(SystemExit):
+            build_candidate_information({"identifiers": "not a mapping"})
+
+    def test_wrong_type_for_degrees_exits(self) -> None:
+        with pytest.raises(SystemExit):
+            build_candidate_information({"degrees": "not a list"})
+
+    def test_wrong_type_for_degree_item_exits(self) -> None:
+        with pytest.raises(SystemExit):
+            build_candidate_information({"degrees": ["not a mapping"]})
+
+
+class TestLoadCandidateInformation:
+    """File-load wrapper around `build_candidate_information`."""
+
+    def test_none_path_returns_none(self) -> None:
+        assert load_candidate_information(None) is None
+
+    def test_missing_file_warns_and_returns_none(self) -> None:
+        assert load_candidate_information("/tmp/does-not-exist-XXXX.yaml") is None
+
+    def test_missing_top_key_exits(self, tmp_path) -> None:
+        path = tmp_path / "ci.yaml"
+        path.write_text("some_other_key: value\n", encoding="utf-8")
+        with pytest.raises(SystemExit):
+            load_candidate_information(str(path))
+
+    def test_top_key_not_a_mapping_exits(self, tmp_path) -> None:
+        path = tmp_path / "ci.yaml"
+        path.write_text("candidate_information: not_a_mapping\n", encoding="utf-8")
+        with pytest.raises(SystemExit):
+            load_candidate_information(str(path))
+
+    def test_valid_yaml_loads_typed(self, tmp_path) -> None:
+        path = tmp_path / "ci.yaml"
+        path.write_text(
+            "candidate_information:\n"
+            "  identifiers:\n"
+            "    name: 'Test Person'\n"
+            "    orcid: 'https://orcid.org/0000-0000-0000-0000'\n"
+            "    google_scholar: ''\n"
+            "  positions_at_purdue: 'Asst Prof'\n"
+            "  licenses: 'N/A'\n",
+            encoding="utf-8",
+        )
+        ci = load_candidate_information(str(path))
+        assert ci is not None
+        assert ci.identifiers.name == "Test Person"
+        assert ci.positions_at_purdue == "Asst Prof"
