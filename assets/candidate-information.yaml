@@ -1,0 +1,291 @@
+# Candidate Information — Section III front matter (A.1-A.7).
+#
+# Section III of the Purdue tenure packet — "General Information." Each
+# sub-section maps 1:1 to an A.X heading in the rendered output:
+#   A.1  → identifiers              (Name, ORCID, Google Scholar)
+#   A.2  → degrees                  (numbered list; A.2.1, A.2.2, ...)
+#   A.3  → positions_at_purdue      (free-form prose; typically one line)
+#   A.4  → positions_at_other       (numbered list)
+#   A.5  → licenses                 (free-form prose; "N/A" allowed)
+#   A.6  → (intentionally absent — handled outside this file)
+#   A.7  → professional_memberships (numbered list)
+#
+# Note: codes A.X are reused between Section III (front matter, here) and
+# Section V (under-review appendix in non-scholar-work.yaml). Cross-refs
+# to the under-review tree render as "Section V, A.1.N"; cross-refs to
+# entries here would render as "Section III, A.X.N" (currently no @id
+# resolution is wired for front-matter entries — schema is ready if/when
+# the user adds it).
+
+candidate_information:
+
+  # A.1 — Name and scholarly identifiers. Rendered as a bullet list with
+  # bold field labels: "• Name: ...", "• ORCID: ...", "• Google Scholar: ...".
+  # `orcid` and `google_scholar` MUST be URLs; the renderer emits them as
+  # clickable hyperlinks (matches the screenshot exactly).
+  identifiers:
+    name: "James C. Davis, PhD"
+    orcid: "https://orcid.org/0000-0003-2495-686X"
+    google_scholar: "https://scholar.google.com/citations?user=VSAWPQ4AAAAJ&hl=en"
+
+  # A.2 — Degrees. Numbered list (A.2.1, A.2.2, ...). Each entry renders
+  # as: "{institution}, {years}. {degree}. {thesis_kind}: /italic
+  # thesis_title/, supervised by {advisor}."
+  #
+  # `thesis_kind` is typically "Undergraduate thesis" or "Doctoral thesis";
+  # leave empty when no thesis applies. `advisor` is the supervisor's
+  # display name (include "Dr." or "Prof." as appropriate).
+  degrees:
+    - institution: "Clarkson University"
+      years: "2008-2012"
+      degree: "BSc Computer Science, BSc Applied Mathematics"
+      thesis_kind: "Undergraduate thesis"
+      thesis_title: "Relating synchronizability and topological properties using classifiers"
+      advisor: "Dr. Takashi Nishikawa"
+    - institution: "Virginia Polytechnic Institute & State University (Virginia Tech)"
+      years: "2015-2020"
+      degree: "PhD Computer Science & Applications"
+      thesis_kind: "Doctoral thesis"
+      thesis_title: "On the impact and defeat of regular expression denial of service"
+      advisor: "Dr. Dongyoon Lee"
+
+  # A.3 — Positions at Purdue. Free-form prose. Single line in the
+  # current packet; structure as multi-line YAML scalar if the rank/title
+  # history grows. Renderer emits as an indented paragraph (no numbering).
+  positions_at_purdue: "Assistant Professor, 2020-2026"
+
+  # A.4 — Positions at other institutions or organizations. Numbered list
+  # (A.4.1, A.4.2, ...). Each entry renders as: "{title}, {years}.
+  # {organization} ({acronym})." The acronym appears in parentheses; omit
+  # the field (or leave blank) when there's no acronym worth spelling out.
+  positions_at_other:
+    - title: "Software Engineer"
+      years: "2012-2017"
+      organization: "International Business Machines"
+      acronym: "IBM"
+    - title: "Research Intern"
+      years: "Summer 2018"
+      organization: "International Business Machines, Research division"
+      acronym: "IBM Research"
+    - title: "Research Intern"
+      years: "Summer 2019"
+      organization: "Microsoft, Research division"
+      acronym: "MSR"
+
+  # A.5 — Licenses, registrations, and certificates. Free-form prose.
+  # "N/A" is allowed and renders verbatim; empty string also acceptable
+  # (renders as "N/A" by default).
+  licenses: "N/A"
+
+  # A.6 — Recognitions (honors and awards). Renders as a 3-column table
+  # with two tier groups (EXTERNAL / INTERNAL), each running in
+  # INDEPENDENT chronological order. `tier:` MUST be "external" or
+  # "internal". `significance:` is the descriptive cell text and accepts
+  # @bibkey / @id / @C.X.Y cross-references (resolved at build time to
+  # clickable hyperlinks). Numbering is flat A.6.N across BOTH tiers in
+  # emit order (externals first, then internals).
+  awards:
+    # ----- EXTERNAL ------------------------------------------------------
+    - tier: external
+      year: 2018
+      name: "International Business Machines (IBM) Significant Contributor Award"
+      significance: >-
+        IBM publicly acknowledged my contributions to the Node.js framework,
+        used by thousands of websites and companies. Recognition tied to
+        @davis2017node and @davis2018sense.
+    - tier: external
+      year: 2018
+      name: "Microsoft Security Researcher Acknowledgment"
+      significance: >-
+        Microsoft publicly acknowledged my contributions in identifying
+        cybersecurity vulnerabilities (ReDoS) in their software. Recognition
+        tied to @davis2018impact.
+    - tier: external
+      year: 2018
+      name: >-
+        Distinguished Paper Award from the Association for Computing
+        Machinery (ACM) Special Interest Group on Software Engineering
+        (SIGSOFT) presented at the Association for Computing Machinery
+        (ACM) Joint European Software Engineering Conference and Symposium
+        on the Foundations of Software, 2018 (ESEC/FSE'18).
+      significance: >-
+        Awarded to ~5 of 61 accepted papers. This is a top-tier publication
+        venue in my primary field. Awarded for @davis2018impact.
+    - tier: external
+      year: 2019
+      name: >-
+        Distinguished Paper Award from the Association for Computing
+        Machinery (ACM) Special Interest Group on Software Engineering
+        (SIGSOFT) presented at the Institute of Electrical and Electronics
+        Engineers (IEEE) / Association for Computing Machinery (ACM)
+        International Conference on Automated Software Engineering 2019
+        (ASE'19).
+      significance: >-
+        Awarded to ~5 of 91 accepted papers. This is a Tier-1 publication
+        venue in my primary field. Awarded for @michael2019regexes.
+    - tier: external
+      year: 2020
+      name: >-
+        Distinguished Paper Award from the Association for Computing
+        Machinery (ACM) Special Interest Group on Software Engineering
+        (SIGSOFT) presented at the Association for Computing Machinery
+        (ACM) Joint European Software Engineering Conference and Symposium
+        on the Foundations of Software, 2020 (ESEC/FSE'20).
+      significance: >-
+        Awarded to 7 of 101 accepted papers. This is a Tier-1 publication
+        venue in my primary field. Awarded for @cha2020principled.
+    - tier: external
+      year: 2020
+      name: >-
+        Second place, Grand Finals of the Association for Computing
+        Machinery (ACM) Graduate Student Research Competition
+      significance: >-
+        Second place in a global research competition. Organized by the
+        Association for Computing Machinery (ACM), one of the two primary
+        professional organizations in my field. All competitors have won
+        an initial competition at ACM's Tier-1 research conferences. This
+        project presented early results for @davis2021using.
+    - tier: external
+      year: 2021
+      name: >-
+        Distinguished Program Committee Member Award, Institute of
+        Electrical and Electronics Engineers (IEEE) / Association for
+        Computing Machinery (ACM) International Conference on Automated
+        Software Engineering 2021 (ASE'21).
+      significance: >-
+        Awarded to 5-10% of reviewers to recognize excellence in
+        providing peer review. This is a Tier-1 publication venue in my
+        primary field.
+    - tier: external
+      year: 2022
+      name: >-
+        Elevated to Senior Member of the Institute of Electrical and
+        Electronics Engineers (IEEE)
+      significance: >-
+        Recognizes extensive experience and accomplishments. Around 10%
+        of Institute of Electrical and Electronics Engineers (IEEE)
+        members are elevated to this grade.
+    - tier: external
+      year: 2024
+      name: "Best Paper Award, Software Engineering Division, ASEE 2024"
+      significance: >-
+        Recognizes the best paper in the software engineering division
+        at ASEE'24, out of ~10 papers.
+    - tier: external
+      year: 2025
+      name: "Best Artifact Award, CCS 2025"
+      significance: >-
+        Recognizes the best artifact among 100+ artifacts associated with
+        accepted papers. Recognizes a commitment to open science and
+        reproducibility as part of the field's transition to
+        "default-open" footing. Awarded for @kellas2025pickleball.
+    - tier: external
+      year: 2025
+      name: >-
+        Distinguished Program Committee Member Award, from the
+        Association for Computing Machinery (ACM) Special Interest Group
+        on Software Engineering (SIGSOFT) presented at the Association
+        for Computing Machinery (ACM) Joint European Software Engineering
+        Conference and Symposium on the Foundations of Software, 2025
+        (ESEC/FSE'25).
+      significance: >-
+        Awarded to 5-10% of reviewers to recognize excellence in
+        providing peer review. This is a Tier-1 publication venue in my
+        primary field.
+    - tier: external
+      year: 2026
+      name: >-
+        Distinguished Reviewer Award, from the USENIX Security Symposium,
+        2026 (SECURITY'26).
+      significance: >-
+        Awarded to 5-10% of reviewers to recognize excellence in
+        providing peer review. This is a Tier-1 publication venue in my
+        primary field.
+    - tier: external
+      year: 2026
+      name: >-
+        Distinguished Program Committee Member Award, from the
+        Association for Computing Machinery (ACM) Special Interest Group
+        on Software Engineering (SIGSOFT) presented at the International
+        Conference on Software Engineering, 2026 (ICSE'26).
+      significance: >-
+        Awarded to 5-10% of reviewers to recognize excellence in
+        providing peer review. This is a Tier-1 publication venue in my
+        primary field.
+    - tier: external
+      year: 2026
+      name: "NSF CAREER Award"
+      significance: >-
+        NSF's most prestigious award in support of junior faculty who
+        exemplify the role of teacher-scholar. See @nsf-career-ptm-2026.
+
+    # ----- INTERNAL ------------------------------------------------------
+    - tier: internal
+      year: 2012
+      name: "Frederica Clarkson Award"
+      significance: >-
+        Clarkson University's top award for graduating seniors,
+        representing outstanding scholarship and service.
+    - tier: internal
+      year: 2021
+      name: >-
+        Purdue Vertically Integrated Projects (VIP) award for Outstanding
+        Faculty Mentor
+      significance: >-
+        One award given across the 52 Vertically Integrated Projects (VIP)
+        teams, recognizing my mentoring of the TensorFlow Model Garden
+        Vertically Integrated Projects (VIP) team. See @C.16.2.1.
+    - tier: internal
+      year: 2022
+      name: "ECE Ruth and Joel Spira Outstanding Teacher Award"
+      significance: >-
+        Awarded annually to one faculty member in ECE to recognize
+        excellence in instruction, considering input from both faculty
+        and students.
+    - tier: internal
+      year: 2024
+      name: "ECE Outstanding Faculty Mentor"
+      significance: >-
+        Awarded annually to one faculty member in ECE to recognize
+        excellence in mentoring students in research activities.
+    - tier: internal
+      year: 2025
+      name: "ECE Paul C. Krause Faculty Research Award"
+      significance: >-
+        Awarded annually to recognize outstanding scholarship by a
+        pre-tenure faculty member in ECE.
+    - tier: internal
+      year: 2026
+      name: >-
+        Purdue College of Engineering Faculty Excellence Award in
+        Exceptional Early Career Teaching
+      significance: >-
+        Awarded annually to 1-3 junior faculty within the college of
+        engineering, to recognize outstanding contributions to teaching
+        and learning.
+    - tier: internal
+      year: 2026
+      name: "Purdue University Exceptional Early Career Teaching Award"
+      significance: >-
+        Awarded annually to 1-3 junior faculty university-wide, to
+        recognize outstanding contributions to teaching and learning.
+    - tier: internal
+      year: 2026
+      name: >-
+        Purdue Vertically Integrated Projects (VIP) award for Outstanding
+        Faculty Mentor
+      significance: >-
+        One award given across the ~50 Vertically Integrated Projects
+        (VIP) teams, recognizing my mentoring of the Pre-Trained Models
+        team. See @C.16.2.1.
+
+  # A.7 — Membership in professional organizations. Numbered list (A.7.1,
+  # A.7.2, ...). Each entry renders as: "{level}, {organization}
+  # ({acronym})." Common levels: "Member", "Senior Member", "Fellow".
+  professional_memberships:
+    - level: "Member"
+      organization: "Association for Computing Machinery"
+      acronym: "ACM"
+    - level: "Senior Member"
+      organization: "Institute of Electrical and Electronics Engineers"
+      acronym: "IEEE"
