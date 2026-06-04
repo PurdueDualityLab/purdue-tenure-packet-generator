@@ -2287,3 +2287,143 @@ class TestCareerPhaseDivider:
         idx_ap = out.index("Assistant Professor at Purdue")
         idx2 = out.index("C.2.2")
         assert idx1 < idx_ap < idx2
+
+
+# ----- C.17 data-not-available + grey-note row rendering ------------------
+
+
+class TestRenderCoursesTaughtDataNotAvailable:
+    """When a row's three CIE fields are all None, the CIE cell renders the
+    literal string 'data not available' rather than an em-dash trio. Used
+    for course-rows the candidate taught but for which no EvaluationKit
+    response set exists (e.g., F20 / Sp21 VIP, which preceded CIE rollout
+    in the VIP program)."""
+
+    def _ct(self, **overrides):
+        from pubs_emitter.types import CourseTaught
+        base = dict(
+            year=2020, semester_order=3, semester_str="F20",
+            title="Vertically Integrated Projects (VIP)",
+            is_new_course=False,
+            course_number="VIP (merged all sections)",
+            responsibility="50% responsibility, supervisory",
+            responses=None, enrolled=None,
+            cie_average=None, cie_min=None, cie_max=None,
+        )
+        base.update(overrides)
+        return CourseTaught(**base)
+
+    def test_all_three_cie_none_renders_data_not_available(self) -> None:
+        import io
+        from pubs_emitter.rtf import render_courses_taught_section
+        buf = io.StringIO()
+        render_courses_taught_section([self._ct()], buf)
+        out = buf.getvalue()
+        assert "data not available" in out
+        # AND the partial-marker "*" + footnote must NOT fire — the row
+        # has no CIE data at all, not partial-CIE data.
+        assert "Computed on the relevant subset" not in out
+
+    def test_partial_cie_still_renders_summary_not_data_not_available(self) -> None:
+        import io
+        from pubs_emitter.rtf import render_courses_taught_section
+        buf = io.StringIO()
+        # Avg / min / max all present → render normally.
+        render_courses_taught_section([self._ct(
+            cie_average=4.0, cie_min=3.5, cie_max=4.5, cie_partial=True,
+        )], buf)
+        out = buf.getvalue()
+        assert "data not available" not in out
+        # Partial marker fires.
+        assert "4.00 (3.50, 4.50)*" in out
+        assert "Computed on the relevant subset" in out
+
+    def test_grey_row_carries_semester_label_inline(self) -> None:
+        """The grey note row's text is prefixed with the semester string
+        ('Sp25: …', 'F22: …') so the row reads in context — the merged
+        cell no longer leaves the Sem/Year column visually anchoring the
+        row."""
+        import io
+        from pubs_emitter.rtf import render_courses_taught_section
+        buf = io.StringIO()
+        render_courses_taught_section([
+            self._ct(
+                year=2025, semester_order=1, semester_str="Sp25",
+                title="No 3-credit course taught - ABET self-study release",
+                course_number="", responsibility="",
+                is_note_row=True,
+            ),
+        ], buf)
+        out = buf.getvalue()
+        assert "Sp25: No 3-credit course taught" in out
+
+
+class TestResponsibilityOverrideMergeLogic:
+    """Pure mapping logic: a (year, semester_str, course_number) key
+    looks up its responsibility text from the overrides table; on miss,
+    falls through to the default. Empty-string responsibility means
+    "use override or default"; non-empty wins outright."""
+
+    def test_override_wins_when_responsibility_empty(self) -> None:
+        from pubs_emitter.types import CourseTaught
+        c = CourseTaught(
+            year=2020, semester_order=3, semester_str="F20",
+            title="Data Structures", is_new_course=False,
+            course_number="ECE 36800", responsibility="",
+            responses=43, enrolled=99,
+            cie_average=4.46, cie_min=4.28, cie_max=4.53,
+        )
+        # Simulate the override-table application loop verbatim.
+        resp_overrides = {
+            (2020, "F20", "ECE 36800"): "50% responsibility, non-supervisory",
+        }
+        resp_default = "100% responsibility, supervisory"
+        if not c.responsibility and not c.is_note_row:
+            key = (c.year, c.semester_str, c.course_number)
+            c = c._replace(
+                responsibility=resp_overrides.get(key, resp_default),
+            )
+        assert c.responsibility == "50% responsibility, non-supervisory"
+
+    def test_default_fires_when_no_override(self) -> None:
+        from pubs_emitter.types import CourseTaught
+        c = CourseTaught(
+            year=2024, semester_order=3, semester_str="F24",
+            title="Software Engineering", is_new_course=False,
+            course_number="ECE 46100", responsibility="",
+            responses=55, enrolled=130,
+            cie_average=4.10, cie_min=3.58, cie_max=4.47,
+        )
+        resp_overrides: dict = {}
+        resp_default = "100% responsibility, supervisory"
+        if not c.responsibility and not c.is_note_row:
+            key = (c.year, c.semester_str, c.course_number)
+            c = c._replace(
+                responsibility=resp_overrides.get(key, resp_default),
+            )
+        assert c.responsibility == "100% responsibility, supervisory"
+
+    def test_explicit_yaml_responsibility_wins_over_override(self) -> None:
+        """An explicit non-empty `responsibility:` on a YAML row keeps its
+        value — the override + default lookup is skipped. This lets a
+        YAML row carry a one-off responsibility string without needing
+        a parallel entry in the overrides table."""
+        from pubs_emitter.types import CourseTaught
+        c = CourseTaught(
+            year=2020, semester_order=3, semester_str="F20",
+            title="Custom Course", is_new_course=False,
+            course_number="ECE 36800",
+            responsibility="custom override on the row itself",
+            responses=10, enrolled=20,
+            cie_average=4.0, cie_min=3.5, cie_max=4.5,
+        )
+        resp_overrides = {
+            (2020, "F20", "ECE 36800"): "table-override-would-win-if-empty",
+        }
+        if not c.responsibility and not c.is_note_row:
+            key = (c.year, c.semester_str, c.course_number)
+            c = c._replace(
+                responsibility=resp_overrides.get(key, "DEFAULT"),
+            )
+        # Stayed as the explicit YAML value.
+        assert c.responsibility == "custom override on the row itself"

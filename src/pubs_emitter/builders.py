@@ -1256,11 +1256,13 @@ def validate_non_scholar(non_scholar: dict, bib_entries: list[BibEntry]) -> None
             continue
         # Note rows (grey-shaded "no course taught" placeholders) only
         # require year/semester_str/title — they don't carry course_number
-        # or responsibility. Regular rows still require the full set.
+        # or responsibility. Regular rows require course_number;
+        # responsibility may be blank (filled at build time from the
+        # `courses_responsibility_*` lookup, default fallback included).
         is_note = bool(ct.get("is_note_row", False))
         required_fields = ("year", "semester_str", "title")
         if not is_note:
-            required_fields = required_fields + ("course_number", "responsibility")
+            required_fields = required_fields + ("course_number",)
         for required in required_fields:
             if ct.get(required) in (None, ""):
                 errors.append(

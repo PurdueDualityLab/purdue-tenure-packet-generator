@@ -587,6 +587,35 @@ def main(argv: Optional[list[str]] = None) -> None:
                 if (c.year, c.semester_str, c.course_number) in yaml_keys:
                     continue
                 courses_taught.append(c)
+
+        # Responsibility text — single flat per-course table. Every data
+        # row in C.17 looks up its text by (year, semester_str,
+        # course_number). No default fallback: a row whose key isn't in
+        # the table renders with blank responsibility AND logs a warning
+        # so the gap surfaces. Note rows skip the lookup (no cell).
+        resp_table_raw = non_scholar.get("courses_responsibility") or []
+        resp_table: dict[tuple[int, str, str], str] = {}
+        for o in resp_table_raw:
+            if not isinstance(o, dict):
+                continue
+            resp_table[(
+                int(o.get("year", 0) or 0),
+                str(o.get("semester_str", "") or ""),
+                str(o.get("course_number", "") or ""),
+            )] = str(o.get("text", "") or "")
+        for i, ct in enumerate(courses_taught):
+            if ct.is_note_row or ct.responsibility:
+                continue
+            key = (ct.year, ct.semester_str, ct.course_number)
+            if key not in resp_table:
+                log.warning(
+                    "C.17 row %s %s %s has no `courses_responsibility:` "
+                    "entry — responsibility cell will render blank. "
+                    "Add an entry to assets/non-scholar-work.yaml.",
+                    ct.semester_str, ct.course_number, ct.title[:40],
+                )
+                continue
+            courses_taught[i] = ct._replace(responsibility=resp_table[key])
         course_development: list[CourseDevelopment] = [
             build_course_development(e)
             for e in (non_scholar.get("course_development") or [])

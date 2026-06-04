@@ -1947,11 +1947,21 @@ def render_courses_taught_section(
             resp_cell = "\\u8212?"
         else:
             resp_cell = f"{_ct_cell(r.responses)} / {_ct_cell(r.enrolled)}"
-        avg = _ct_cell(r.cie_average)
-        cie_cell = f"{avg} ({_ct_cell(r.cie_min)}, {_ct_cell(r.cie_max)})"
-        if r.cie_partial:
-            cie_cell += "*"
-            any_partial = True
+        # "data not available" — applied when ALL three CIE fields are
+        # None. Used for course-rows the candidate taught but for which
+        # no EvaluationKit responses exist (e.g., F20 / Sp21 VIP, which
+        # ran before VIP entered the formal CIE survey). Avoids rendering
+        # an em-dash sequence "(— (—, —))" that reads as if scores
+        # were captured but lost.
+        if (r.cie_average is None and r.cie_min is None
+                and r.cie_max is None):
+            cie_cell = "data not available"
+        else:
+            avg = _ct_cell(r.cie_average)
+            cie_cell = f"{avg} ({_ct_cell(r.cie_min)}, {_ct_cell(r.cie_max)})"
+            if r.cie_partial:
+                cie_cell += "*"
+                any_partial = True
         parts.append(_render_courses_taught_data_row(cellx, [
             escape_rtf(r.semester_str),
             title_cell,
