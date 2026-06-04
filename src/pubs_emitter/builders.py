@@ -622,6 +622,8 @@ def build_course_taught(entry: dict) -> CourseTaught:
         cie_average=_maybe_float(entry.get("cie_average")),
         cie_min=_maybe_float(entry.get("cie_min")),
         cie_max=_maybe_float(entry.get("cie_max")),
+        cie_partial=bool(entry.get("cie_partial", False)),
+        is_note_row=bool(entry.get("is_note_row", False)),
         id=str(entry.get("id", "") or ""),
     )
 
@@ -1252,9 +1254,14 @@ def validate_non_scholar(non_scholar: dict, bib_entries: list[BibEntry]) -> None
                 f"got {type(ct).__name__}"
             )
             continue
-        for required in (
-            "year", "semester_str", "title", "course_number", "responsibility",
-        ):
+        # Note rows (grey-shaded "no course taught" placeholders) only
+        # require year/semester_str/title — they don't carry course_number
+        # or responsibility. Regular rows still require the full set.
+        is_note = bool(ct.get("is_note_row", False))
+        required_fields = ("year", "semester_str", "title")
+        if not is_note:
+            required_fields = required_fields + ("course_number", "responsibility")
+        for required in required_fields:
             if ct.get(required) in (None, ""):
                 errors.append(
                     f"courses_taught[{i}] missing required field `{required}`"

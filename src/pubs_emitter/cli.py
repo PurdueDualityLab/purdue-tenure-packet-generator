@@ -49,6 +49,7 @@ from .config import (
     PUBLICATION_HIDE,
     DEFAULT_CANDIDATE_INFO_FILE,
     DEFAULT_DB_FILE,
+    DEFAULT_EVALUATIONKIT_RAWDATA_FILE,
     DEFAULT_MAX_WORKERS,
     DEFAULT_OUT_FILE,
     MANUAL_LINKS,
@@ -346,6 +347,16 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--evaluationkit-rawdata", metavar="PATH",
+        default=DEFAULT_EVALUATIONKIT_RAWDATA_FILE,
+        help=(
+            "Path to the EvaluationKit raw-data CSV. Aggregated rows are "
+            "merged into C.17 alongside any YAML-authored entries. "
+            "Default: %(default)s. Pass an empty string ('') to skip "
+            "CSV-derived C.17 rows."
+        ),
+    )
+    parser.add_argument(
         "--sections", metavar="CODES", default=None,
         help=(
             "Comma-separated list of section codes to emit (e.g. "
@@ -550,6 +561,32 @@ def main(argv: Optional[list[str]] = None) -> None:
             build_course_taught(e)
             for e in (non_scholar.get("courses_taught") or [])
         ]
+        # C.17 EvaluationKit ingest. CSV-derived rows are appended to the
+        # YAML-authored list (which carries grey-row notes + any manual
+        # cross-institution rows); the renderer sorts the combined list
+        # by (year, semester_order). A YAML entry with matching
+        # (year, semester_str, course_number) WINS — manual overrides
+        # take precedence so the candidate can hand-edit a problem row
+        # without losing it on the next CSV refresh.
+        eval_csv_path = args.evaluationkit_rawdata or None
+        if eval_csv_path:
+            from .evaluations import load_courses_taught_from_csv
+            try:
+                csv_rows = load_courses_taught_from_csv(eval_csv_path)
+            except FileNotFoundError:
+                log.warning(
+                    "EvaluationKit CSV not found at %s — skipping CSV-derived "
+                    "C.17 rows.", eval_csv_path,
+                )
+                csv_rows = []
+            yaml_keys = {
+                (c.year, c.semester_str, c.course_number)
+                for c in courses_taught
+            }
+            for c in csv_rows:
+                if (c.year, c.semester_str, c.course_number) in yaml_keys:
+                    continue
+                courses_taught.append(c)
         course_development: list[CourseDevelopment] = [
             build_course_development(e)
             for e in (non_scholar.get("course_development") or [])

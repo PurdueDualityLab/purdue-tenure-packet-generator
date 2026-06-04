@@ -2191,3 +2191,99 @@ class TestFinalizeRefHyperlinksPipeForm:
         assert 'HYPERLINK \\\\l "C_4_7"' in out
         # Display is bare code in the link's fldrslt segment.
         assert "C.4.7" in out
+
+
+# ----- Career-phase dividers (C.1 / C.2 / C.3 / C.4 / C.5) ----------------
+
+
+class TestCareerPhaseDivider:
+    """The publication-section renderers (C.1 / C.2 / C.3 / C.4 / C.5)
+    interleave a bold-labeled divider between "PhD studies at Virginia
+    Tech" (year ≤ 2020) and "Assistant Professor at Purdue" (year ≥ 2021)
+    regions. Visual cue ONLY — section numbering is unaffected by the
+    divider (numbering continues through the boundary)."""
+
+    def test_helper_fires_on_first_entry(self) -> None:
+        from pubs_emitter.rtf import _maybe_emit_career_phase_divider
+        import io
+        buf = io.StringIO()
+        new_phase = _maybe_emit_career_phase_divider(
+            buf, 2020, current_phase="", indent=720,
+        )
+        out = buf.getvalue()
+        assert "PhD studies at Virginia Tech" in out
+        assert new_phase == "phd"
+
+    def test_helper_fires_on_boundary_crossing(self) -> None:
+        from pubs_emitter.rtf import _maybe_emit_career_phase_divider
+        import io
+        buf = io.StringIO()
+        new_phase = _maybe_emit_career_phase_divider(
+            buf, 2021, current_phase="phd", indent=720,
+        )
+        out = buf.getvalue()
+        assert "Assistant Professor at Purdue" in out
+        assert new_phase == "ap"
+
+    def test_helper_silent_within_phase(self) -> None:
+        from pubs_emitter.rtf import _maybe_emit_career_phase_divider
+        import io
+        buf = io.StringIO()
+        # Already in PhD phase, another PhD-era year → no divider.
+        new_phase = _maybe_emit_career_phase_divider(
+            buf, 2019, current_phase="phd", indent=720,
+        )
+        assert buf.getvalue() == ""
+        assert new_phase == "phd"
+
+    def test_boundary_year_2020_is_phd(self) -> None:
+        from pubs_emitter.rtf import _career_phase_for_year
+        # The candidate's PhD years are 2015-2020 per their A.2 entry; 2020
+        # publications go to the PhD region per the candidate's spec
+        # ("Everything published in 2020 or earlier is 'PhD studies'").
+        assert _career_phase_for_year(2020) == "phd"
+        assert _career_phase_for_year(2019) == "phd"
+        assert _career_phase_for_year(2021) == "ap"
+
+    def test_in_press_sentinel_falls_in_ap_region(self) -> None:
+        from pubs_emitter.rtf import _career_phase_for_year
+        # Citation.year sentinel 9999 means "In Press" / unparseable —
+        # post-2020, so it lands in the AP region.
+        assert _career_phase_for_year(9999) == "ap"
+
+    def test_numbering_continues_across_boundary_in_journals_loop(self) -> None:
+        """C.2 Journals renderer: a 2020-paper followed by a 2021-paper
+        produces ONE divider between them and consecutive entry codes
+        (C.2.1, C.2.2) on either side — no reset."""
+        # Use the same _citation factory as the rest of test_rtf.py.
+        cit_phd = _citation(year=2020, year_str="2020", title="Pre-PhD wrap")
+        cit_ap = _citation(year=2021, year_str="2021", title="Post-PhD start")
+        # Drive the same emit path the write_rtf generic loop runs.
+        import io
+        from pubs_emitter.rtf import (
+            _emit_list_item, _hanging_indent_for_codes,
+            _maybe_emit_career_phase_divider, _section_codes_up_to,
+            render_citation,
+        )
+        buf = io.StringIO()
+        code = "C.2"
+        citations = [cit_phd, cit_ap]
+        indent = _hanging_indent_for_codes(
+            _section_codes_up_to(code, len(citations))
+        )
+        phase = ""
+        for idx, cit in enumerate(citations, 1):
+            phase = _maybe_emit_career_phase_divider(
+                buf, cit.year, phase, indent,
+            )
+            body = render_citation(cit, expansion_done=set())
+            _emit_list_item(buf, f"{code}.{idx}", body, indent=indent)
+        out = buf.getvalue()
+        # Both dividers present.
+        assert "PhD studies at Virginia Tech" in out
+        assert "Assistant Professor at Purdue" in out
+        # Divider appears BETWEEN C.2.1 and C.2.2 (numbering continues).
+        idx1 = out.index("C.2.1")
+        idx_ap = out.index("Assistant Professor at Purdue")
+        idx2 = out.index("C.2.2")
+        assert idx1 < idx_ap < idx2

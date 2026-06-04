@@ -276,6 +276,10 @@ DEFAULT_DB_FILE = "lookup_cache.sqlite"
 # Section III front matter source (A.1-A.7). Override via CLI --candidate-info.
 # Missing file → front matter is silently skipped (no error).
 DEFAULT_CANDIDATE_INFO_FILE = "assets/candidate-information.yaml"
+# EvaluationKit raw-data CSV → C.17 CourseTaught rows. Override via CLI
+# --evaluationkit-rawdata. Missing file → CSV-derived rows are silently
+# skipped (the YAML-loaded `courses_taught:` list still emits).
+DEFAULT_EVALUATIONKIT_RAWDATA_FILE = "assets/evaluationkit-rawdata.csv"
 DEFAULT_MAX_WORKERS = 8
 
 # Patent table column widths in twips (1440 twips = 1 inch).

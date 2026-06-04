@@ -310,6 +310,16 @@ class CourseTaught(NamedTuple):
     cie_average: Optional[float]  # 5.0 scale; avg of 10 CIE reported averages
     cie_min: Optional[float]      # min among the 10 averages
     cie_max: Optional[float]      # max among the 10 averages
+    cie_partial: bool = False     # True when fewer than 10 core concepts
+                                  # backed the avg/min/max (v657 semester
+                                  # had only 7 of 10; v737 "where relevant"
+                                  # questions drop to 9 when silent).
+                                  # Renderer adds "*" + footnote.
+    is_note_row: bool = False     # True → grey row that spans all columns
+                                  # carrying ONLY `title` as the message
+                                  # (used for "no 3-credit course taught"
+                                  # ABET-release entries). All other
+                                  # CIE-related fields are ignored.
     id: str = ""                  # OPTIONAL cross-ref id; @id resolves to "C.17.N" at build time
 
 

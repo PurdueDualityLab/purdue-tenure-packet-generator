@@ -236,6 +236,72 @@ def render_key_work_citation(
     return body
 
 
+## ----- Career-phase dividers (C.1 – C.5) ----------------------------------
+#
+# Publication entries are partitioned into two visual regions:
+#   * year ≤ 2020 → "PhD studies at Virginia Tech"
+#   * year ≥ 2021 → "Assistant Professor at Purdue"
+#
+# This is a VISUAL CUE ONLY — the section's C.X.N numbering is NOT reset
+# across the boundary. The label appears as a thin top-border paragraph
+# with the bold phase name inline, fired the first time a year on the
+# other side of the boundary appears in the section's iteration order.
+# Patents (C.19) are excluded — they have their own clear marker.
+
+_CAREER_BOUNDARY_YEAR = 2020  # ≤ boundary → PhD; > boundary → AP
+
+
+def _career_phase_for_year(year: int) -> str:
+    """('phd' | 'ap') based on the publication year. The sentinel year
+    9999 ("In Press" / unparseable) is bucketed as 'ap' so under-review
+    or just-accepted work renders in the post-PhD region."""
+    return "phd" if year <= _CAREER_BOUNDARY_YEAR else "ap"
+
+
+_CAREER_PHASE_LABELS: dict[str, str] = {
+    "phd": "PhD studies at Virginia Tech",
+    "ap":  "Assistant Professor at Purdue",
+}
+
+
+def _maybe_emit_career_phase_divider(
+    out: IO[str], year: int, current_phase: str, indent: int,
+) -> str:
+    """Emit a top-bordered, bold-labeled divider paragraph the first time
+    a publication's year crosses into a new career phase relative to
+    `current_phase`. The divider is purely visual — section numbering
+    flows through unchanged.
+
+    Returns the new phase so the caller can thread it through the
+    iteration loop. The first entry of any section always crosses from
+    `current_phase=""` into a phase — i.e., the first entry of a section
+    always emits a leading divider so the region's label is anchored at
+    the top of the region.
+    """
+    phase = _career_phase_for_year(year)
+    if phase == current_phase:
+        return current_phase
+    label = _CAREER_PHASE_LABELS[phase]
+    # `\brdrt + \brdrb` draws thin horizontal lines ABOVE AND BELOW the
+    # label paragraph so the marker reads as a fully enclosed band. The
+    # earlier single-top-border form left the label visually attached to
+    # the citation directly below it (which read as "the rule belongs to
+    # this citation"); both rules anchor the label to the boundary.
+    # `\sb120\sa120` keeps breathing room above + below. `\li{indent}`
+    # matches the hanging-indent column of the section's entries so the
+    # label aligns with body text, not the C.X.N gutter.
+    # NO em-dash glyphs around the label — `\ansicpg1252` documents
+    # mangle literal U+2014 ("— — —" → "â€"") when Word's RTF reader
+    # encounters raw UTF-8 bytes. Bold label alone is the marker.
+    out.write(
+        f"\\pard\\li{indent}\\sb120\\sa120"
+        f"\\brdrt\\brdrs\\brdrw15\\brsp40"
+        f"\\brdrb\\brdrs\\brdrw15"
+        f" \\b {escape_rtf(label)}\\b0\\par\n"
+    )
+    return phase
+
+
 def _emit_author_marker_legend(out: IO[str]) -> None:
     """Notation block — explains the per-author markup the citation
     renderer (`authors.format_author`) emits across every C.X section.
@@ -312,7 +378,11 @@ def render_key_works_section(
     _emit_author_marker_legend(out)
     indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(key_works)))
     expansion_done: set[str] = set()
+    phase = ""
     for idx, kw in enumerate(key_works, 1):
+        phase = _maybe_emit_career_phase_divider(
+            out, kw.citation.year, phase, indent,
+        )
         citation = render_key_work_citation(kw, expansion_done, paper_index)
         _emit_list_item_with_body(
             out, f"{code}.{idx}", citation, escape_rtf(kw.impact), indent=indent,
@@ -763,6 +833,14 @@ def render_other_pubs_section(
     indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(ordered)))
     expansion_done: set[str] = set()
     prev_subcat: Optional[str] = None
+    # Career-phase dividers are tracked PER SUBCATEGORY (Magazine /
+    # Technical Reports / Direct computing industry impacts) — when a new
+    # subcategory begins, the phase counter resets so the divider can
+    # fire again at the within-subcategory PhD→AP boundary. Mixing the
+    # divider across the subcategory subheading would be visually
+    # confusing (the reader's eye expects the subheading to "own" its
+    # contents).
+    phase = ""
     for idx, cit in enumerate(ordered, 1):
         subcat = _C5_SUBCATEGORY_BY_RANK.get(cit.rank, "Other")
         if subcat != prev_subcat:
@@ -771,6 +849,10 @@ def render_other_pubs_section(
                 f"\\b0\\fs24\\par\n"
             )
             prev_subcat = subcat
+            phase = ""  # reset; first entry of new subcategory re-fires
+        phase = _maybe_emit_career_phase_divider(
+            out, cit.year, phase, indent,
+        )
         body = render_citation(
             cit, expansion_done, paper_index, key_work_index,
         )
@@ -1743,6 +1825,68 @@ def _ct_cell(value: object) -> str:
     return str(value)
 
 
+# C.17 column widths (twips). Sum = 9360 = 6.5" usable on US Letter.
+# Sem/Year | Title | Number | Responsibility | Resp/Enrolled | CIE summary
+_COURSES_TAUGHT_WIDTHS: list[int] = [700, 2300, 1300, 2200, 1100, 1760]
+
+
+def _render_courses_taught_data_row(
+    cellx: list[int], cells: list[str], is_header: bool = False,
+) -> str:
+    """Standard data / header row — same shape as `RtfTable._render_row`
+    but hand-rolled so the renderer can interleave a shaded note row in
+    the same logical table run."""
+    parts: list[str] = [r"\trowd\trgaph108\trleft0"]
+    for pos in cellx:
+        parts.append(_CELL_BORDER_BLOCK)
+        parts.append(rf"\cellx{pos}")
+    for cell in cells:
+        content = rf"\b {cell}\b0" if is_header else cell
+        parts.append(rf"\pard\intbl {content}\cell")
+    parts.append("\\row\n")
+    return "".join(parts)
+
+
+def _render_courses_taught_note_row(
+    cellx: list[int], semester_str: str, text: str,
+) -> str:
+    """Grey-shaded "no course taught" row — cells merge horizontally so the
+    text reads as one row-wide message ("Sp25: No 3-credit course taught
+    – Granted a course release for ABET self-study leadership", etc.).
+
+    The semester label is prepended INLINE to the text ("Sp25: …") so the
+    reader sees the temporal anchor without needing the (now-merged)
+    Sem/Year column. Without this lead-in the row reads as a stranded
+    note disconnected from the semesters above and below it.
+
+    RTF cell-merge convention:
+      * First cell of the merged group: `\\clmgf` (merge-first)
+      * Every subsequent cell:          `\\clmrg` (merge-continue)
+    All cells must still emit `\\cellx{N}` borders, but the renderer
+    merges them visually. Cell background uses color 2 (light grey) from
+    the document color table.
+    """
+    parts: list[str] = [r"\trowd\trgaph108\trleft0"]
+    for i, pos in enumerate(cellx):
+        # \clcbpat2 = cell background = color 2 (light grey, 220,220,220).
+        parts.append(r"\clcbpat2")
+        parts.append(r"\clmgf" if i == 0 else r"\clmrg")
+        parts.append(_CELL_BORDER_BLOCK)
+        parts.append(rf"\cellx{pos}")
+    # Prefix the body with the semester label so the row reads in context
+    # ("Sp25: No 3-credit course taught – ...") rather than as an
+    # unanchored note. `semester_str` is rendered inline; the structural
+    # Sem/Year column is now part of the merged cell and isn't visible.
+    body = f"{escape_rtf(semester_str)}: {text}" if semester_str else text
+    # Only the first cell carries the text; subsequent cells are empty
+    # placeholders required by the RTF row-arity invariant.
+    parts.append(rf"\pard\intbl {body}\cell")
+    for _ in range(len(cellx) - 1):
+        parts.append(r"\pard\intbl \cell")
+    parts.append("\\row\n")
+    return "".join(parts)
+
+
 def render_courses_taught_section(
     rows: list[CourseTaught], out: IO[str],
 ) -> None:
@@ -1751,6 +1895,17 @@ def render_courses_taught_section(
     Sort: year ASC, then semester_order ASC (Sp → Su → F). Asterisk
     prefix on the title cell when `is_new_course` is True. Missing CIE
     cells render as em-dash (distinguishable from a 0.00 score).
+
+    `is_note_row=True` rows render as a grey-shaded merged-cell row that
+    spans the table width — used for "no 3-credit course taught" entries
+    (e.g., ABET-self-study release semesters). Only `title` is rendered;
+    CIE / responsibility / number cells are ignored.
+
+    `cie_partial=True` rows get a "*" suffix on the CIE summary cell and
+    drive a footnote below the table ("Computed on the relevant subset
+    of questions asked"). Triggered when fewer than 10 core concepts
+    backed the per-row aggregate — v657 semesters (Spring 2022) and any
+    v737 row where a "where relevant" question was silent.
 
     Empty list → section heading + indented "N/A" (same C.15/C.18/C.20/
     C.21 pattern). Mandatory section in the Purdue packet.
@@ -1762,18 +1917,29 @@ def render_courses_taught_section(
         out.write("\\pard\\li720 N/A\\par\\par\n")
         return
     sorted_rows = sorted(rows, key=lambda r: (r.year, r.semester_order))
-    # Column widths (twips) sum to 9360 = 6.5" usable on US Letter.
-    # Sem/Year | Title | Number | Responsibility | Resp/Enrolled | CIE summary
-    table = RtfTable([700, 2300, 1300, 2200, 1100, 1760])
-    table.add_header([
+    cellx: list[int] = []
+    cumulative = 0
+    for w in _COURSES_TAUGHT_WIDTHS:
+        cumulative += w
+        cellx.append(cumulative)
+
+    parts: list[str] = []
+    parts.append(_render_courses_taught_data_row(cellx, [
         "Sem/Year",
         "Course Title",
         "Course Number",
         "Responsibility",
         "# Responses / # Enrolled",
         "CIE Avg (Min, Max)",
-    ])
+    ], is_header=True))
+
+    any_partial = False
     for r in sorted_rows:
+        if r.is_note_row:
+            parts.append(_render_courses_taught_note_row(
+                cellx, r.semester_str, escape_rtf(r.title),
+            ))
+            continue
         title_cell = escape_rtf(r.title)
         if r.is_new_course:
             title_cell = f"*{title_cell}"
@@ -1781,19 +1947,27 @@ def render_courses_taught_section(
             resp_cell = "\\u8212?"
         else:
             resp_cell = f"{_ct_cell(r.responses)} / {_ct_cell(r.enrolled)}"
-        # CIE summary: "4.13 (3.76, 4.34)" with em-dash for any missing piece.
         avg = _ct_cell(r.cie_average)
         cie_cell = f"{avg} ({_ct_cell(r.cie_min)}, {_ct_cell(r.cie_max)})"
-        table.add_row([
+        if r.cie_partial:
+            cie_cell += "*"
+            any_partial = True
+        parts.append(_render_courses_taught_data_row(cellx, [
             escape_rtf(r.semester_str),
             title_cell,
             escape_rtf(r.course_number),
             escape_rtf(r.responsibility),
             resp_cell,
             cie_cell,
-        ])
-    out.write(table.render())
-    out.write("\\pard\\par\n")
+        ]))
+    out.write("".join(parts))
+    if any_partial:
+        out.write(
+            "\\pard\\li720\\fs20\\i *Computed on the relevant subset of "
+            "questions asked.\\i0\\par\\par\n"
+        )
+    else:
+        out.write("\\pard\\par\n")
 
 
 def render_course_development_section(
@@ -2408,7 +2582,11 @@ def write_rtf(
             indent = _hanging_indent_for_codes(
                 _section_codes_up_to(code, len(citations))
             )
+            phase = ""
             for idx, cit in enumerate(citations, 1):
+                phase = _maybe_emit_career_phase_divider(
+                    out, cit.year, phase, indent,
+                )
                 body = render_citation(cit, expansion_done, paper_index, key_work_index)
                 _emit_list_item(out, f"{code}.{idx}", body, indent=indent)
 
