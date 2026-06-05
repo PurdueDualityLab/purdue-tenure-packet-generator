@@ -2427,3 +2427,182 @@ class TestResponsibilityOverrideMergeLogic:
             )
         # Stayed as the explicit YAML value.
         assert c.responsibility == "custom override on the row itself"
+
+
+# ----- Section V, A.2 Pending Proposals -----------------------------------
+
+
+class TestRefAnchorBookmarkPrefix:
+    """`_ref_anchor` accepts an optional `bookmark_prefix` so Section V
+    entries can target bookmarks like "V_A_2_3" while displaying the
+    bare code "A.2.3". Used to keep Section V entries from colliding
+    with same-coded Section III entries (A.2 Degrees in particular)."""
+
+    def test_default_no_prefix(self) -> None:
+        from pubs_emitter.rtf import _ref_anchor
+        out = _ref_anchor("A.2.3")
+        # Both anchor bookmarks reference "A_2_3" (the bare code).
+        assert "bkmkstart A_2_3" in out
+        assert "bkmkend A_2_3" in out
+        # Display text is still the dotted form.
+        assert "A.2.3" in out
+
+    def test_v_prefix_namespaces_the_bookmark(self) -> None:
+        from pubs_emitter.rtf import _ref_anchor
+        out = _ref_anchor("A.2.3", bookmark_prefix="V.")
+        # Bookmark name is "V_A_2_3" — different from the bare "A_2_3"
+        # bookmark a Section III A.2 Degrees entry would emit.
+        assert "bkmkstart V_A_2_3" in out
+        assert "bkmkend V_A_2_3" in out
+        # Display text unchanged — reader still sees "A.2.3".
+        assert "A.2.3" in out
+        assert "V.A.2.3" not in out
+
+
+class TestRenderPendingProposalsSection:
+    """Section V, A.2 renderer. Reuses the existing 4-row grant table
+    shape via `_format_grant_table(bookmark_prefix='V.')`."""
+
+    def _pending(self, **overrides):
+        from pubs_emitter.types import Grant
+        base = dict(
+            start_year=2026, end_year=2028,
+            title="EAGER: Test Pending Grant",
+            agency="US National Science Foundation",
+            agency_short="NSF",
+            grant_number="9999999",
+            role="PI",
+            lead_institution="Other University",
+            personnel=[],
+            responsibility_percent=0,
+            total_amount=300000, purdue_amount=149998, my_amount=149998,
+            activities="Submitted 4/15/2026.",
+            responsibility="",
+            inspired_by=[],
+            publication_outcomes=[],
+            status="pending",
+        )
+        base.update(overrides)
+        return Grant(**base)
+
+    def test_emits_section_heading_and_bookmark_prefix(self) -> None:
+        import io
+        from pubs_emitter.rtf import render_pending_proposals_section
+        buf = io.StringIO()
+        render_pending_proposals_section([self._pending()], buf)
+        out = buf.getvalue()
+        assert "A.2 Pending proposals" in out
+        # Bookmark is prefixed with V_ — wouldn't collide with Section
+        # III A.2 Degrees bookmarks at A_2_1.
+        assert "bkmkstart V_A_2_1" in out
+        # And the bare "A_2_1" form is NOT emitted by THIS section.
+        # (Section III Degrees may emit it elsewhere; this assertion
+        # scopes to the pending-proposals block in `out`.)
+        assert "bkmkstart A_2_1" not in out
+
+    def test_empty_list_writes_nothing(self) -> None:
+        import io
+        from pubs_emitter.rtf import render_pending_proposals_section
+        buf = io.StringIO()
+        render_pending_proposals_section([], buf)
+        assert buf.getvalue() == ""
+
+    def test_numbering_increments_across_entries(self) -> None:
+        import io
+        from pubs_emitter.rtf import render_pending_proposals_section
+        buf = io.StringIO()
+        render_pending_proposals_section([
+            self._pending(title="Pending #1"),
+            self._pending(title="Pending #2"),
+        ], buf)
+        out = buf.getvalue()
+        assert "bkmkstart V_A_2_1" in out
+        assert "bkmkstart V_A_2_2" in out
+
+
+class TestGrantStatusPartition:
+    """A grant's `status` field routes it between C.10 / C.11 (awarded,
+    default) and Section V, A.2 (pending). Partition is a simple field
+    filter applied in cli.py — pin the invariant here so the test
+    surfaces a routing regression at unit-test speed."""
+
+    def _grant(self, **overrides):
+        from pubs_emitter.types import Grant
+        base = dict(
+            start_year=2025, end_year=2027,
+            title="T", agency="NSF", agency_short="NSF",
+            grant_number="123", role="PI",
+            lead_institution="", personnel=[],
+            responsibility_percent=0,
+            total_amount=100000, purdue_amount=100000, my_amount=100000,
+            activities="", responsibility="",
+            inspired_by=[], publication_outcomes=[],
+            status="awarded",
+        )
+        base.update(overrides)
+        return Grant(**base)
+
+    def test_default_status_is_awarded(self) -> None:
+        g = self._grant()
+        assert g.status == "awarded"
+
+    def test_partition_filter_logic(self) -> None:
+        """The exact filter expression the cli.py partition uses."""
+        all_grants = [
+            self._grant(title="A1", status="awarded"),
+            self._grant(title="P1", status="pending"),
+            self._grant(title="A2", status="awarded"),
+            self._grant(title="P2", status="pending"),
+        ]
+        awarded = [g for g in all_grants if g.status != "pending"]
+        pending = [g for g in all_grants if g.status == "pending"]
+        assert [g.title for g in awarded] == ["A1", "A2"]
+        assert [g.title for g in pending] == ["P1", "P2"]
+
+
+class TestFormatRoleResponsibilityPurdueLead:
+    """Pending-proposal rows must carry an inline 'Purdue is (not) lead
+    institution' annotation; awarded grants must NOT (those sections
+    convey the position via their heading). Detection rule: empty or
+    'Purdue University' → lead; any other non-empty string → not lead."""
+
+    def _g(self, **kw):
+        from pubs_emitter.types import Grant
+        base = dict(
+            start_year=2026, end_year=2028, title='T', agency='NSF',
+            agency_short='NSF', grant_number='1', role='PI',
+            lead_institution='', personnel=[], responsibility_percent=0,
+            total_amount=100000, purdue_amount=100000, my_amount=100000,
+            activities='', responsibility='', inspired_by=[],
+            publication_outcomes=[], status='awarded',
+        )
+        base.update(kw)
+        return Grant(**base)
+
+    def test_awarded_grant_no_lead_note(self) -> None:
+        from pubs_emitter.rtf import _format_role_responsibility_line
+        out = _format_role_responsibility_line(
+            self._g(status='awarded', lead_institution='Loyola University'),
+        )
+        assert "lead institution" not in out
+
+    def test_pending_purdue_lead_when_empty(self) -> None:
+        from pubs_emitter.rtf import _format_role_responsibility_line
+        out = _format_role_responsibility_line(
+            self._g(status='pending', lead_institution=''),
+        )
+        assert "Purdue is lead institution" in out
+
+    def test_pending_purdue_lead_when_literal_purdue(self) -> None:
+        from pubs_emitter.rtf import _format_role_responsibility_line
+        out = _format_role_responsibility_line(self._g(
+            status='pending', lead_institution='Purdue University',
+        ))
+        assert "Purdue is lead institution" in out
+
+    def test_pending_purdue_not_lead_names_the_lead(self) -> None:
+        from pubs_emitter.rtf import _format_role_responsibility_line
+        out = _format_role_responsibility_line(self._g(
+            status='pending', lead_institution='Loyola University Chicago',
+        ))
+        assert "Purdue is not lead institution (lead: Loyola University Chicago)" in out

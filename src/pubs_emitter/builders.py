@@ -419,6 +419,10 @@ def build_grant(entry: dict) -> Grant:
         responsibility=decode_latex(entry.get("responsibility", "") or "").replace("\n", " "),
         inspired_by=list(entry.get("inspired_by") or []),
         publication_outcomes=list(entry.get("publication_outcomes") or []),
+        # `status:` defaults to "awarded" (back-compat: every existing
+        # YAML entry omits the field and stays in C.10-C.13). Setting
+        # `status: pending` routes the entry to Section V, A.2 instead.
+        status=str(entry.get("status", "awarded") or "awarded"),
         id=str(entry.get("id", "") or ""),
     )
 

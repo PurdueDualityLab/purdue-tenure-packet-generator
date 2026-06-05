@@ -114,11 +114,13 @@ SECTION_ORDER: list[Section] = [
     "B3 Vision",
     "B4 External Events",
     "B5 COVID Impact",
-    # Section V appendix — products under review. Emitted last per the
-    # original appendix discipline. The A.1 code here REUSES the prefix
-    # the front matter uses; the doc's Roman-numeral parent section
-    # disambiguates ("Section III, A.1" vs "Section V, A.1").
+    # Section V appendix — products under review + pending proposals.
+    # Emitted last per the original appendix discipline. The A.1 / A.2
+    # codes REUSE the Section III prefix; the doc's Roman-numeral parent
+    # section disambiguates ("Section III, A.1" vs "Section V, A.1";
+    # "Section III, A.2" vs "Section V, A.2").
     "Under Review",
+    "Pending Proposals",
     "Key Works",
     "Journals",
     "Books and Chapters",
@@ -165,9 +167,13 @@ SECTION_CODES: dict[Section, str] = {
     "B3 Vision":          "B.3",
     "B4 External Events": "B.4",
     "B5 COVID Impact":    "B.5",
-    # Section V appendix — bare code is A.1 too; cross-refs render with
-    # the explicit "Section V, " prefix to disambiguate from A.1 above.
-    "Under Review": "A.1",
+    # Section V appendix — bare codes A.1 / A.2 too; cross-refs render
+    # with the explicit "Section V, " prefix to disambiguate from
+    # Section III's A.1 / A.2 above. Bookmarks for Section V entries
+    # use the "V." prefix so they don't collide with Section III A.2
+    # Degrees bookmarks at the same numeric code.
+    "Under Review":      "A.1",
+    "Pending Proposals": "A.2",
     "Key Works": "C.1",
     "Journals": "C.2",
     "Books and Chapters": "C.3",
@@ -217,6 +223,7 @@ SECTION_HEADINGS: dict[Section, str] = {
     "B5 COVID Impact":    "Professional COVID-19 Impact Statement (optional).",
     # Section V appendix.
     "Under Review": "Products under review (e.g. papers, books, software)",
+    "Pending Proposals": "Pending proposals",
     "Key Works": "Key Scholarly Publications or Patents",
     "Journals": "Journals",
     "Books and Chapters": "Books and chapters in books",

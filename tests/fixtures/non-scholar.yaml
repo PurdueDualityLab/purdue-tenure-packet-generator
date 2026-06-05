@@ -43,9 +43,32 @@ grants_as_pi:
     end_year: 2030
     purdue_amount: 600000
 
+  # PENDING — `status: pending` routes this entry to Section V, A.2
+  # instead of C.10. Anchors the e2e bookmark-placement invariant
+  # (V_A_2_1 must be emitted in the Section V appendix, not C.10).
+  - id: test-pending-proposal
+    title: Test Pending Proposal
+    agency: National Science Foundation
+    agency_short: NSF
+    grant_number: "9999999"
+    role: PI
+    start_year: 2026
+    end_year: 2028
+    purdue_amount: 100000
+    my_amount: 100000
+    status: pending
+
 grants_as_co_pi: []
 gifts: []
 internal_grants: []
+
+# Section V, A.1 — products under review. Anchors the placement test's
+# coverage of the V_A1 sub-section (the A_1_N bookmark must land here,
+# not in any Section III block).
+under_review:
+  - title: A Test Paper Currently Under Review
+    authors: "Davis, James"
+    venue: Test Conference
 
 graduate_students:
   - name: Paschal C. Amusuo

@@ -25,3 +25,6 @@ dist/
 .mypy_cache/
 .pytest_cache/
 .pylint.d/
+
+# MacOS
+.DS_STORE

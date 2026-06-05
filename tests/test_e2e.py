@@ -252,9 +252,17 @@ class TestE2eGrantMath:
     def _section_total_usd(self, yaml_data: dict, key: str) -> str:
         """Sum the `my_amount` fields under `key` (with `purdue_amount` as
         default when `my_amount` isn't set) and format as $N,NNN. Mirrors the
-        renderer's section-total computation."""
+        renderer's section-total computation.
+
+        Pending entries (`status: pending`) are EXCLUDED — they're routed
+        to Section V, A.2 and don't contribute to the C.10 / C.11 total
+        labels. Mirrors the same partition cli.py applies before
+        registering grants.
+        """
         total = 0
         for g in (yaml_data.get(key) or []):
+            if str(g.get("status", "awarded") or "awarded") == "pending":
+                continue
             purdue = int(g.get("purdue_amount", 0) or 0)
             mine = int(g.get("my_amount", purdue) or purdue)
             total += mine
@@ -947,3 +955,211 @@ class TestFilterHidden:
         assert any(
             "paper-nonexistent" in rec.message for rec in caplog.records
         )
+
+
+# ----- Section bookmark-placement invariant ------------------------------
+
+
+@pytest.fixture
+def e2e_full_outputs(
+    fixtures_dir: pathlib.Path,
+    tmp_path: pathlib.Path,
+    fake_network: None,  # noqa: ARG001 — pulled in for side effect
+) -> str:
+    """Drive cli.main with full Section III/IV/V coverage — uses the
+    test-fixture candidate-information.yaml + self-evaluation.md so the
+    placement invariant can verify cross-section bookmark targeting
+    (Section III A.X, Section V A.1, Section V A.2, all C.X)."""
+    bib = fixtures_dir / "sample.bib"
+    non_scholar = fixtures_dir / "non-scholar.yaml"
+    candidate_info = fixtures_dir / "candidate-information.yaml"
+    self_eval = fixtures_dir / "self-evaluation.md"
+    out = tmp_path / "publications.rtf"
+    cache = tmp_path / "lookup_cache.sqlite"
+    cli.main(
+        [
+            "--bib", str(bib),
+            "--non-scholar", str(non_scholar),
+            "--candidate-info", str(candidate_info),
+            "--self-eval", str(self_eval),
+            "--evaluationkit-rawdata", "",  # no CSV fixture
+            "--out", str(out),
+            "--cache", str(cache),
+        ]
+    )
+    return out.read_text(encoding="utf-8")
+
+
+class TestE2eSectionBookmarkPlacement:
+    """Every `\\*\\bkmkstart NAME` marker in the rendered RTF must fall
+    INSIDE the byte-range of the section that owns its named code.
+    Catches the class of bug where a bookmark gets emitted in the
+    wrong section block — most concretely, the V.A.2 vs Section III A.2
+    Degrees bookmark collision the "V." prefix exists to prevent.
+
+    Section ranges are derived from heading text positions; bookmark
+    placement is asserted against those ranges.
+    """
+
+    _BOOKMARK_RE = __import__("re").compile(
+        r"\\\*\\bkmkstart ([A-Z][\w]+)"
+    )
+
+    def _section_ranges(self, rtf: str) -> dict[str, tuple[int, int]]:
+        """Map section label → (start, end) byte range.
+
+        Each top-level section is delimited by its heading text appearing
+        in `\\fs28 …` form (level-1 heading) or `\\fs32 …` (group heading
+        "A. GENERAL INFORMATION" / "B. SELF-EVALUATION"). End-of-range
+        is the next section's start (or end of doc for the last).
+        """
+        # The headings we care about for placement validation. Order
+        # matters — must be in emission order so the (start, end) range
+        # falls cleanly between successive section starts.
+        headings_in_order = [
+            ("A1", "A.1 Name and any appropriate scholarly identifiers"),
+            ("A2_III", "A.2 Degrees"),
+            ("A3", "A.3 Positions at Purdue"),
+            ("A4", "A.4 Positions at other institutions"),
+            ("A5", "A.5 Licenses"),
+            ("A6", "A.6 Recognitions"),
+            ("A7", "A.7 Membership in professional organizations"),
+            ("B1", "B.1 Summary of achievements"),
+            ("B2", "B.2 Impact of accomplishments"),
+            ("B3", "B.3 Vision"),
+            ("B4", "B.4 Candidate comments"),
+            ("B5", "B.5 Professional COVID-19"),
+            ("C1", "C.1 Key Scholarly Publications"),
+            ("C2", "C.2 Journals"),
+            ("C3", "C.3 Books and chapters"),
+            ("C4", "C.4 Conferences and Workshops"),
+            ("C5", "C.5 Other publications"),
+            ("C6", "C.6 Invited"),
+            ("C7", "C.7 Leadership"),
+            ("C8", "C.8 Appearances in media"),
+            ("C9", "C.9 Selected contributed conference"),
+            ("C10", "C.10 Externally sponsored grants as PI"),
+            ("C14", "C.14 Graduate students advised"),
+            ("C15", "C.15 Mentoring of postdoctoral"),
+            ("C16", "C.16 Undergraduate research"),
+            ("C17", "C.17 Courses taught"),
+            ("C18", "C.18 Course development"),
+            ("C19", "C.19 Issued U.S. and International Patents"),
+            ("C20", "C.20 Major entrepreneurial"),
+            ("C21", "C.21 Technology transfer"),
+            ("C22", "C.22 Software products"),
+            ("C23", "C.23 Service to Purdue"),
+            ("C24", "C.24 Service to the profession"),
+            ("C25", "C.25 Service to State"),
+            ("C26", "C.26 Other external service"),
+            ("V_A1", "A.1 Products under review"),
+            ("V_A2", "A.2 Pending proposals"),
+        ]
+        positions: list[tuple[str, int]] = []
+        for label, snippet in headings_in_order:
+            pos = rtf.find(snippet)
+            if pos < 0:
+                continue  # section absent from this run (e.g., empty C.X)
+            positions.append((label, pos))
+        positions.sort(key=lambda x: x[1])
+
+        ranges: dict[str, tuple[int, int]] = {}
+        for i, (label, start) in enumerate(positions):
+            end = positions[i + 1][1] if i + 1 < len(positions) else len(rtf)
+            ranges[label] = (start, end)
+        return ranges
+
+    def _expected_section_for_bookmark(self, name: str) -> str:
+        """Map a bookmark name to the label whose range must contain it.
+
+        Bookmark naming convention (single source of truth in
+        `_ref_anchor`):
+          * "V_A_X_N" → Section V's A.X (V_A1 or V_A2)
+          * "A_X_N"   → Section III's A.X  (A1..A7)
+          * "C_X[_…]" → C.X family — strip suffix to top-level "C.X"
+        """
+        if name.startswith("V_A_"):
+            # "V_A_1_N" → V_A1; "V_A_2_N" → V_A2
+            parts = name.split("_")
+            return f"V_A{parts[2]}"
+        if name.startswith("A_"):
+            # Section III A.X.N bookmark — bare-A form only emitted by
+            # Section III sub-section entries (Section V under-review
+            # also uses bare A_1_N because Section III A.1 is bullets
+            # and emits no A_1_N bookmark to collide with).
+            parts = name.split("_")
+            idx = parts[1]
+            # A_1_N is owned by Section V under-review (V_A1 range);
+            # all other A_X_N belong to Section III.
+            return "V_A1" if idx == "1" else f"A{idx}"
+        if name.startswith("C_"):
+            # Strip subscripts: C_16_2_3_1 → C16. The top-level section
+            # "C.16" owns every descendant bookmark.
+            parts = name.split("_")
+            return f"C{parts[1]}"
+        return ""  # bookmark we don't model — skip
+
+    def test_every_bookmark_lands_in_its_section(
+        self, e2e_full_outputs: str,
+    ) -> None:
+        rtf = e2e_full_outputs
+        ranges = self._section_ranges(rtf)
+        # Sanity: the comprehensive run must emit every top-level section
+        # we model — if a section is missing, the fixture lost coverage.
+        for must_have in ("A2_III", "V_A1", "V_A2", "C1", "C10"):
+            assert must_have in ranges, (
+                f"section {must_have} not found in rendered RTF — "
+                f"fixture lost coverage of this section"
+            )
+        misplacements: list[tuple[str, int, str]] = []
+        for m in self._BOOKMARK_RE.finditer(rtf):
+            name = m.group(1)
+            expected = self._expected_section_for_bookmark(name)
+            if not expected or expected not in ranges:
+                continue
+            start, end = ranges[expected]
+            if not (start <= m.start() < end):
+                # Where DID it land? Scan the ranges to report the
+                # actual containing section for a useful failure message.
+                actual = "(outside any modeled section)"
+                for label, (s, e) in ranges.items():
+                    if s <= m.start() < e:
+                        actual = label
+                        break
+                misplacements.append((name, m.start(), actual))
+        assert not misplacements, (
+            f"{len(misplacements)} bookmark(s) emitted in the wrong section. "
+            f"Sample (name, byte_pos, actual_section, expected_section):\n"
+            + "\n".join(
+                f"  {n!r} at {p} in {a!r} (expected "
+                f"{self._expected_section_for_bookmark(n)!r})"
+                for n, p, a in misplacements[:10]
+            )
+        )
+
+    def test_section_iii_a2_degree_bookmark_present_in_section_iii(
+        self, e2e_full_outputs: str,
+    ) -> None:
+        """Belt-and-suspenders: the Section III A.2.1 Degrees bookmark
+        (`A_2_1`) must be in the Section III block, NOT the Section V
+        block. Regression pin for the V.A.2 bookmark-prefix machinery."""
+        rtf = e2e_full_outputs
+        ranges = self._section_ranges(rtf)
+        s3_a2 = rtf.find(r"\*\bkmkstart A_2_1")
+        assert s3_a2 >= 0
+        a2_iii_start, a2_iii_end = ranges["A2_III"]
+        assert a2_iii_start <= s3_a2 < a2_iii_end
+
+    def test_section_v_a2_pending_bookmark_present_in_section_v(
+        self, e2e_full_outputs: str,
+    ) -> None:
+        """Companion to the Section III A.2 pin: the Section V A.2.1
+        Pending Proposals bookmark (`V_A_2_1`) lives in the Section V
+        block. Together these two tests anchor the "V." prefix
+        invariant."""
+        rtf = e2e_full_outputs
+        ranges = self._section_ranges(rtf)
+        s5_a2 = rtf.find(r"\*\bkmkstart V_A_2_1")
+        assert s5_a2 >= 0
+        v_a2_start, v_a2_end = ranges["V_A2"]
+        assert v_a2_start <= s5_a2 < v_a2_end

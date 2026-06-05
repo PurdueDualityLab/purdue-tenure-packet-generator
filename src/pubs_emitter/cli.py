@@ -502,12 +502,28 @@ def main(argv: Optional[list[str]] = None) -> None:
             build_conference_presentation(p)
             for p in (non_scholar.get("conference_presentations") or [])
         ]
-        # Phase 4e: build the 4 grant lists (C.10/C.11/C.12/C.13).
-        grants_as_pi: list[Grant] = [
+        # Phase 4e: build the 4 grant lists (C.10/C.11/C.12/C.13) PLUS the
+        # Section V, A.2 pending-proposals list. Pending entries carry
+        # `status: pending` in YAML; they're peeled off C.10 / C.11 (the
+        # only two categories where "submitted but not yet awarded" makes
+        # sense — gifts and internal grants don't take pending state) and
+        # routed to V.A.2 while preserving their `role` field (PI vs Co-PI)
+        # for display inside the pending-proposals appendix.
+        _all_pi_grants: list[Grant] = [
             build_grant(g) for g in (non_scholar.get("grants_as_pi") or [])
         ]
-        grants_as_co_pi: list[Grant] = [
+        _all_co_pi_grants: list[Grant] = [
             build_grant(g) for g in (non_scholar.get("grants_as_co_pi") or [])
+        ]
+        grants_as_pi: list[Grant] = [
+            g for g in _all_pi_grants if g.status != "pending"
+        ]
+        grants_as_co_pi: list[Grant] = [
+            g for g in _all_co_pi_grants if g.status != "pending"
+        ]
+        pending_proposals: list[Grant] = [
+            g for g in (_all_pi_grants + _all_co_pi_grants)
+            if g.status == "pending"
         ]
         gifts: list[Grant] = [
             build_grant(g) for g in (non_scholar.get("gifts") or [])
@@ -655,7 +671,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         invited_talks.sort(key=lambda t: t.year)
         leadership_roles.sort(key=lambda r: r.year)
         media_appearances.sort(key=lambda m: m.year)
-        for grant_list in (grants_as_pi, grants_as_co_pi, gifts, internal_grants):
+        for grant_list in (grants_as_pi, grants_as_co_pi, gifts,
+                           internal_grants, pending_proposals):
             grant_list.sort(key=lambda g: g.start_year)
         graduate_students.sort(key=lambda s: s.grad_year)
         undergraduate_students.sort(key=lambda s: s.grad_year)
@@ -747,6 +764,15 @@ def main(argv: Optional[list[str]] = None) -> None:
         _register_simple(grants_as_co_pi, "Grants Co-PI")
         _register_simple(gifts, "Gifts")
         _register_simple(internal_grants, "Internal Grants")
+        # Section V, A.2 pending proposals — pipe-form ref_index value
+        # ("Section V, A.2.N|V.A.2.N") parallels the under-review
+        # registration: display "Section V, A.2.N" + bookmark "V_A_2_N".
+        # The "V." prefix on the bookmark prevents collision with
+        # Section III A.2 Degrees bookmarks at the same numeric code.
+        pp_code = SECTION_CODES["Pending Proposals"]
+        for idx, g in enumerate(pending_proposals, 1):
+            bare = f"{pp_code}.{idx}"
+            _register(g, f"Section V, {bare}|V.{bare}")
         _register_simple(graduate_students, "Graduate Students")
         _register_simple(postdocs_visiting, "Postdocs and Visiting Scholars")
         _register_simple(undergraduate_students, "Undergraduate Students")
@@ -795,6 +821,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         leadership_roles = _resolve(leadership_roles, "LeadershipRole")
         media_appearances = _resolve(media_appearances, "MediaAppearance")
         grants_as_pi = _resolve(grants_as_pi, "Grant")
+        pending_proposals = _resolve(pending_proposals, "Grant")
         grants_as_co_pi = _resolve(grants_as_co_pi, "Grant")
         gifts = _resolve(gifts, "Grant")
         internal_grants = _resolve(internal_grants, "Grant")
@@ -891,6 +918,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             courses_taught=courses_taught,
             candidate_info=candidate_info,
             self_eval=self_eval,
+            pending_proposals=pending_proposals,
             sections_filter=_parse_sections_filter(args.sections),
         )
     finally:

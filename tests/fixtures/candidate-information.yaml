@@ -1,0 +1,40 @@
+# Minimal Section III front-matter fixture used by the comprehensive
+# e2e test (TestE2eSectionBookmarkPlacement). One entry per numbered
+# sub-section so the placement test can verify each A.X.N bookmark
+# lands in the Section III block (not Section V).
+candidate_information:
+  identifiers:
+    name: "Test Candidate, PhD"
+    orcid: ""
+    google_scholar: ""
+
+  degrees:
+    - institution: "Test U"
+      years: "2010-2014"
+      degree: "BSc Test"
+      thesis_kind: ""
+      thesis_title: ""
+      advisor: ""
+    - institution: "Other Test U"
+      years: "2014-2019"
+      degree: "PhD Test"
+      thesis_kind: "Doctoral thesis"
+      thesis_title: "A Test Thesis"
+      advisor: "Dr. Tester"
+
+  positions_at_purdue: "Test Professor, 2020-2026"
+
+  positions_at_other:
+    - title: "Engineer"
+      years: "2015"
+      organization: "Test Corp"
+      acronym: ""
+
+  licenses: "N/A"
+
+  awards: []
+
+  professional_memberships:
+    - level: "Member"
+      organization: "Test Society"
+      acronym: ""

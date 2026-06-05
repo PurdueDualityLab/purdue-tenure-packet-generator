@@ -35,8 +35,9 @@ Section = Literal[
     "B3 Vision",
     "B4 External Events",
     "B5 COVID Impact",
-    # Section V (appendix) — Products under review.
+    # Section V (appendix) — Products under review + Pending proposals.
     "Under Review",
+    "Pending Proposals",
     "Key Works",
     "Journals",
     "Books and Chapters",
@@ -222,7 +223,13 @@ class Grant(NamedTuple):
     responsibility: str           # optional free-text role/percent statement
     inspired_by: list[str]        # bib titles that motivated this grant → C.X.Y refs
     publication_outcomes: list[str]  # bib titles funded by this grant → C.X.Y refs
-    id: str = ""                  # OPTIONAL cross-ref id; @id resolves to "C.10.N" / "C.11.N" / "C.12.N" / "C.13.N"
+    status: str = "awarded"       # "awarded" (default; renders in C.10-C.13)
+                                  # or "pending" (routes to Section V, A.2
+                                  # "Pending proposals" appendix). Same schema
+                                  # either way — the tag changes only the
+                                  # destination section + cross-ref display
+                                  # ("Section V, A.2.N" vs "C.10.N" etc.).
+    id: str = ""                  # OPTIONAL cross-ref id; @id resolves to "C.10.N" / "C.11.N" / "C.12.N" / "C.13.N" / "Section V, A.2.N"
 
 
 class UnderReview(NamedTuple):

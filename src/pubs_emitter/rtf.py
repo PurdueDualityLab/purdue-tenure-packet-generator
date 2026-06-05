@@ -804,6 +804,31 @@ def render_candidate_information_section(
     _render_a7_memberships(out, candidate_info.professional_memberships)
 
 
+def render_pending_proposals_section(
+    pending_proposals: list[Grant], out: IO[str],
+) -> None:
+    """Section V, A.2: pending grant proposals.
+
+    Same table shape as C.10-C.13 (one 4-row grant table per entry,
+    `_format_grant_table` reused) so a reader who knows the awarded-grant
+    layout can read pending proposals at a glance. Bookmarks are
+    prefixed with "V." so the Section V entries don't collide with
+    Section III A.2 Degrees bookmarks at the same numeric code.
+
+    Empty list → nothing emitted (Section V, A.2 simply doesn't appear).
+    """
+    if not pending_proposals:
+        return
+    code = SECTION_CODES["Pending Proposals"]
+    heading = SECTION_HEADINGS["Pending Proposals"]
+    _emit_section_heading(out, code, heading)
+    for idx, grant in enumerate(pending_proposals, 1):
+        out.write(_format_grant_table(
+            grant, idx, code, bookmark_prefix="V.",
+        ))
+        out.write("\\pard\\par\n")  # blank paragraph between grant tables
+
+
 def render_under_review_section(
     under_review: list[UnderReview], out: IO[str],
 ) -> None:
@@ -1093,7 +1118,7 @@ def _compute_responsibility_pct(grant: Grant) -> Optional[int]:
 
 
 def _format_role_responsibility_line(grant: Grant) -> str:
-    """Row 3: "{role} - {pct}%, {responsibility prose}".
+    """Row 3: "{role} - {pct}%, [Purdue is (not) lead institution.] {responsibility prose}".
 
     Format rules:
       * `{role}` alone if no pct and no responsibility text.
@@ -1103,11 +1128,17 @@ def _format_role_responsibility_line(grant: Grant) -> str:
         `- 100%` is suppressed since 100% is the implicit default and
         the line reads better as `PI, {responsibility}`.
 
-    Lead-institution annotation (`(Purdue is lead)` / `(Columbia is
-    lead)`) is NOT included — the C.X section the grant lands in
-    already conveys whether Davis is the PI or Co-PI / lead or follower.
-    The `Grant.lead_institution` field stays in the schema for downstream
-    consumers and is just elided from this rendering.
+    Lead-institution annotation is inlined ONLY for pending proposals
+    (`status == "pending"`, routes to Section V, A.2): a reader of the
+    V.A.2 appendix can't see at-a-glance whether the proposal is a
+    Purdue-led submission or a multi-institution collab with Purdue as
+    a sub-site. For C.10 / C.11 / C.12 / C.13 the question is conveyed
+    by the section the grant lands in, so the annotation is suppressed
+    there to keep the rendered row short.
+
+    Detection: empty `lead_institution` OR the literal "Purdue
+    University" → Purdue is lead; any other non-empty string → Purdue
+    is not lead (and we name the lead by the field's value).
     """
     role = grant.role
     pct = _compute_responsibility_pct(grant)
@@ -1115,6 +1146,12 @@ def _format_role_responsibility_line(grant: Grant) -> str:
     bits = [role]
     if pct is not None and pct != 100:
         bits.append(f" - {pct}%")
+    if grant.status == "pending":
+        lead = (grant.lead_institution or "").strip()
+        if not lead or lead == "Purdue University":
+            bits.append(", Purdue is lead institution")
+        else:
+            bits.append(f", Purdue is not lead institution (lead: {lead})")
     if description:
         bits.append(f", {description}")
     return "".join(bits)
@@ -1176,7 +1213,10 @@ def _format_personnel_line(grant: Grant) -> str:
     return "; ".join(_format_grant_person(p) for p in grant.personnel)
 
 
-def _format_grant_table(grant: Grant, idx: int, section_code: str) -> str:
+def _format_grant_table(
+    grant: Grant, idx: int, section_code: str,
+    bookmark_prefix: str = "",
+) -> str:
     """Render one grant as a 4-row RTF table matching the Purdue CV format.
 
     Layout (each row in its own `\\trowd`, borders on all sides):
@@ -1184,6 +1224,11 @@ def _format_grant_table(grant: Grant, idx: int, section_code: str) -> str:
       Row 2 (split):       "{start}-{end}."     |     "${amount}"  (right-aligned)
       Row 3 (full width):  "{role}[ (lead-institution annotation)][, {responsibility|activities}]"
       Row 4 (full width):  "{personnel}"   ("Sole PI" when grant.personnel is empty)
+
+    `bookmark_prefix` namespaces the bookmark for cross-ref targeting
+    without changing the displayed code. Used for Section V, A.2 pending
+    proposals where the displayed code is "A.2.N" but the bookmark must
+    be "V_A_2_N" to avoid colliding with Section III A.2 Degrees entries.
     """
     # --- Row 1: numbered head ---
     # Brace-scope the bold so the close-brace ends the bold AND emits a
@@ -1194,7 +1239,9 @@ def _format_grant_table(grant: Grant, idx: int, section_code: str) -> str:
     # code and lets `@id` refs into grants resolve to the same form as
     # the rest of the document.
     code = f"{section_code}.{idx}"
-    head_bits: list[str] = [f"{{\\b {_ref_anchor(code)}.}} "]
+    head_bits: list[str] = [
+        f"{{\\b {_ref_anchor(code, bookmark_prefix)}.}} ",
+    ]
     gn_field = _format_grant_number_field(grant)
     if gn_field:
         head_bits.append(f"{gn_field} ")
@@ -2193,14 +2240,20 @@ def render_patents_section(patents: list[Patent], out: IO[str]) -> None:
     out.write("\\pard\\par\n")
 
 
-def _ref_anchor(code: str) -> str:
+def _ref_anchor(code: str, bookmark_prefix: str = "") -> str:
     """Wrap a section code with RTF bookmark markup. The bookmark name uses
     underscores in place of dots (RTF bookmark-name spec). Paragraph
     renderers emit this around the leading `C.X.Y` text on each entry so
     that `@id` cross-references can hyperlink to the corresponding
     bookmark via the post-write substitution in `_finalize_ref_hyperlinks`.
+
+    `bookmark_prefix` (optional) is prepended to the code BEFORE bookmark
+    name generation, so the display text stays as `code` but the bookmark
+    target becomes "{prefix}_{code-with-underscores}". Used to namespace
+    Section V entries ("V." prefix → "V_A_2_3") so they don't collide
+    with the Section III A.2 Degrees bookmarks at the same numeric code.
     """
-    bookmark = code.replace(".", "_")
+    bookmark = (bookmark_prefix + code).replace(".", "_")
     return f"{{\\*\\bkmkstart {bookmark}}}{code}{{\\*\\bkmkend {bookmark}}}"
 
 
@@ -2480,6 +2533,7 @@ def write_rtf(
     courses_taught: Optional[list[CourseTaught]] = None,
     candidate_info: Optional[CandidateInformation] = None,
     self_eval: Optional[SelfEvaluation] = None,
+    pending_proposals: Optional[list[Grant]] = None,
     sections_filter: Optional[set[str]] = None,
 ) -> None:
     log.info("Generating RTF file: %s", path)
@@ -2769,10 +2823,16 @@ def write_rtf(
             render_service_section("National Service", national_service, out)
         if _emit("Other Service"):
             render_service_section("Other Service", other_service, out)
-        # Appendix — products under review. Emitted LAST so the C-section
-        # numbering is intact + the appendix reads as a tail block.
+        # Appendix — Section V. Two sub-sections, both emitted at the
+        # very end so the C-section numbering above is intact and the
+        # appendix reads as a contiguous tail block:
+        #   * Section V, A.1 — products under review
+        #   * Section V, A.2 — pending proposals (status: pending grants
+        #                       routed here from C.10 / C.11 at build time)
         if _emit("Under Review"):
             render_under_review_section(under_review, out)
+        if _emit("Pending Proposals"):
+            render_pending_proposals_section(pending_proposals or [], out)
         out.write("}")
     # Finalize: convert ref-link sentinels into RTF HYPERLINK fields, then
     # write to disk.
