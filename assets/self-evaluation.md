@@ -1,27 +1,10 @@
 # B. SELF-EVALUATION
 
-Plain-text statements for the Purdue tenure-packet B section. Each
-section is a markdown `## B.X …` heading followed by free-form prose;
-paragraphs are separated by blank lines. Anywhere in the prose you can
-use `@bibkey` / `@id` / `@C.X.Y` cross-references — they're resolved at
-build time the same way they are in YAML prose fields (grant
-descriptions, key-work impacts, etc.). Soft word limits per Purdue
-template are checked at build and warn if exceeded.
-
-Drop this entire intro block (everything above the first `## B.1`)
-once you've populated the sections — the parser ignores it but it's
-visible in your editor as authoring guidance.
-
 ## B.1 Summary of achievements
-
-*In 1,000 words or less, describe the most significant accomplishments
-in discovery, learning, and engagement (written in the third person).
-Where appropriate, cite references to relevant section(s) of this
-document.*
 
 **About the candidate**
 
-Dr. James C. Davis is a software engineering scholar whose research and teaching develops and promotes evidence-based methods, tools, and frameworks that improve the reliability and security of modern software systems. His research has been funded by $#TOTAL_EXTERNAL_FUNDING in external funding (sources include the US NSF, Cisco, Rolls Royce, Google, and OpenAI). He has received $#TOTAL_EXTERNAL_FUNDING_AS_PI as PI. He received the NSF CAREER award in 2026. He has received four best paper awards, four distinguished reviewer awards, and Purdue’s highest award for early-career teaching. His students have received honors including the Qualcomm Innovation Fellowship, the Chateaubriand Fellowship, the NSF GRFP, the DOD NDSEG, and the NSF CSGrad4US fellowship.
+Dr. James C. Davis is a **software engineering scholar** whose research and teaching develops and promotes evidence-based methods, tools, and frameworks that improve the **reliability and security of modern computing systems**. His research has been funded by $#TOTAL_EXTERNAL_FUNDING in external funding (sources include the US NSF, Cisco, Rolls Royce, Google, and OpenAI), of which $#TOTAL_EXTERNAL_FUNDING_AS_PI was as PI. He received the NSF CAREER award in 2026. He has received four best paper awards, four distinguished reviewer awards, and Purdue’s highest award for early-career teaching. His students have received honors including the Qualcomm Innovation Fellowship, the Chateaubriand Fellowship, the NSF GRFP, the DOD NDSEG, and the NSF CSGrad4US fellowship.
 
 **Accomplishments in discovery**
 
@@ -49,24 +32,20 @@ Davis's engagement activities extend his research into professional leadership, 
 
 At Purdue, Davis has contributed to the department through curriculum, accreditation, faculty hiring, and research-community building. He served as ABET self-study lead for the B.S. in Computer Engineering, served on faculty search committees, hosted a Purdue Engineering Distinguished Lecture Series speaker, organized a CAREER writing group, and launched a Software Systems Reading Group with participation from multiple research groups. He has given talks on the effective use of generative AI in engineering, research, and day-to-day work (cf. @SOFTWARE-DocAble, @SOFTWARE-PurdueTenureTemplateGenerator).
 
-These activities reflect a consistent pattern: Davis builds structures that help Purdue University and his discipline strengthen software engineering research, education, mentoring, and professional practice.
-
 ## B.2 Impact of accomplishments
 
-*In 250 words or less, describe impacts of the above noted achievements
-to the discipline(s) and society (written in the third person). Where
-appropriate, cite references to relevant section(s) of the document.*
+Dr. Davis’s accomplishments have had substantial impact on software engineering research, industrial practice, software infrastructure, and student development. His work has helped define two research areas: engineering for regular expressions and engineering for pre-trained deep neural network models. In regular-expression engineering, his empirical and systems research established ReDoS as a widespread practical security problem (which his work has also helped substantially resolve), produced defenses adopted or reflected in major runtimes including Ruby, C#/.NET, and JavaScript/V8 (which collectively protect millions of software applications worldwide), and contributed tools and datasets used by researchers across software engineering, security, and programming languages. In model reuse, his work reframed pre-trained models as reusable software components, producing datasets, taxonomies, failure analyses, and tools that have shaped follow-on research and informed industry understanding of AI software supply chains.  
 
-(Replace this italic placeholder with the impact statement.)
+Dr. Davis's software-infrastructure security research has produced direct societal and industrial benefits. His group’s analyses have disclosed hundreds of defects and vulnerabilities in widely deployed systems and services (@C.5), including open-source infrastructure, real-time operating systems, and major software ecosystems. This work has influenced engineering practice at organizations including AWS, Microsoft, GitHub, Socket, and Google, and has informed practitioner and policy discussions around software signing, provenance, and secure supply chains.  
 
-TESTING TESTING
+Davis’s impact also extends through education, mentoring, and institutional capacity-building. At Purdue, he helped build a software engineering curriculum, concentration, and graduate program; mentored over 175 undergraduate researchers; helped undergraduate and graduate students obtain fellowships, internships, and awards; and strengthened the professional community through program-committee service, mentoring workshops, invited talks, practitioner writing, and public research communication. These accomplishments show a sustained pattern: Davis turns empirical insight into reusable knowledge, practical tools, stronger students, and more secure software systems.
 
 ## B.3 Vision
 
-*In 500 words or less, provide a statement of vision of future
-activities and their potential impact (written in the third person).*
-
-(Replace this italic placeholder with the vision statement.)
+Dr. Davis's career goal is to be a global leader in enabling the re-use of software and AI models to increase engineering productivity.
+This vision is threaded throughout his work to date, *e.g.*, on software supply chain security, and his recent CAREER award (CAREER-@nsf-career-ptm-2026) and SaTC-Medium award (@nsf-aigis-2026) will continue this vision, with a focus on pre-trained AI model (PTM) reuse.
+Davis will expand his educational impact beyond Purdue, authoring textbooks and supplemental materials on the use cases and failure modes for the reuse of many kinds of software.
+In his engagement work, Davis anticipates continued and increasing service roles at the top venues in software engineering and cybersecurity, beginning with his role as a Vice Chair for USENIX Security 2027, and as co-editor of a column in IEEE Computer on AI in Practice.
 
 ## B.4 Candidate comments on any external events or issues that have impacted their productivity
 
