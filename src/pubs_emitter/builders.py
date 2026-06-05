@@ -598,12 +598,14 @@ def build_undergrad_products(
             is_under_review=True,
         ))
 
-    # Sort key: year DESC, then published-before-under-review (False sorts
-    # before True), then ref ASC. The middle component matters when a
-    # published paper and an under-review submission share a year — the
-    # reviewer's eye lands on the in-flight item last, after the
-    # already-out-the-door work for that year.
-    products.sort(key=lambda p: (-p.year, p.is_under_review, p.ref))
+    # Sort key: published-before-under-review (False sorts before True),
+    # then year ASC, then ref ASC. Under-review entries sit at the BOTTOM
+    # of the whole C.16.2.3 list — regardless of their submission year —
+    # because the reviewer's eye should land on the candidate's out-the-
+    # door work first, with in-flight submissions as a trailing appendix.
+    # Within each group, oldest-first matches every other dated section
+    # in the packet (C.1 / C.2 / C.4 / C.5 / C.10 / C.11 / C.14 / C.17).
+    products.sort(key=lambda p: (p.is_under_review, p.year, p.ref))
     return products
 
 

@@ -1399,7 +1399,11 @@ class TestRenderStudentAwardsSection:
         assert "C_16_2_4_1}.\\tab B" in out
         assert "C_16_2_4_2}.\\tab A" in out
 
-    def test_within_tier_year_desc(self) -> None:
+    def test_within_tier_year_asc(self) -> None:
+        """Within a tier, entries emit OLDEST-FIRST (year ascending) to
+        match the chronological convention used by every other dated
+        section. Was previously newest-first — flipped 2026-06-05 per
+        the chronological-order class regression."""
         buf = io.StringIO()
         render_student_awards_section(
             "Undergraduate Student Awards",
@@ -1414,11 +1418,11 @@ class TestRenderStudentAwardsSection:
         new_pos = out.index("New, Test Award")
         mid_pos = out.index("Mid, Test Award")
         old_pos = out.index("Old, Test Award")
-        assert new_pos < mid_pos < old_pos
+        assert old_pos < mid_pos < new_pos
         # Numbering reflects the sorted order, not the input order.
-        assert "C_16_2_4_1}.\\tab New" in out
+        assert "C_16_2_4_1}.\\tab Old" in out
         assert "C_16_2_4_2}.\\tab Mid" in out
-        assert "C_16_2_4_3}.\\tab Old" in out
+        assert "C_16_2_4_3}.\\tab New" in out
 
     def test_year_in_parens(self) -> None:
         buf = io.StringIO()

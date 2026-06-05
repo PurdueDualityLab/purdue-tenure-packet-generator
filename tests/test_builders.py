@@ -1037,9 +1037,13 @@ class TestBuildUndergradProductsUnderReview:
         )
         assert products == []
 
-    def test_under_review_sorts_by_submission_year(self) -> None:
-        """submission_year mixes into the `-year` sort so newer submissions
-        appear ahead of older ones, just like published papers."""
+    def test_under_review_sorts_by_submission_year_ascending(self) -> None:
+        """submission_year flows into the OLDEST-FIRST sort so older
+        submissions appear ahead of newer ones, matching the
+        chronological convention used by every other dated section
+        in the packet (C.1 / C.2 / C.4 / C.5 / C.10 / C.11 / C.14 /
+        C.17). Within the under-review group the same year-ASC rule
+        applies."""
         from pubs_emitter.builders import build_undergrad_products
         products = build_undergrad_products(
             self._conn(),
@@ -1052,9 +1056,9 @@ class TestBuildUndergradProductsUnderReview:
                 self._ur(submission_year=2025),
             ],
         )
-        # ref is built from enumeration index, so all three carry the
-        # same A.1.N pattern; the sort key is year DESC.
-        assert [p.year for p in products] == [2026, 2025, 2024]
+        # All three are under-review (same is_under_review group) so the
+        # sort reduces to year ASC.
+        assert [p.year for p in products] == [2024, 2025, 2026]
 
     def test_under_review_lead_marker(self) -> None:
         """Lead-is-undergrad fires only when the FIRST author is U-typed."""

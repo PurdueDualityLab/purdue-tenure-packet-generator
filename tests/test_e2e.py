@@ -8,6 +8,7 @@ section the YAML / bib drives lands in the generated RTF.
 from __future__ import annotations
 
 import pathlib
+import typing
 
 import pytest
 import yaml
@@ -917,6 +918,139 @@ class TestE2eNumericalOrdering:
         assert not problems, (
             f"{len(problems)} cross-section ordering violation(s):\n  - "
             + "\n  - ".join(problems)
+        )
+
+
+class TestE2eChronologicalEmissionOrder:
+    """Class regression: every dated section in the packet emits entries
+    in chronological (oldest-first) order. Sort-direction bugs are a
+    recurring class — caught visually only when the user happens to look
+    at the right section. This test makes the invariant structural.
+
+    Detection: parse each entry's body text in emit order, extract the
+    last 4-digit year (citations, awards, grants — every dated row
+    surfaces a YYYY in its tail), and assert the FIRST entry's year is
+    ≤ the LAST entry's year for each section in EXPECTED_OLDEST_FIRST.
+
+    The first-≤-last check is robust to subgroup structure (tier groups
+    in C.16.2.4 / C.16.3.3; subcategory groups in C.5; career-phase
+    boundaries in C.1 / C.2 / C.4 / C.5): as long as every subgroup is
+    independently chronological AND subgroups walk youngest-to-oldest
+    across the section, first ≤ last holds. A whole-section reversal
+    is the failure mode this test surfaces.
+
+    To add a new section: extend EXPECTED_OLDEST_FIRST with its
+    bookmark-prefix form (`C_X_Y` → underscore-separated, dropping
+    trailing `_N` so the parent code matches). Sections that DON'T emit
+    chronological order (none today) would be opt-out — document why in
+    a sibling EXEMPT set if one ever lands.
+    """
+
+    # Each section maps to (display name, allowed_subgroup_boundaries).
+    # The boundaries count is the maximum number of year-strict-decreases
+    # allowed inside the section's emit sequence; one decrease is permitted
+    # at every subgroup boundary the renderer inserts (career-phase
+    # dividers, subcategory subheadings, tier subheadings, published →
+    # under-review). Higher than that count = whole-section sort-direction
+    # bug.
+    EXPECTED_OLDEST_FIRST: typing.ClassVar[dict[str, tuple[str, int]]] = {
+        "C_1":     ("Key scholarly publications",        1),
+        "C_2":     ("Journals",                          1),
+        "C_4":     ("Conferences",                       1),
+        "C_5":     ("Other publications and products",   5),
+        "C_10":    ("Grants as PI",                      0),
+        "C_11":    ("Grants as Co-PI",                   0),
+        "C_16_2_3": ("Undergraduate research products",   1),
+        "C_16_2_4": ("Undergraduate student awards",      2),
+        "C_16_3_3": ("Graduate student awards",           2),
+    }
+
+    _BOOKMARK_START_RE = __import__("re").compile(
+        r"\\\*\\bkmkstart ([A-Z][\d_]+)"
+    )
+    _YEAR_RE = __import__("re").compile(r"\b(19|20)\d{2}\b")
+
+    def _entries_for_parent(
+        self, rtf: str, parent_prefix: str,
+    ) -> list[tuple[str, str]]:
+        """Walk every `\\*\\bkmkstart NAME` whose NAME is `parent_prefix_N`
+        (one extra `_<int>` suffix); for each, return (name, body_text)
+        where body_text is the RTF between THIS bookmark and the NEXT
+        bookmark anywhere — sufficient to capture the entry's year text.
+        """
+        bookmarks: list[tuple[int, str]] = []
+        for m in self._BOOKMARK_START_RE.finditer(rtf):
+            bookmarks.append((m.start(), m.group(1)))
+
+        entries: list[tuple[str, str]] = []
+        for i, (pos, name) in enumerate(bookmarks):
+            # Direct child of parent_prefix? Strip the prefix; the
+            # remainder should be `_<digits>` only.
+            if not name.startswith(parent_prefix + "_"):
+                continue
+            tail = name[len(parent_prefix) + 1:]
+            if not tail.isdigit():
+                continue
+            # Body: from end of this bookmark to start of next bookmark
+            # anywhere. The next-anywhere choice keeps the slice short
+            # and still captures the rendered text up to the next entry.
+            end_pos = bookmarks[i + 1][0] if i + 1 < len(bookmarks) else len(rtf)
+            entries.append((name, rtf[pos:end_pos]))
+        return entries
+
+    def _extract_year(self, body: str) -> typing.Optional[int]:
+        """Last 4-digit year (19xx or 20xx) appearing in the body.
+        Citations and awards surface the year in the entry tail
+        (`..., 2024.` or `... (2024)`); grants surface a start-end range
+        (`..., 2022-2025.`) and the LAST-year heuristic picks the end
+        year. Falling back to None when no year is parseable lets the
+        test skip empty / synthetic entries without exploding."""
+        years = self._YEAR_RE.findall(body)
+        if not years:
+            return None
+        # findall returns the CAPTURED group ("19" or "20"); rerun to
+        # get the full match.
+        full = [m.group(0) for m in self._YEAR_RE.finditer(body)]
+        return int(full[-1])
+
+    def test_dated_sections_emit_oldest_first(
+        self, e2e_full_outputs: str,
+    ) -> None:
+        rtf = e2e_full_outputs
+        violations: list[str] = []
+        for parent_prefix, (section_name, max_decreases) in (
+            self.EXPECTED_OLDEST_FIRST.items()
+        ):
+            entries = self._entries_for_parent(rtf, parent_prefix)
+            if len(entries) < 2:
+                continue
+            year_pairs = [
+                (name, self._extract_year(body)) for name, body in entries
+            ]
+            year_pairs = [(n, y) for n, y in year_pairs if y is not None]
+            if len(year_pairs) < 2:
+                continue
+            years = [y for _, y in year_pairs]
+            decreases = [
+                (year_pairs[i][0], years[i - 1], years[i])
+                for i in range(1, len(years))
+                if years[i] < years[i - 1]
+            ]
+            parent_dotted = parent_prefix.replace("_", ".")
+            if len(decreases) > max_decreases:
+                samples = "; ".join(
+                    f"{n.replace('_', '.')} drops {prev}→{curr}"
+                    for n, prev, curr in decreases[:5]
+                )
+                violations.append(
+                    f"{parent_dotted} ({section_name}): "
+                    f"{len(decreases)} year-decrease(s) in emit order; "
+                    f"max allowed is {max_decreases} (one per known subgroup "
+                    f"boundary). Samples: {samples}"
+                )
+        assert not violations, (
+            f"{len(violations)} chronological-direction violation(s):\n  - "
+            + "\n  - ".join(violations)
         )
 
 

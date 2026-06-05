@@ -1885,7 +1885,12 @@ def index_student_awards(
     out: list[tuple[str, StudentAward]] = []
     idx = 0
     for tier in sorted(by_tier.keys(), key=_tier_key):
-        for a in sorted(by_tier[tier], key=lambda x: -x.year):
+        # Year ASCENDING (oldest first) — matches the chronological-
+        # emission convention used by every other dated section in the
+        # packet (C.1 / C.2 / C.4 / C.5 / C.10 / C.11 / C.14 / C.15 /
+        # C.16.2.3 / C.17). Newest-first read as "career going
+        # backwards" to a tenure-packet reader.
+        for a in sorted(by_tier[tier], key=lambda x: x.year):
             idx += 1
             out.append((f"{code}.{idx}", a))
     return out
@@ -1906,9 +1911,11 @@ def render_student_awards_section(
 
     Tier render order follows `_STUDENT_AWARDS_TIER_ORDER` (National first),
     then alphabetical for any non-canonical tiers. Within a tier, entries
-    sort by year DESCENDING (newest first). The numbering counter does NOT
-    reset between tiers — it counts entries across the whole section so each
-    `{code}.N` is a unique back-pointer target.
+    sort by year ASCENDING (oldest first) — matching the chronological
+    convention used by every other dated section in the packet. The
+    numbering counter does NOT reset between tiers — it counts entries
+    across the whole section so each `{code}.N` is a unique back-pointer
+    target.
 
     Empty filtered list → emit nothing (no orphan heading).
     """
