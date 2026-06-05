@@ -3009,9 +3009,9 @@ _C_16_1_OVERVIEW_PROSE = [
     "VIP and senior design, other undergraduate research pathways, "
     "undergraduate research products and authorship, and "
     "undergraduate awards and career development. Section C.16.3 "
-    "describes graduate mentoring, including thesis supervision, "
-    "graduate research leadership and publications, awards and "
-    "placements, and professional formation in the lab.",
+    "describes graduate mentoring, including thesis advising and "
+    "research supervision, and graduate student awards and "
+    "fellowships.",
 ]
 
 _C_16_2_1_VIP_PROSE = [
