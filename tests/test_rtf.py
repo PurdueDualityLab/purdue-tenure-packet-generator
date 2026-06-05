@@ -1389,10 +1389,11 @@ class TestRenderStudentAwardsSection:
         )
         out = buf.getvalue()
         # Subheading order: National block precedes Institutional block.
-        # Use `\b0` close-tag to disambiguate the Institutional SUBHEADING
-        # line from the body-text mention earlier.
-        national_pos = out.index("National and International Awards\\b0")
-        institutional_pos = out.index("Institutional Awards\\b0")
+        # Use `\i0` close-tag to disambiguate the Institutional SUBHEADING
+        # line (italic inline-heading per `_emit_inline_heading`) from the
+        # body-text mention in the earlier numbered entry.
+        national_pos = out.index("National and International Awards\\i0")
+        institutional_pos = out.index("Institutional Awards\\i0")
         assert national_pos < institutional_pos
         # Counter is section-wide: B (in National tier) gets .1, A gets .2.
         assert "C_16_2_4_1}.\\tab B" in out
@@ -1764,6 +1765,31 @@ class TestRenderUndergradProductsSection:
         buf = io.StringIO()
         render_undergrad_products_section([], buf)
         assert buf.getvalue() == ""
+
+    def test_under_review_entry_gets_disambiguator(self) -> None:
+        """A Section V A.1 under-review entry surfaces here with a
+        '(Under review.)' suffix so the bare 'A.1.N' code reads
+        unambiguously (Section III also has an A.1 heading — no numbered
+        sub-entries, but the disambiguator makes the section-shift
+        legible to a tenure-packet reader)."""
+        buf = io.StringIO()
+        render_undergrad_products_section(
+            [self._p(ref="A.1.7", n_coauthors=1, is_under_review=True)], buf,
+        )
+        out = buf.getvalue()
+        from pubs_emitter.rtf import _code_link
+        assert (
+            f"Paper {_code_link('A.1.7')} has 1 undergraduate co-author."
+            in out
+        )
+        assert "(Under review.)" in out
+
+    def test_publication_entry_no_disambiguator(self) -> None:
+        """Default `is_under_review=False` does NOT inject the
+        disambiguator — published-paper entries read the same as before."""
+        buf = io.StringIO()
+        render_undergrad_products_section([self._p()], buf)
+        assert "(Under review.)" not in buf.getvalue()
 
 
 class TestRenderEntrepreneurialActivitiesSection:
@@ -2197,12 +2223,104 @@ class TestFinalizeRefHyperlinksPipeForm:
 # ----- Career-phase dividers (C.1 / C.2 / C.3 / C.4 / C.5) ----------------
 
 
+class TestEmitInlineHeading:
+    """Pins the shared inline-heading helper that backs C.5 subcategory
+    subheadings, C.16.2.4 / C.16.3.3 student-awards tier labels, and the
+    career-phase divider. The italic-not-bold styling decision is load-
+    bearing — bold reads as a section heading and confuses the
+    hierarchy.
+
+    DRY guarantee: each call site routes through `_emit_inline_heading`
+    rather than hand-rolling the paragraph shape. Verified here by
+    confirming the helper's output appears in the renderers of all
+    three sites.
+    """
+
+    def test_italic_not_bold(self) -> None:
+        from pubs_emitter.rtf import _emit_inline_heading
+        import io
+        buf = io.StringIO()
+        _emit_inline_heading(buf, "Sample Subheading", indent=720)
+        out = buf.getvalue()
+        # `\i` is the italic-open control word; `\i0` closes. The text
+        # itself sits between, prefixed by other control words (\fs26
+        # etc.) before the space separator.
+        assert "\\i\\fs26" in out
+        assert "Sample Subheading\\i0" in out
+        # No bold control word — the whole point of factoring this out.
+        assert "\\b Sample Subheading" not in out
+        assert "\\b\\fs26" not in out
+
+    def test_indent_applied(self) -> None:
+        from pubs_emitter.rtf import _emit_inline_heading
+        import io
+        buf = io.StringIO()
+        _emit_inline_heading(buf, "x", indent=720)
+        assert "\\li720" in buf.getvalue()
+
+    def test_border_variant_has_top_and_bottom_borders(self) -> None:
+        from pubs_emitter.rtf import _emit_inline_heading
+        import io
+        buf = io.StringIO()
+        _emit_inline_heading(buf, "Phase Label", indent=720, border=True)
+        out = buf.getvalue()
+        assert "\\brdrt\\brdrs" in out
+        assert "\\brdrb\\brdrs" in out
+        assert "\\i Phase Label\\i0" in out
+
+    def test_default_variant_no_borders(self) -> None:
+        from pubs_emitter.rtf import _emit_inline_heading
+        import io
+        buf = io.StringIO()
+        _emit_inline_heading(buf, "Subcat", indent=240)
+        out = buf.getvalue()
+        assert "\\brdrt" not in out
+        assert "\\brdrb" not in out
+
+    def test_student_awards_tier_label_routes_through_helper(self) -> None:
+        """C.16.2.4 tier label uses the helper — verified by italic
+        styling appearing on the tier-label line."""
+        buf = io.StringIO()
+        from pubs_emitter.types import StudentAward
+        render_student_awards_section(
+            "Undergraduate Student Awards",
+            [StudentAward(
+                tier="National and International Awards",
+                year=2024, year_str="2024",
+                level="U",
+                recipient="Test U", award="Test Award",
+            )],
+            buf,
+        )
+        out = buf.getvalue()
+        # Match the helper's emit shape: \i\fs26... text \i0\fs24.
+        assert "National and International Awards\\i0" in out
+        assert "\\i\\fs26\\sb120\\sa60 National and International Awards" in out
+        assert "\\b National and International Awards" not in out
+
+    def test_career_phase_divider_routes_through_helper(self) -> None:
+        """Career-phase divider uses border=True — verified by italic
+        + top/bottom borders on the phase label."""
+        from pubs_emitter.rtf import _maybe_emit_career_phase_divider
+        import io
+        buf = io.StringIO()
+        _maybe_emit_career_phase_divider(buf, 2020, current_phase="", indent=720)
+        out = buf.getvalue()
+        # Border variant emits: ... \i Phase Label\i0\par.
+        assert "\\i PhD studies at Virginia Tech\\i0" in out
+        assert "\\brdrt\\brdrs" in out
+        assert "\\brdrb\\brdrs" in out
+
+
 class TestCareerPhaseDivider:
     """The publication-section renderers (C.1 / C.2 / C.3 / C.4 / C.5)
-    interleave a bold-labeled divider between "PhD studies at Virginia
-    Tech" (year ≤ 2020) and "Assistant Professor at Purdue" (year ≥ 2021)
-    regions. Visual cue ONLY — section numbering is unaffected by the
-    divider (numbering continues through the boundary)."""
+    interleave an italic-labeled, border-delimited divider between "PhD
+    studies at Virginia Tech" (year ≤ 2020) and "Assistant Professor at
+    Purdue" (year ≥ 2021) regions. Visual cue ONLY — section numbering
+    is unaffected by the divider (numbering continues through the
+    boundary). Routes through the shared `_emit_inline_heading`
+    helper with `border=True` so the italic-not-bold styling decision
+    lives in one place across the renderer."""
 
     def test_helper_fires_on_first_entry(self) -> None:
         from pubs_emitter.rtf import _maybe_emit_career_phase_divider
@@ -2623,13 +2741,17 @@ class TestLevelAwareBodyIndent:
     """
 
     def test_level_1_body_indent_includes_label_offset(self) -> None:
-        """Level-1 body indent = label_position (360) + label-fit gap
-        (720) = 1080. Body content at level 1 sits at column 1080 in
-        the output."""
-        from pubs_emitter.rtf import _body_indent_for_code
-        assert _body_indent_for_code("C.6") == 1080
-        assert _body_indent_for_code("A.3") == 1080
-        assert _body_indent_for_code("B.1") == 1080
+        """Level-1 body indent = label_position (1 step) + label-fit
+        gap (720). With step=240, body indent at level 1 = 240 + 720 =
+        960."""
+        from pubs_emitter.rtf import (
+            _HEADING_INDENT_PER_LEVEL, _body_indent_for_code,
+        )
+        step = _HEADING_INDENT_PER_LEVEL
+        expected = step + 720
+        assert _body_indent_for_code("C.6") == expected
+        assert _body_indent_for_code("A.3") == expected
+        assert _body_indent_for_code("B.1") == expected
 
     def test_each_level_adds_one_step(self) -> None:
         """Each additional level adds exactly `_HEADING_INDENT_PER_LEVEL`
@@ -2692,20 +2814,23 @@ class TestLevelAwareBodyIndent:
         (≤ 7 visible chars) stay at the level base; long codes widen
         only when the label demands more room."""
         from pubs_emitter.rtf import _hanging_indent_for_codes
-        # Level 1 short labels — base = 1080 (= label_pos 360 + 720 gap).
-        assert _hanging_indent_for_codes(["C.6.1", "C.6.2"]) == 1080
+        from pubs_emitter.rtf import _body_indent_for_code
+        # Level 1 short labels — equals the level-1 body indent.
+        assert (
+            _hanging_indent_for_codes(["C.6.1", "C.6.2"])
+            == _body_indent_for_code("C.6")
+        )
         # Level 3 + 10-char codes — wider than the base because the
         # label needs more horizontal room (the label-fit widening fires).
-        # Base for level 3 = 1800; "C.16.2.3.1" + period = 11 chars, so
-        # label fit widens the indent.
-        assert _hanging_indent_for_codes(
-            ["C.16.2.3.1", "C.16.2.3.2"]
-        ) >= 1800
+        assert (
+            _hanging_indent_for_codes(["C.16.2.3.1", "C.16.2.3.2"])
+            >= _body_indent_for_code("C.16.2.3")
+        )
         # Level 1 long labels (8+ visible chars) may widen past the base.
         long_label = _hanging_indent_for_codes(
             [f"C.26.{i}" for i in range(1, 100)]
         )
-        assert long_label >= 1080
+        assert long_label >= _body_indent_for_code("C.26")
 
     def test_placeholder_body_uses_level_aware_indent(self) -> None:
         """The `_emit_placeholder_subsection` body paragraph matches

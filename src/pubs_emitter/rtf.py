@@ -251,6 +251,58 @@ def render_key_work_citation(
 _CAREER_BOUNDARY_YEAR = 2020  # ≤ boundary → PhD; > boundary → AP
 
 
+def _emit_inline_heading(
+    out: IO[str],
+    text: str,
+    indent: int,
+    *,
+    border: bool = False,
+    font_size: int = 26,
+) -> None:
+    """Emit an inline heading — an italic sub-label that visually
+    sub-divides a numbered list within a section. Single source of truth
+    for the "label-that's-not-a-section-heading-but-also-not-a-list-entry"
+    paragraph shape across the renderer.
+
+    Three call sites:
+      * C.5 subcategory subheading
+        ("Magazine" / "Technical Reports" / "Direct computing industry
+        impacts") — between subgroups of `C.5.N` entries.
+      * C.16.2.4 / C.16.3.3 student-awards tier label
+        ("National and International Awards" / "University-Level Awards")
+        — between tier subgroups of `{code}.N` entries.
+      * Career-phase divider
+        ("PhD studies at Virginia Tech" / "Assistant Professor at Purdue
+        University") — between year-bucketed runs of citations within
+        C.1-C.5. `border=True` here so the marker reads as a fully
+        enclosed region boundary.
+
+    Italic (not bold) styling is load-bearing: a bold inline heading
+    reads as a section heading (same visual class as "C.16.2.4
+    Undergraduate Awards"), confusing the tenure-packet reader about
+    what's hierarchically a heading vs sub-label. Italic + larger-than-
+    body font (fs26 vs fs24) gives a clear "subheading" cue without
+    competing with the section-heading band.
+
+    `indent` should match the section's entry LABEL column (i.e.,
+    `_label_position_for_code(f"{section_code}.1")`) so the inline
+    heading sits at the same column the "C.X.Y.N." prefixes start at —
+    leading the sub-list visually rather than floating to the left.
+    """
+    if border:
+        out.write(
+            f"\\pard\\li{indent}\\sb120\\sa120"
+            f"\\brdrt\\brdrs\\brdrw15\\brsp40"
+            f"\\brdrb\\brdrs\\brdrw15"
+            f" \\i {escape_rtf(text)}\\i0\\par\n"
+        )
+    else:
+        out.write(
+            f"\\pard\\li{indent}\\i\\fs{font_size}\\sb120\\sa60 "
+            f"{escape_rtf(text)}\\i0\\fs24\\par\n"
+        )
+
+
 def _career_phase_for_year(year: int) -> str:
     """('phd' | 'ap') based on the publication year. The sentinel year
     9999 ("In Press" / unparseable) is bucketed as 'ap' so under-review
@@ -287,18 +339,13 @@ def _maybe_emit_career_phase_divider(
     # earlier single-top-border form left the label visually attached to
     # the citation directly below it (which read as "the rule belongs to
     # this citation"); both rules anchor the label to the boundary.
-    # `\sb120\sa120` keeps breathing room above + below. `\li{indent}`
-    # matches the hanging-indent column of the section's entries so the
-    # label aligns with body text, not the C.X.N gutter.
     # NO em-dash glyphs around the label — `\ansicpg1252` documents
     # mangle literal U+2014 ("— — —" → "â€"") when Word's RTF reader
-    # encounters raw UTF-8 bytes. Bold label alone is the marker.
-    out.write(
-        f"\\pard\\li{indent}\\sb120\\sa120"
-        f"\\brdrt\\brdrs\\brdrw15\\brsp40"
-        f"\\brdrb\\brdrs\\brdrw15"
-        f" \\b {escape_rtf(label)}\\b0\\par\n"
-    )
+    # encounters raw UTF-8 bytes. Italic label inside a top + bottom
+    # border alone is the marker. Routes through the shared inline-
+    # heading helper so the "italic, not bold" + indent decision lives
+    # in one place across all three inline-heading sites.
+    _emit_inline_heading(out, label, indent, border=True)
     return phase
 
 
@@ -322,12 +369,23 @@ def _emit_author_marker_legend(out: IO[str]) -> None:
     markup `format_author` produces so the legend visually matches the
     actual citation form. Italic notation block is set apart from the
     surrounding numbered list shape.
+
+    Layout: "Notation:" sits at C.1's body indent (one level right of
+    the C.1 heading); bullets are indented ONE FURTHER step right
+    (under "Notation:") with the bullet glyph in a small hanging
+    gutter. Previously the bullets emitted with `\\fi-360` outdent at
+    the same `li` as "Notation:", which dropped the bullet glyph LEFT
+    of "Notation:" — visually backwards.
     """
-    bullet_li = 1080
-    bullet_fi = -360
-    bullet_tx = 1080
+    notation_li = _body_indent_for_code(SECTION_CODES["Key Works"])
+    # Bullet glyph one step right of "Notation:", text one further step.
+    # Together the glyph + text both visibly nest under the "Notation:"
+    # word so the reader's eye reads the list as belonging to it.
+    bullet_li = notation_li + 2 * _HEADING_INDENT_PER_LEVEL
+    bullet_fi = -_HEADING_INDENT_PER_LEVEL  # small gutter for the glyph
+    bullet_tx = bullet_li
     out.write(
-        f"\\pard\\li{bullet_li}\\i Notation:\\i0\\par\n"
+        f"\\pard\\li{notation_li}\\i Notation:\\i0\\par\n"
     )
 
     def _bullet(rtf_body: str) -> None:
@@ -933,9 +991,8 @@ def render_other_pubs_section(
     for idx, cit in enumerate(ordered, 1):
         subcat = _C5_SUBCATEGORY_BY_RANK.get(cit.rank, "Other")
         if subcat != prev_subcat:
-            out.write(
-                f"\\pard\\b\\fs26\\sb120\\sa60 {escape_rtf(subcat)}"
-                f"\\b0\\fs24\\par\n"
+            _emit_inline_heading(
+                out, subcat, _label_position_for_code(f"{code}.1"),
             )
             prev_subcat = subcat
             phase = ""  # reset; first entry of new subcategory re-fires
@@ -1869,9 +1926,8 @@ def render_student_awards_section(
         if a.tier != prev_tier:
             if prev_tier is not None:
                 out.write("\\pard\\par\n")
-            out.write(
-                f"\\pard\\b\\fs26\\sb120\\sa60 {escape_rtf(a.tier)}"
-                f"\\b0\\fs24\\par\n"
+            _emit_inline_heading(
+                out, a.tier, _label_position_for_code(f"{code}.1"),
             )
             prev_tier = a.tier
         body = f"{escape_rtf(a.recipient)}, {escape_rtf(a.award)}"
@@ -1923,7 +1979,10 @@ def render_undergrad_products_section(
             " This paper was led by an undergraduate."
             if p.lead_is_undergrad else ""
         )
-        body = sentence_a + sentence_b
+        # Disambiguator for Section V A.1 entries (bare "A.1.N" code would
+        # otherwise read like a Section III A.1 reference).
+        sentence_c = " (Under review.)" if p.is_under_review else ""
+        body = sentence_a + sentence_b + sentence_c
         _emit_list_item(out, f"{code}.{idx}", body, indent=indent)
 
 
@@ -2510,7 +2569,7 @@ _HEADING_FONT_SIZE_BY_LEVEL: dict[int, int] = {
     3: 24,   # C.16.2.1, C.16.2.3 — second-tier sub-section
     4: 22,   # C.16.2.3.1 etc. (rare; reserved)
 }
-_HEADING_INDENT_PER_LEVEL: int = 360  # twips per level (≈0.25")
+_HEADING_INDENT_PER_LEVEL: int = 240  # twips per level (≈⅙″ ≈ 2-3 spaces)
 
 
 def _heading_level(code: str) -> int:

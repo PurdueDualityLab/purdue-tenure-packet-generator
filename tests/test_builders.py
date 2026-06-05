@@ -967,3 +967,107 @@ class TestLoadSelfEvaluation:
             load_self_evaluation(str(path))
         # No warning fired for the b1 section (other sections may have).
         assert "b1.upper()" not in caplog.text
+
+
+class TestBuildUndergradProductsUnderReview:
+    """Pins the Section V A.1 → C.16.2.3 surfacing path.
+
+    Two flows feed C.16.2.3: (1) emitted bib citations with a U-typed
+    author (existing behavior), (2) under-review entries with a U-typed
+    author (added here). The under-review scan uses each entry's
+    `raw_authors` tuple (already pre-split at YAML-build time) and its
+    `submission_year` as the sort key — mixing naturally with published
+    papers under `-year` ordering. The renderer tags these rows with
+    `is_under_review=True` so the row reads "Paper A.1.N has 1
+    undergraduate co-author. (Under review.)" — the disambiguator is
+    load-bearing because the bare 'A.1.N' code would otherwise read like
+    a Section III A.1 reference.
+    """
+
+    def _conn(self):
+        import sqlite3
+        c = sqlite3.connect(":memory:")
+        c.execute("CREATE TABLE students (name TEXT, type TEXT)")
+        c.execute("INSERT INTO students VALUES ('Oreofe Solarin', 'U')")
+        c.commit()
+        return c
+
+    def _ur(self, **overrides):
+        from pubs_emitter.types import UnderReview
+        base = dict(
+            due_date="9999-99-99",
+            title="A Paper Under Review",
+            authors_rtf="Solarin, O. and Davis, J.C.",
+            venue="Test Venue",
+            pages="12 pages",
+            raw_authors=("Oreofe Solarin", "James C. Davis"),
+            id="",
+            submission_year=2026,
+        )
+        base.update(overrides)
+        return UnderReview(**base)
+
+    def test_under_review_with_undergrad_surfaces(self) -> None:
+        from pubs_emitter.builders import build_undergrad_products
+        products = build_undergrad_products(
+            self._conn(),
+            publications={},
+            paper_index={},
+            bib_entries=[],
+            under_review=[self._ur()],
+        )
+        assert len(products) == 1
+        p = products[0]
+        assert p.ref == "A.1.1"
+        assert p.n_coauthors == 1
+        assert p.lead_is_undergrad is True  # Solarin is first author
+        assert p.is_under_review is True
+        assert p.year == 2026  # submission_year flows to sort key
+
+    def test_under_review_with_no_undergrad_skipped(self) -> None:
+        """An under-review entry whose author list has no U-typed students
+        does not contribute a C.16.2.3 row."""
+        from pubs_emitter.builders import build_undergrad_products
+        products = build_undergrad_products(
+            self._conn(),
+            publications={},
+            paper_index={},
+            bib_entries=[],
+            under_review=[self._ur(raw_authors=("James C. Davis",))],
+        )
+        assert products == []
+
+    def test_under_review_sorts_by_submission_year(self) -> None:
+        """submission_year mixes into the `-year` sort so newer submissions
+        appear ahead of older ones, just like published papers."""
+        from pubs_emitter.builders import build_undergrad_products
+        products = build_undergrad_products(
+            self._conn(),
+            publications={},
+            paper_index={},
+            bib_entries=[],
+            under_review=[
+                self._ur(submission_year=2024),
+                self._ur(submission_year=2026),
+                self._ur(submission_year=2025),
+            ],
+        )
+        # ref is built from enumeration index, so all three carry the
+        # same A.1.N pattern; the sort key is year DESC.
+        assert [p.year for p in products] == [2026, 2025, 2024]
+
+    def test_under_review_lead_marker(self) -> None:
+        """Lead-is-undergrad fires only when the FIRST author is U-typed."""
+        from pubs_emitter.builders import build_undergrad_products
+        products = build_undergrad_products(
+            self._conn(),
+            publications={},
+            paper_index={},
+            bib_entries=[],
+            under_review=[
+                self._ur(raw_authors=("James C. Davis", "Oreofe Solarin")),
+            ],
+        )
+        assert len(products) == 1
+        assert products[0].lead_is_undergrad is False  # Davis is first
+        assert products[0].n_coauthors == 1

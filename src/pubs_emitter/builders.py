@@ -17,6 +17,7 @@ from typing import Optional
 import yaml
 
 from .authors import format_author, format_inventors, lookup_student_type
+from .config import SECTION_CODES
 from .db import LOOKUP_STATS
 from .latex import decode_latex, rtf_escape_unicode
 from .lookup import (
@@ -503,6 +504,7 @@ def build_under_review(conn: sqlite3.Connection, entry: dict) -> UnderReview:
         # can match A.1 entries the same way it matches C.X bib entries.
         raw_authors=tuple(a.strip() for a in author_list),
         id=str(entry.get("id", "") or ""),
+        submission_year=int(entry.get("submission_year", 0) or 0),
     )
 
 
@@ -519,15 +521,22 @@ def build_undergrad_products(
     publications: Publications,
     paper_index: dict[str, str],
     bib_entries: list[BibEntry],
+    under_review: "list[UnderReview] | tuple[UnderReview, ...]" = (),
 ) -> list[UndergradProduct]:
     """Auto-derive C.16.2.3 records by scanning every emitted citation's bib
-    author list for undergrad coauthors.
+    author list for undergrad coauthors. Section V A.1 under-review entries
+    are scanned the same way and surface in the same list, tagged with
+    `is_under_review=True` so the renderer can append a disambiguator.
 
     A bib entry contributes a record iff (a) at least one author resolves to
     student-type `"U"` via `lookup_student_type` AND (b) the citation is
     present in `paper_index` (i.e. it was actually rendered — held-internal
     theses are excluded). Lead-is-undergrad is True iff the FIRST bib author
-    is an undergrad.
+    is an undergrad. Under-review entries use their `raw_authors` tuple
+    directly (already pre-split at YAML-build time) and their
+    `submission_year` as the sort key — mixes naturally with published-paper
+    years under the `-year` ordering. Entries with `submission_year == 0`
+    sort to the bottom.
 
     Order: year DESCENDING, then by `ref` ASC for deterministic tie-break.
     """
@@ -564,7 +573,37 @@ def build_undergrad_products(
                 n_coauthors=n_under,
                 lead_is_undergrad=lead_is_under,
             ))
-    products.sort(key=lambda p: (-p.year, p.ref))
+
+    # Section V A.1 (under-review) — bare "A.1.N" code targets the bookmark
+    # placed by render_under_review_section. The "(Under review.)" suffix
+    # appended by the renderer disambiguates from Section III's A.1
+    # (Identifiers), which has no numbered sub-bookmarks anyway.
+    ur_code = SECTION_CODES["Under Review"]
+    for idx, ur in enumerate(under_review, 1):
+        n_under = 0
+        lead_is_under = False
+        for i, raw in enumerate(ur.raw_authors):
+            if lookup_student_type(conn, raw) == "U":
+                n_under += 1
+                if i == 0:
+                    lead_is_under = True
+        if n_under == 0:
+            continue
+        products.append(UndergradProduct(
+            year=ur.submission_year,
+            product_label="Paper",
+            ref=f"{ur_code}.{idx}",
+            n_coauthors=n_under,
+            lead_is_undergrad=lead_is_under,
+            is_under_review=True,
+        ))
+
+    # Sort key: year DESC, then published-before-under-review (False sorts
+    # before True), then ref ASC. The middle component matters when a
+    # published paper and an under-review submission share a year — the
+    # reviewer's eye lands on the in-flight item last, after the
+    # already-out-the-door work for that year.
+    products.sort(key=lambda p: (-p.year, p.is_under_review, p.ref))
     return products
 
 

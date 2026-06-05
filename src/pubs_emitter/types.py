@@ -250,6 +250,10 @@ class UnderReview(NamedTuple):
     pages: str           # e.g., "30 pages"
     raw_authors: tuple[str, ...] = ()  # bib-form strings, one per author
     id: str = ""         # OPTIONAL cross-ref id; @id resolves to "A.1.N" at build time
+    # Year the submission went out the door. Used as the sort key when the
+    # entry surfaces in C.16.2.3 (mixes naturally with published-paper years
+    # under the existing `-year` ordering). 0 = unknown (sorts to bottom).
+    submission_year: int = 0
 
 
 class KeyWork(NamedTuple):
@@ -291,9 +295,13 @@ class UndergradProduct(NamedTuple):
     """
     year: int               # sort key (cit.year, for newest-first ordering)
     product_label: str      # "Paper" / "Book chapter"
-    ref: str                # "C.4.7"
+    ref: str                # "C.4.7" or "A.1.7" (under-review entries)
     n_coauthors: int        # ≥1; entries with 0 are filtered out at build time
     lead_is_undergrad: bool
+    # True for Section V A.1 under-review entries. Renderer appends a
+    # "(Under review.)" disambiguator so the row reads correctly even though
+    # the bare "A.1.N" code collides with Section III A.1 (Identifiers).
+    is_under_review: bool = False
 
 
 class CourseTaught(NamedTuple):

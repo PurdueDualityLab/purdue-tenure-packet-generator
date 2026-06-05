@@ -691,9 +691,13 @@ def main(argv: Optional[list[str]] = None) -> None:
 
         # C.16.2.3: auto-derived from publications + bib by counting undergrad
         # coauthors. MUST run after paper_index since each record carries the
-        # back-ref C.X.Y from paper_index.
+        # back-ref C.X.Y from paper_index. Section V A.1 under-review entries
+        # are scanned the same way; their `submission_year` mixes into the
+        # `-year` sort order so in-flight submissions slot among published
+        # papers from the same year (newest first).
         undergrad_products: list[UndergradProduct] = build_undergrad_products(
             conn, publications, paper_index, entries,
+            under_review=under_review,
         )
 
         # ----- @id cross-reference resolution ---------------------------
