@@ -113,67 +113,6 @@ The system is opinionated about **what data you bring**:
 - **Crossref polite-pool mailto** (set via `PUBS_EMITTER_USER_AGENT`
   env var) — already configured to your email by default.
 
-### Recommended populating workflow: AI assistant + CV screenshots
-
-You should never be reading or writing YAML by hand. The ergonomic
-path: **work with a chat-based AI model and feed it screenshots of
-each part of your CV.**
-
-Concretely, what Davis did:
-
-1. Point a chat-based AI assistant (Davis used Claude) **at this git
-   repository** so it has the YAML schemas + the renderer code in
-   context. (Easiest: clone the repo locally and run the assistant in
-   the same workspace, e.g. Claude Code or a Cursor / Copilot session.)
-2. **Screenshot each section** of your existing CV — one section at a
-   time (awards table, grants list, student roster, service list, etc.).
-3. Tell the assistant: *"add these entries to my tenure-packet
-   database — match the existing entries in `non-scholar-work.yaml` /
-   `candidate-information.yaml`."* The assistant edits the files
-   directly. You never touch the YAML.
-4. Re-run the build. Validation errors come back in one batch — paste
-   them to the assistant and ask it to fix them in the files.
-
-A few inputs DON'T go through this workflow:
-
-- **Publications** — your Google Scholar profile IS the master.
-  For each paper on Scholar, click into the entry → **Edit** → prefix
-  the `journal` / `conference` field with the bracket-tag
-  (`[ICSE'25]`, `[FSE'24]`, etc.). Once every paper is tagged, **export
-  the profile as BibTeX**; the tags ride along into the bib file and
-  drive venue-tier lookup at build time. New venue acronyms also need
-  to be added to `assets/config.yaml` under `ranks:`.
-  Davis's profile is a worked example you can mirror the editing
-  convention from:
-  <https://scholar.google.com/citations?user=VSAWPQ4AAAAJ>
-- **Courses taught (CIE scores)** — comes from Purdue's EvaluationKit
-  CSVs; see next section.
-- **Self-evaluation prose (B.1–B.5)** — plain markdown you write by
-  hand; AI assist optional but the prose is the human-judgment part of
-  the packet.
-
-### EvaluationKit export
-
-The CSVs the tool reads come straight from Purdue's EvaluationKit web UI:
-
-1. **Build report** — in EvaluationKit, build a new report.
-2. **All classes, and core-10 Qs** — scope: every class you've taught;
-   questions: the 10 core CIE questions.
-3. **Download Excel.**
-4. **Export the two tabs as CSVs** — the workbook has two tabs:
-   - The "question mapper" tab → save as `assets/evaluationkit-questionmapper.csv`
-   - The "raw data" tab → save as `assets/evaluationkit-rawdata.csv`
-
-The mapper maps EvaluationKit's internal QuestionKeys (which change
-between semesters as Purdue revises the survey wording) to the 10
-canonical core concepts; the raw data carries one row per
-(course-section × question × Likert value) with the response count.
-The parser auto-aliases new QuestionKey families if the mapper is
-up-to-date; if Purdue rolls out a new wording, you'll see an "unmapped
-QuestionKey" warning at build time and need to extend
-`QUESTION_KEY_TO_CONCEPT` in
-[`src/pubs_emitter/evaluations.py`](src/pubs_emitter/evaluations.py).
-
 ---
 
 ## Quick start
@@ -204,76 +143,112 @@ if you want it to inherit the host doc's font.
 
 ---
 
-## How it works — architecture
+## Populating your data
 
-```
-                          ┌─────────────────┐
-                          │   *.bib (BibTeX)│  ← Google Scholar export
-                          └────────┬────────┘
-                                   │
-                                   │   (DOI / patent / CVE lookup,
-                                   │    parallel, cached in SQLite)
-                                   ▼
-   ┌──────────────────────┐   ┌──────────────────────┐   ┌──────────────────────┐
-   │ candidate-information│   │   non-scholar-work   │   │  evaluationkit-*.csv │
-   │       .yaml          │   │       .yaml          │   │  (Purdue CIE data)   │
-   │                      │   │                      │   │                      │
-   │  identifiers         │   │  key_works           │   │  question mapper:    │
-   │  degrees             │   │  invited_talks       │   │   QuestionKey → text │
-   │  positions           │   │  leadership_roles    │   │                      │
-   │  licenses            │   │  media_appearances   │   │  raw data:           │
-   │  awards (ext+int)    │   │  grants_as_pi        │   │   per-section Likert │
-   │  memberships         │   │  grants_as_co_pi     │   │   response counts    │
-   │                      │   │  gifts               │   │                      │
-   └──────────┬───────────┘   │  internal_grants     │   └──────────┬───────────┘
-              │               │  graduate_students   │              │
-              │               │  postdocs_visiting   │              │
-              │               │  undergrad_students  │              │
-              │               │  student_awards      │              │
-              │               │  courses_taught      │              │
-              │               │  course_development  │              │
-              │               │  technology_transfer │              │
-              │               │  software_products   │              │
-              │               │  patent_impacts      │              │
-              │               │  cves                │              │
-              │               │  security_disclosures│              │
-              │               │  conference_presents │              │
-              │               │  university_service  │              │
-              │               │  profession_service  │              │
-              │               │  national_service    │              │
-              │               │  other_service       │              │
-              │               │  under_review        │              │
-              │               └──────────┬───────────┘              │
-              │                          │                          │
-              │                          │     ┌────────────────────┘
-              │                          │     │ (per-question pooling,
-              │                          │     │  10-concept aggregation,
-              │                          │     │  VIP cross-section merge)
-              │                          ▼     ▼
-              │              ┌──────────────────────────────┐
-              │              │   builders.py (typed records)│
-              │              │   + cross-ref index +        │
-              │              │   resolve_refs (@id → C.X.Y) │
-              │              └──────────────┬───────────────┘
-              │                             │
-              ▼                             ▼
-   ┌──────────────────┐         ┌──────────────────────┐
-   │ self-evaluation  │         │      rtf.py          │
-   │      .md         │────────►│  write_rtf (emission │
-   │                  │         │   in canonical order)│
-   │  ## B.1 …        │         └──────────┬───────────┘
-   │  ## B.2 …        │                    │
-   │  ## B.3 …        │                    │
-   │  ## B.4 …        │                    │
-   │  ## B.5 …        │                    │
-   └──────────────────┘                    ▼
-                                ┌──────────────────────┐
-                                │   publications.rtf   │
-                                │  (Word → Paste-Spec) │
-                                └──────────────────────┘
-```
+All your tenure-packet inputs (CV facts, publications, course
+evaluations, …) live in a small set of text files under `assets/`.
+Most of the populating work goes through an AI assistant — you should
+rarely need to read or write YAML by hand.
 
-### Emission order
+### The AI workflow
+
+You should never be reading or writing YAML by hand. The ergonomic
+path: **work with a chat-based AI model and feed it screenshots of
+each part of your CV.**
+
+Concretely, what Davis did:
+
+1. Point a chat-based AI assistant (Davis used Claude) **at this git
+   repository** so it has the YAML schemas + the renderer code in
+   context. (Easiest: clone the repo locally and run the assistant in
+   the same workspace, e.g. Claude Code or a Cursor / Copilot session.)
+2. **Screenshot each section** of your existing CV — one section at a
+   time (awards table, grants list, student roster, service list, etc.).
+3. Tell the assistant: *"add these entries to my tenure-packet
+   database — match the existing entries in `non-scholar-work.yaml` /
+   `candidate-information.yaml`."* The assistant edits the files
+   directly. You never touch the YAML.
+4. Re-run the build. Validation errors come back in one batch — paste
+   them to the assistant and ask it to fix them in the files.
+
+Three inputs DON'T go through this workflow — they need a one-time
+manual step on your part (described in the next three subsections):
+
+- **Publications** — edit each entry on Google Scholar first
+- **Course evaluations** — export EvaluationKit CSVs from Purdue's
+  CIE system
+- **Self-evaluation prose (B.1–B.5)** — plain markdown you write by
+  hand; the prose is the human-judgment part of the packet
+
+### Editing publications in Google Scholar
+
+Your Google Scholar profile IS the master publication store. **For
+each paper on Scholar:** click into the entry → **Edit** → prefix the
+`journal` / `conference` field with the bracket-tag (`[ICSE'25]`,
+`[FSE'24]`, etc.). Once every paper is tagged, **export the profile
+as BibTeX**; the tags ride along into the bib file and drive
+venue-tier lookup at build time.
+
+New venue acronyms also need to be added to `assets/config.yaml`
+under `ranks:` — one entry per acronym, mapping to the appropriate
+tier.
+
+Davis's profile is a worked example you can mirror the editing
+convention from:
+<https://scholar.google.com/citations?user=VSAWPQ4AAAAJ>
+
+### Exporting EvaluationKit CSVs
+
+Course-evaluation scores in C.17 come straight from Purdue's
+EvaluationKit web UI:
+
+1. **Build report** — in EvaluationKit, build a new report.
+2. **All classes, and core-10 Qs** — scope: every class you've taught;
+   questions: the 10 core CIE questions.
+3. **Download Excel.**
+4. **Export the two tabs as CSVs** — the workbook has two tabs:
+   - The "question mapper" tab → save as `assets/evaluationkit-questionmapper.csv`
+   - The "raw data" tab → save as `assets/evaluationkit-rawdata.csv`
+
+The build picks both up automatically from `assets/` on the next run.
+
+### BibTeX entry conventions
+
+A few conventions to know if you ever inspect the bib file or need
+to add an entry by hand:
+
+- **Citations** — every `journal` / `booktitle` MUST begin with a
+  bracketed `[ACRONYM'YY]` tag. The acronym is looked up in
+  `assets/config.yaml` under `ranks:` to determine venue tier.
+  Examples:
+  ```bibtex
+  journal   = {[JSS'25] The Journal of Systems and Software}
+  booktitle = {[ICSE'25] Proceedings of the International Conference on Software Engineering}
+  journal   = {[arXiv'26] arXiv preprint arXiv:2605.10712}
+  ```
+- **Patents** — `@misc` whose `publisher` or `note` contains `patent`.
+  `note = {US Patent 11,176,090}` carries the number; USPTO date lookup is
+  attempted via PatentsView when `PATENTSVIEW_API_KEY` is set.
+- **Book chapters** — `@incollection` or `@inbook`. No bracket-tag
+  needed (no venue field). DOI / URL comes from `manual_links:` in
+  `assets/config.yaml`.
+- **Theses** — `@phdthesis` / `@mastersthesis`. Built internally but
+  not emitted in any section yet — held for future cross-references.
+- **CVEs are NOT in the bib.** Bib stays Scholar-canonical. CVEs go in
+  `non-scholar-work.yaml`.
+
+---
+
+## What the output looks like
+
+The build emits one RTF file — `publications.rtf`. This section
+describes the structure and visual conventions of that file, so you
+know what to look for when reviewing.
+
+### Section emission order
+
+The build emits sections in this fixed order. Sub-sections nest under
+their parent and indent visually:
 
 ```
 A. GENERAL INFORMATION   ← group heading (fs32)
@@ -379,134 +354,25 @@ regions:
 Numbering does NOT reset across the boundary — it's a visual cue so
 the reader can see continuity of publication output post-PhD.
 
----
+### Section V appendix (under-review + pending proposals)
 
-## File layout
-
-```
-purdue-tenure-packet-generator/
-├── pubs-emitter.py                 # root entry; delegates to src/pubs_emitter/cli.py
-├── setup.sh                        # one-command bootstrap (venv + editable install)
-├── pyproject.toml                  # build + tests + dev-deps + lint config
-├── README.md                       # ← this file
-├── CLAUDE.md                       # editor-facing notes; non-derivable rules + pitfalls
-├── .gitignore
-├── assets/
-│   ├── config.example.yaml         # committed schema + starter venue rankings
-│   ├── config.yaml                 # me / advisors / students / venue-ranks   (gitignored)
-│   ├── my_papers_full.bib          # BibTeX export from Google Scholar         (gitignored)
-│   ├── non-scholar-work.yaml       # everything Scholar doesn't track          (gitignored)
-│   ├── candidate-information.yaml  # Section III front matter (A.1-A.7)        (gitignored)
-│   ├── self-evaluation.md          # Section IV self-evaluation (B.1-B.5)      (gitignored)
-│   ├── evaluationkit-rawdata.csv   # CIE response data → C.17                  (gitignored)
-│   └── evaluationkit-questionmapper.csv   # QuestionKey → text aliases         (gitignored)
-├── src/pubs_emitter/
-│   ├── types.py            # NamedTuples + Section literal + Publications alias
-│   ├── config.py           # loads assets/config.yaml + code-side constants
-│   ├── latex.py            # decode_latex + rtf_escape_unicode
-│   ├── db.py               # SQLite cache (DOI / patent / CVE)
-│   ├── network.py          # RateLimiter, polite_get, try_{crossref,dblp,nvd,patentsview}
-│   ├── authors.py          # name parsing + format_author / format_inventors
-│   ├── venue.py            # parse_venue, lookup_rank, classify_entry, ID extractors
-│   ├── lookup.py           # plan / dispatch / commit + cache-aware fetchers
-│   ├── builders.py         # build_*, load_*, validate_*, resolve_refs
-│   ├── evaluations.py      # EvaluationKit CSV → C.17 CourseTaught pipeline
-│   ├── rtf.py              # RtfTable, render_*_section, write_rtf
-│   └── cli.py              # parse_args + main()
-└── tests/                  # ~460 tests; sub-second; no real network
-    ├── conftest.py
-    ├── fixtures/
-    │   ├── config.yaml
-    │   ├── sample.bib
-    │   ├── non-scholar.yaml
-    │   ├── candidate-information.yaml
-    │   └── self-evaluation.md
-    └── test_*.py
-```
-
-Every input file under `assets/` is gitignored — your data stays
-local. Only the example config (`assets/config.example.yaml`) is
-committed.
-
----
-
-## BibTeX conventions
-
-- **Citations** — every `journal` / `booktitle` MUST begin with a
-  bracketed `[ACRONYM'YY]` tag. The acronym is looked up in
-  `assets/config.yaml` under `ranks:` to determine venue tier.
-  Examples:
-  ```bibtex
-  journal   = {[JSS'25] The Journal of Systems and Software}
-  booktitle = {[ICSE'25] Proceedings of the International Conference on Software Engineering}
-  journal   = {[arXiv'26] arXiv preprint arXiv:2605.10712}
-  ```
-- **Patents** — `@misc` whose `publisher` or `note` contains `patent`.
-  `note = {US Patent 11,176,090}` carries the number; USPTO date lookup is
-  attempted via PatentsView when `PATENTSVIEW_API_KEY` is set.
-- **Book chapters** — `@incollection` or `@inbook`. No bracket-tag
-  needed (no venue field). DOI / URL comes from `manual_links:` in
-  `assets/config.yaml`.
-- **Theses** — `@phdthesis` / `@mastersthesis`. Built internally but
-  not emitted in any section yet — held for future cross-references.
-- **CVEs are NOT in the bib.** Bib stays Scholar-canonical. CVEs go in
-  `non-scholar-work.yaml`.
-
----
-
-## Section V: under-review + pending proposals
-
-Section V is the appendix-style trailing block. Two sub-sections:
+Section V is the appendix-style trailing block at the end of the
+output. Two sub-sections:
 
 - **V.A.1 — Products under review.** Driven by `under_review:` in
-  `non-scholar-work.yaml`. Bib stays clean of unpublished work;
+  `non-scholar-work.yaml`. The bib stays clean of unpublished work;
   in-flight submissions live here with a `due_date` for sort order.
 - **V.A.2 — Pending proposals.** Driven by `grants_as_pi:` /
-  `grants_as_co_pi:` entries tagged `status: pending`. Same Grant
+  `grants_as_co_pi:` entries tagged `status: pending`. Same grant
   schema as awarded — the tag is the only difference. The renderer
   routes pending entries out of C.10 / C.11 to V.A.2 at build time,
   inlining a "Purdue is (not) lead institution" annotation that's
-  suppressed for awarded grants (their position is already conveyed
-  by the section heading).
+  suppressed for awarded grants.
 
-Bookmark names for V.A.2 entries are namespaced with `V_` prefix
-(`V_A_2_1`, …) so they don't collide with Section III A.2 (Degrees)
-bookmarks. Cross-references render as `Section V, A.2.N` — display
-text includes the Roman parent so the reader can tell which `A.2`
-is being referenced.
-
----
-
-## EvaluationKit ingest (C.17)
-
-If you supply Purdue's EvaluationKit raw-data CSV (`--evaluationkit-rawdata`),
-`evaluations.py` parses it and produces C.17 rows automatically:
-
-- 5 question-key revisions are aliased onto **10 canonical concepts**:
-  course organized, assignments / projects / exams aid objectives,
-  instructor explains clearly / answers questions / cares / makes time
-  / fair / inclusive. The mapping handles wording drift across
-  semesters (`v496` ↔ `v614` ↔ `v657` ↔ `v679` ↔ `v737`).
-- Multi-section courses (especially VIP) are pooled across sections
-  via raw-count math: `Σ(Value × OptionRespondents) / Σ(OptionRespondents)`,
-  per concept, per merged course.
-- Research / thesis-supervision / independent-study courses (titles
-  containing "research" / "thesis" / "independent study" / "directed
-  reading") are dropped — they're not classroom teaching.
-- Per-row CIE summary is **avg of the 10 concept means**, with min +
-  max across the same 10. A row backed by fewer than 10 concepts (some
-  question revisions ship only 7) gets a `*` marker + a footnote
-  ("Computed on the relevant subset of questions asked").
-
-Per-course responsibility text is supplied via `courses_responsibility:`
-in `non-scholar-work.yaml` — a flat per-course list (one explicit
-entry per `(year, semester_str, course_number)` triple).
-
-Grey "no course taught" note rows (parental leave, ABET self-study
-release, etc.) are authored as `courses_taught:` entries with
-`is_note_row: true` in the YAML; the renderer merges all 6 cells into
-a grey-shaded row and prepends the semester label inline so the row
-reads in context.
+Cross-references to Section V render with the Roman parent verbatim
+("Section V, A.1.3", "Section V, A.2.2") so a reader can tell which
+`A.X` is being referenced — the appendix's A.1 / A.2 codes are
+distinct from Section III's A.1 / A.2 codes.
 
 ---
 
@@ -545,12 +411,180 @@ the cases where the defaults don't fit:
 
 ---
 
+---
+
+# Gory details (skip unless you're hacking the renderer)
+
+Everything below this point is for someone who wants to read the
+source, file a bug, fork the tool, or adapt it for a different
+format. A typical user populating their own packet doesn't need any
+of it.
+
+## Architecture diagram
+
+The data-flow shape of one build:
+
+```
+                          ┌─────────────────┐
+                          │   *.bib (BibTeX)│  ← Google Scholar export
+                          └────────┬────────┘
+                                   │
+                                   │   (DOI / patent / CVE lookup,
+                                   │    parallel, cached in SQLite)
+                                   ▼
+   ┌──────────────────────┐   ┌──────────────────────┐   ┌──────────────────────┐
+   │ candidate-information│   │   non-scholar-work   │   │  evaluationkit-*.csv │
+   │       .yaml          │   │       .yaml          │   │  (Purdue CIE data)   │
+   │                      │   │                      │   │                      │
+   │  identifiers         │   │  key_works           │   │  question mapper:    │
+   │  degrees             │   │  invited_talks       │   │   QuestionKey → text │
+   │  positions           │   │  leadership_roles    │   │                      │
+   │  licenses            │   │  media_appearances   │   │  raw data:           │
+   │  awards (ext+int)    │   │  grants_as_pi        │   │   per-section Likert │
+   │  memberships         │   │  grants_as_co_pi     │   │   response counts    │
+   │                      │   │  gifts               │   │                      │
+   └──────────┬───────────┘   │  internal_grants     │   └──────────┬───────────┘
+              │               │  graduate_students   │              │
+              │               │  postdocs_visiting   │              │
+              │               │  undergrad_students  │              │
+              │               │  student_awards      │              │
+              │               │  courses_taught      │              │
+              │               │  course_development  │              │
+              │               │  technology_transfer │              │
+              │               │  software_products   │              │
+              │               │  patent_impacts      │              │
+              │               │  cves                │              │
+              │               │  security_disclosures│              │
+              │               │  conference_presents │              │
+              │               │  university_service  │              │
+              │               │  profession_service  │              │
+              │               │  national_service    │              │
+              │               │  other_service       │              │
+              │               │  under_review        │              │
+              │               └──────────┬───────────┘              │
+              │                          │                          │
+              │                          │     ┌────────────────────┘
+              │                          │     │ (per-question pooling,
+              │                          │     │  10-concept aggregation,
+              │                          │     │  VIP cross-section merge)
+              │                          ▼     ▼
+              │              ┌──────────────────────────────┐
+              │              │   builders.py (typed records)│
+              │              │   + cross-ref index +        │
+              │              │   resolve_refs (@id → C.X.Y) │
+              │              └──────────────┬───────────────┘
+              │                             │
+              ▼                             ▼
+   ┌──────────────────┐         ┌──────────────────────┐
+   │ self-evaluation  │         │      rtf.py          │
+   │      .md         │────────►│  write_rtf (emission │
+   │                  │         │   in canonical order)│
+   │  ## B.1 …        │         └──────────┬───────────┘
+   │  ## B.2 …        │                    │
+   │  ## B.3 …        │                    │
+   │  ## B.4 …        │                    │
+   │  ## B.5 …        │                    │
+   └──────────────────┘                    ▼
+                                ┌──────────────────────┐
+                                │   publications.rtf   │
+                                │  (Word → Paste-Spec) │
+                                └──────────────────────┘
+```
+
+## File layout
+
+```
+purdue-tenure-packet-generator/
+├── pubs-emitter.py                 # root entry; delegates to src/pubs_emitter/cli.py
+├── setup.sh                        # one-command bootstrap (venv + editable install)
+├── pyproject.toml                  # build + tests + dev-deps + lint config
+├── README.md                       # ← this file
+├── CLAUDE.md                       # editor-facing notes; non-derivable rules + pitfalls
+├── .gitignore
+├── assets/
+│   ├── config.example.yaml         # committed schema + starter venue rankings
+│   ├── config.yaml                 # me / advisors / students / venue-ranks   (gitignored)
+│   ├── my_papers_full.bib          # BibTeX export from Google Scholar         (gitignored)
+│   ├── non-scholar-work.yaml       # everything Scholar doesn't track          (gitignored)
+│   ├── candidate-information.yaml  # Section III front matter (A.1-A.7)        (gitignored)
+│   ├── self-evaluation.md          # Section IV self-evaluation (B.1-B.5)      (gitignored)
+│   ├── evaluationkit-rawdata.csv   # CIE response data → C.17                  (gitignored)
+│   └── evaluationkit-questionmapper.csv   # QuestionKey → text aliases         (gitignored)
+├── src/pubs_emitter/
+│   ├── types.py            # NamedTuples + Section literal + Publications alias
+│   ├── config.py           # loads assets/config.yaml + code-side constants
+│   ├── latex.py            # decode_latex + rtf_escape_unicode
+│   ├── db.py               # SQLite cache (DOI / patent / CVE)
+│   ├── network.py          # RateLimiter, polite_get, try_{crossref,dblp,nvd,patentsview}
+│   ├── authors.py          # name parsing + format_author / format_inventors
+│   ├── venue.py            # parse_venue, lookup_rank, classify_entry, ID extractors
+│   ├── lookup.py           # plan / dispatch / commit + cache-aware fetchers
+│   ├── builders.py         # build_*, load_*, validate_*, resolve_refs
+│   ├── evaluations.py      # EvaluationKit CSV → C.17 CourseTaught pipeline
+│   ├── rtf.py              # RtfTable, render_*_section, write_rtf
+│   └── cli.py              # parse_args + main()
+└── tests/                  # ~470 tests; sub-second; no real network
+    ├── conftest.py
+    ├── fixtures/
+    │   ├── config.yaml
+    │   ├── sample.bib
+    │   ├── non-scholar.yaml
+    │   ├── candidate-information.yaml
+    │   └── self-evaluation.md
+    └── test_*.py
+```
+
+Every input file under `assets/` is gitignored — your data stays
+local. Only the example config (`assets/config.example.yaml`) is
+committed.
+
+## EvaluationKit ingest internals
+
+When you supply the EvaluationKit raw-data CSV
+(`--evaluationkit-rawdata`), `evaluations.py` parses it and produces
+C.17 rows:
+
+- 5 question-key revisions are aliased onto **10 canonical concepts**:
+  course organized, assignments / projects / exams aid objectives,
+  instructor explains clearly / answers questions / cares / makes time
+  / fair / inclusive. The mapping handles wording drift across
+  semesters (`v496` ↔ `v614` ↔ `v657` ↔ `v679` ↔ `v737`).
+- Multi-section courses (especially VIP) are pooled across sections
+  via raw-count math: `Σ(Value × OptionRespondents) / Σ(OptionRespondents)`,
+  per concept, per merged course.
+- Research / thesis-supervision / independent-study courses (titles
+  containing "research" / "thesis" / "independent study" / "directed
+  reading") are dropped — they're not classroom teaching.
+- Per-row CIE summary is **avg of the 10 concept means**, with min +
+  max across the same 10. A row backed by fewer than 10 concepts (some
+  question revisions ship only 7) gets a `*` marker + a footnote
+  ("Computed on the relevant subset of questions asked").
+
+Per-course responsibility text is supplied via `courses_responsibility:`
+in `non-scholar-work.yaml` — a flat per-course list (one explicit
+entry per `(year, semester_str, course_number)` triple).
+
+Grey "no course taught" note rows (parental leave, ABET self-study
+release, etc.) are authored as `courses_taught:` entries with
+`is_note_row: true` in the YAML; the renderer merges all 6 cells into
+a grey-shaded row and prepends the semester label inline so the row
+reads in context.
+
+## Section V bookmark namespace
+
+V.A.1 + V.A.2 entries reuse the `A.X.N` code prefix the Section III
+front matter uses. To prevent bookmark-target collisions (clicking
+"Section V, A.2.3" should not land on Section III's Degrees entry
+A.2.3), every Section V bookmark is namespaced with a `V_` prefix at
+emission time: the displayed code is `A.2.3` but the bookmark target
+is `V_A_2_3`. Wired in `_ref_anchor(code, bookmark_prefix="V.")`.
+
 ## Dev tools
 
 ```bash
 .venv/bin/pylint src/pubs_emitter    # 9.95/10 baseline
 .venv/bin/mypy                       # type-clean
-.venv/bin/pytest                     # ~460 tests, sub-second
+.venv/bin/pytest                     # ~470 tests, sub-second
 ```
 
 ### Test suite
