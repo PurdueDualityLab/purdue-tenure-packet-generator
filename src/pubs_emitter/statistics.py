@@ -45,7 +45,7 @@ from typing import Callable, Optional, Union
 
 from .authors import lookup_student_type, parse_name_parts
 from .types import (
-    BibEntry, Citation, InvitedTalk, Patent, Publications, ServiceEntry,
+    BibEntry, Citation, Grant, InvitedTalk, Patent, Publications, ServiceEntry,
 )
 from .venue import normalize_title
 
@@ -76,6 +76,9 @@ class StatsContext:
     patents: list[Patent] = field(default_factory=list)
     invited_talks: list[InvitedTalk] = field(default_factory=list)
     profession_service: list[ServiceEntry] = field(default_factory=list)
+    grants_as_pi: list[Grant] = field(default_factory=list)
+    grants_as_co_pi: list[Grant] = field(default_factory=list)
+    gifts: list[Grant] = field(default_factory=list)
     title_to_bib: dict[str, BibEntry] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
@@ -151,6 +154,25 @@ def _is_student_led(cit: Citation, ctx: StatsContext) -> bool:
     return lookup_student_type(ctx.conn, first) in ("G", "U")
 
 
+def _has_undergraduate_coauthor(cit: Citation, ctx: StatsContext) -> bool:
+    """ANY author of the citation (lead or co-author) is registered as a
+    U (undergraduate) student. Looks up the bib entry by normalized title
+    and walks every name in the `author` field. Returns False when no
+    conn / no matching bib entry / no undergrad in author list."""
+    if ctx.conn is None:
+        return False
+    bib = ctx.title_to_bib.get(normalize_title(cit.title))
+    if not bib:
+        return False
+    raw_authors = bib.get("author", "") or ""
+    if not raw_authors:
+        return False
+    for name in raw_authors.split(" and "):
+        if lookup_student_type(ctx.conn, name.strip()) == "U":
+            return True
+    return False
+
+
 # ----- Registered macros -------------------------------------------------
 
 
@@ -201,10 +223,63 @@ def _num_student_led_tier_1(ctx: StatsContext) -> int:
     )
 
 
+@register("NUM_PAPERS_WITH_UNDERGRADUATE_COAUTHORS")
+def _num_papers_with_undergraduate_coauthors(ctx: StatsContext) -> int:
+    """Peer-reviewed publications with at least one undergraduate (U)
+    co-author anywhere in the author list (lead or otherwise). Surfaces
+    the research-integration story in B.1 prose."""
+    return sum(
+        1 for c in _all_publications(ctx)
+        if _is_peer_reviewed(c) and _has_undergraduate_coauthor(c, ctx)
+    )
+
+
 @register("NUM_PATENTS")
 def _num_patents(ctx: StatsContext) -> int:
     """Count of issued patents in the C.19 list."""
     return len(ctx.patents)
+
+
+# ----- External funding -------------------------------------------------
+
+
+def _grant_attributable_amount(g: Grant) -> int:
+    """Davis's attributable share of the grant in USD. Prefers `my_amount`
+    (when multiple Purdue PIs split credit); falls back to `purdue_amount`
+    (single-PI case where `my_amount` is unset / 0). Treats 0 as unset."""
+    if g.my_amount:
+        return int(g.my_amount)
+    if g.purdue_amount:
+        return int(g.purdue_amount)
+    return 0
+
+
+def _external_grants(ctx: StatsContext) -> list[Grant]:
+    """All external-funded grants: grants_as_pi + grants_as_co_pi + gifts.
+    `internal_grants` (Purdue VEIL / ECE / Provost) are EXCLUDED — they
+    don't count as external funding in the B.1 sense. Pending proposals
+    are already filtered upstream at cli.py load time."""
+    return list(ctx.grants_as_pi) + list(ctx.grants_as_co_pi) + list(ctx.gifts)
+
+
+@register("TOTAL_EXTERNAL_FUNDING")
+def _total_external_funding(ctx: StatsContext) -> str:
+    """Sum of Davis's attributable share across all external grants
+    (PI + Co-PI + gifts), comma-formatted. Prose template adds the `$`
+    prefix outside the macro."""
+    total = sum(_grant_attributable_amount(g) for g in _external_grants(ctx))
+    return f"{total:,}"
+
+
+@register("TOTAL_EXTERNAL_FUNDING_AS_PI")
+def _total_external_funding_as_pi(ctx: StatsContext) -> str:
+    """Same as TOTAL_EXTERNAL_FUNDING but limited to grants where Davis's
+    role is PI. Comma-formatted."""
+    total = sum(
+        _grant_attributable_amount(g) for g in _external_grants(ctx)
+        if g.role == "PI"
+    )
+    return f"{total:,}"
 
 
 # ----- Service / talks --------------------------------------------------
@@ -310,14 +385,18 @@ def compute_all(ctx: StatsContext) -> dict[str, str]:
 _MACRO_TOKEN_RE = re.compile(r"#([A-Z][A-Z0-9_]*)")
 
 
-def substitute(text: str, macros: dict[str, str]) -> str:
+def substitute(text: str, macros: dict[str, str]) -> tuple[str, set[str]]:
     """Replace `#MACRO_NAME` tokens with their resolved values.
 
-    Unresolved tokens (not in `macros`) are LEFT AS-IS in the output
-    and logged as warnings so a typo'd macro name in a statement is
-    surfaced at build time. The token regex matches uppercase-only
-    names so it doesn't accidentally swallow `#Heading` markdown or
-    HTML-like fragments."""
+    Returns `(substituted_text, unresolved_set)`. Unresolved tokens
+    (not in `macros`) are LEFT AS-IS in the output AND collected into
+    the returned set so the caller can fail the build if any survive
+    — broken macros must not ship in the rendered packet.
+
+    The token regex matches uppercase-only names so it doesn't
+    accidentally swallow `#Heading` markdown or HTML-like fragments.
+    A warning is also logged per unique unresolved token (first
+    occurrence only) so the build log surfaces the issue inline."""
     seen_unresolved: set[str] = set()
     def _replace(m: re.Match[str]) -> str:
         name = m.group(1)
@@ -327,4 +406,5 @@ def substitute(text: str, macros: dict[str, str]) -> str:
             log.warning("Unresolved macro #%s in statement text", name)
             seen_unresolved.add(name)
         return m.group(0)
-    return _MACRO_TOKEN_RE.sub(_replace, text)
+    substituted = _MACRO_TOKEN_RE.sub(_replace, text)
+    return substituted, seen_unresolved

@@ -445,6 +445,17 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
             "style produces, useful when debugging an unexpected visual."
         ),
     )
+    parser.add_argument(
+        "--word-counts", action="store_true",
+        help=(
+            "Log a one-line summary of B.1 / B.2 / B.3 word counts vs "
+            "the Purdue template's recommended limits (1000 / 250 / "
+            "500) at build time. Over-cap also fires the existing "
+            "per-section warning; this flag surfaces the totals "
+            "unconditionally so the draft state is visible during "
+            "polish passes without grep'ing for warnings."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -505,6 +516,17 @@ def main(argv: Optional[list[str]] = None) -> None:
         # Section IV self-evaluation (B.1-B.5). Optional — None when no
         # markdown path is supplied or the file is missing.
         self_eval = load_self_evaluation(args.self_eval or None)
+        if args.word_counts and self_eval is not None:
+            from .builders import _count_words, _B_WORD_CAPS
+            parts = []
+            for key in ("b1", "b2", "b3"):
+                n = _count_words(getattr(self_eval, key) or "")
+                cap = _B_WORD_CAPS.get(key)
+                label = f"B.{key[1:]}"  # "b1" → "B.1"
+                parts.append(
+                    f"{label} word count: {n} (recommended ≤ {cap})"
+                )
+            log.info(", ".join(parts))
 
         # Populate students AFTER loading non-scholar YAML so we can union the
         # rich C.14 graduate_students names into STUDENTS["G"] for marker matching.
@@ -953,19 +975,45 @@ def main(argv: Optional[list[str]] = None) -> None:
                 patents=patents,
                 invited_talks=invited_talks,
                 profession_service=profession_service,
+                grants_as_pi=grants_as_pi,
+                grants_as_co_pi=grants_as_co_pi,
+                gifts=gifts,
             )
             macros = compute_all(stats_ctx)
             log.info(
                 "Statistics macros computed: %s",
                 ", ".join(f"{k}={v}" for k, v in sorted(macros.items())),
             )
-            self_eval = self_eval._replace(
-                b1=substitute(self_eval.b1, macros),
-                b2=substitute(self_eval.b2, macros),
-                b3=substitute(self_eval.b3, macros),
-                b4=substitute(self_eval.b4, macros),
-                b5=substitute(self_eval.b5, macros),
-            )
+            # `substitute` returns `(text, unresolved_set)`. Unresolved
+            # macros are a build-blocking error — drafts must not ship
+            # with literal `#TYPO_TOKEN` surviving into the rendered
+            # packet. Collect across all 5 fields and fail at the end of
+            # this block (after logging which token + which field).
+            b1, u1 = substitute(self_eval.b1, macros)
+            b2, u2 = substitute(self_eval.b2, macros)
+            b3, u3 = substitute(self_eval.b3, macros)
+            b4, u4 = substitute(self_eval.b4, macros)
+            b5, u5 = substitute(self_eval.b5, macros)
+            self_eval = self_eval._replace(b1=b1, b2=b2, b3=b3, b4=b4, b5=b5)
+            _unresolved_macros: list[tuple[str, str]] = []
+            for field, unr in (("b1", u1), ("b2", u2), ("b3", u3),
+                               ("b4", u4), ("b5", u5)):
+                for name in sorted(unr):
+                    _unresolved_macros.append((field, name))
+            if _unresolved_macros:
+                for field, name in _unresolved_macros:
+                    log.error(
+                        "Unresolved #macro #%s in self-evaluation %s; "
+                        "known macros: %s",
+                        name, field.upper(), sorted(macros.keys()),
+                    )
+                log.error(
+                    "Build aborted — %d unresolved #macro reference(s). "
+                    "Fix the typo or register the macro in statistics.py "
+                    "before re-running.",
+                    len(_unresolved_macros),
+                )
+                sys.exit(1)
         # A.6 awards: live INSIDE candidate_info, so rebuild the NamedTuple
         # with the resolved list. Skip when no candidate_info was loaded.
         if candidate_info is not None and candidate_info.awards:

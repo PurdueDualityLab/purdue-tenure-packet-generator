@@ -20,7 +20,7 @@ from pubs_emitter.statistics import (
     register,
     substitute,
 )
-from pubs_emitter.types import Citation, InvitedTalk, Patent, ServiceEntry
+from pubs_emitter.types import Citation, Grant, InvitedTalk, Patent, ServiceEntry
 
 
 _counter = [0]
@@ -50,6 +50,20 @@ def _bib(title: str, author: str) -> dict:
     """Minimal bib-entry shape — bibtexparser-style dict with the
     fields the statistics module reads."""
     return {"title": title, "author": author}
+
+
+def _grant(*, role: str = "PI", purdue_amount: int = 0, my_amount: int = 0) -> Grant:
+    """Minimal Grant tuple — only the fields the funding macros read are
+    meaningful. Everything else is set to type-zero defaults so the
+    NamedTuple validates."""
+    return Grant(
+        start_year=2024, end_year=2025, title="t", agency="a",
+        agency_short="", grant_number="", role=role, lead_institution="",
+        personnel=[], responsibility_percent=0,
+        total_amount=0, purdue_amount=purdue_amount, my_amount=my_amount,
+        activities="", responsibility="",
+        inspired_by=[], publication_outcomes=[],
+    )
 
 
 def _conn_with_students(students: dict[str, str]) -> sqlite3.Connection:
@@ -170,12 +184,87 @@ class TestMacroComputations:
         )
         assert compute_all(ctx)["NUM_STUDENT_LED"] == "0"
 
+    def test_num_papers_with_undergraduate_coauthors(self) -> None:
+        """Any U-student anywhere in the author list counts the paper.
+        Distinct from NUM_STUDENT_LED (which requires the U/G student
+        be FIRST). Non-peer-reviewed (e.g. CVE) papers excluded even if
+        they have a U co-author."""
+        conn = _conn_with_students({
+            "Grad Person": "G",
+            "Undergrad One": "U",
+            "Undergrad Two": "U",
+        })
+        cits = [
+            _cit(rank="Rank 1", title="undergrad-coauth-mid"),
+            _cit(rank="Workshop", title="undergrad-lead"),
+            _cit(rank="Rank 2", title="grad-only"),
+            _cit(rank="Rank 1", title="no-students"),
+            _cit(rank="CVE", title="cve-with-undergrad"),
+        ]
+        bib_entries = [
+            _bib("undergrad-coauth-mid", "Other Davis and Undergrad One and Grad Person"),
+            _bib("undergrad-lead",       "Undergrad Two and Other Davis"),
+            _bib("grad-only",            "Grad Person and Other Davis"),
+            _bib("no-students",          "Other Davis and Other Other"),
+            _bib("cve-with-undergrad",   "Undergrad One and Other Davis"),
+        ]
+        ctx = StatsContext(
+            publications={"Journals": cits},
+            bib_entries=bib_entries,
+            conn=conn,
+        )
+        # undergrad-coauth-mid (Rank 1, U mid) + undergrad-lead (Workshop, U first) = 2
+        # grad-only and no-students excluded (no U); cve-with-undergrad excluded (not peer reviewed)
+        assert compute_all(ctx)["NUM_PAPERS_WITH_UNDERGRADUATE_COAUTHORS"] == "2"
+
     def test_num_patents_counts_patent_list(self) -> None:
         patents = [
             MagicMock(spec=Patent), MagicMock(spec=Patent), MagicMock(spec=Patent),
         ]
         ctx = StatsContext(publications={}, patents=patents)
         assert compute_all(ctx)["NUM_PATENTS"] == "3"
+
+    def test_total_external_funding_sums_attributable_share(self) -> None:
+        """Sum prefers `my_amount` when set, falls back to `purdue_amount`.
+        Includes grants_as_pi + grants_as_co_pi + gifts. Excludes
+        internal_grants (the field doesn't exist on StatsContext —
+        callers route them elsewhere)."""
+        ctx = StatsContext(
+            publications={},
+            grants_as_pi=[
+                _grant(role="PI", purdue_amount=687140, my_amount=0),     # single-PI fallback to purdue
+                _grant(role="PI", purdue_amount=274000, my_amount=274000),
+            ],
+            grants_as_co_pi=[
+                _grant(role="Co-PI", purdue_amount=149976, my_amount=74988),  # split-credit
+            ],
+            gifts=[
+                _grant(role="PI", purdue_amount=5000, my_amount=0),       # OpenAI-style fallback
+                _grant(role="Co-PI", purdue_amount=200000, my_amount=100000),
+            ],
+        )
+        # 687,140 + 274,000 + 74,988 + 5,000 + 100,000 = 1,141,128
+        assert compute_all(ctx)["TOTAL_EXTERNAL_FUNDING"] == "1,141,128"
+
+    def test_total_external_funding_as_pi_filters_by_role(self) -> None:
+        ctx = StatsContext(
+            publications={},
+            grants_as_pi=[
+                _grant(role="PI", purdue_amount=687140, my_amount=0),
+                _grant(role="Co-PI", purdue_amount=274000, my_amount=137000),  # role=Co-PI excluded
+            ],
+            gifts=[
+                _grant(role="PI", purdue_amount=5000, my_amount=0),
+            ],
+        )
+        # 687,140 + 5,000 = 692,140 (Co-PI entry excluded)
+        assert compute_all(ctx)["TOTAL_EXTERNAL_FUNDING_AS_PI"] == "692,140"
+
+    def test_external_funding_empty_when_no_grants(self) -> None:
+        ctx = StatsContext(publications={})
+        result = compute_all(ctx)
+        assert result["TOTAL_EXTERNAL_FUNDING"] == "0"
+        assert result["TOTAL_EXTERNAL_FUNDING_AS_PI"] == "0"
 
     def test_num_tier_1_pcs_counts_year_appointments(self) -> None:
         """Each (Tier-1 venue, year) pair contributes ONE appointment.
@@ -230,13 +319,18 @@ class TestSubstitute:
     def test_replaces_known_macros(self) -> None:
         macros = {"NUM_A": "5", "NUM_B": "12"}
         text = "We have #NUM_A apples and #NUM_B bananas."
-        assert substitute(text, macros) == "We have 5 apples and 12 bananas."
+        out, unresolved = substitute(text, macros)
+        assert out == "We have 5 apples and 12 bananas."
+        assert unresolved == set()
 
-    def test_unresolved_tokens_left_as_is(self) -> None:
+    def test_unresolved_tokens_left_as_is_and_returned(self) -> None:
+        """Unresolved tokens stay in the output AND surface in the
+        returned set so the caller can fail the build."""
         macros = {"NUM_KNOWN": "5"}
         text = "Resolved #NUM_KNOWN but not #NUM_TYPO."
-        out = substitute(text, macros)
+        out, unresolved = substitute(text, macros)
         assert out == "Resolved 5 but not #NUM_TYPO."
+        assert unresolved == {"NUM_TYPO"}
 
     def test_unresolved_token_logs_warning(self, caplog) -> None:
         with caplog.at_level(logging.WARNING):
@@ -256,7 +350,9 @@ class TestSubstitute:
         """Token shape is `#UPPER` — `#heading` (lowercase) is left
         alone so the substitution doesn't eat markdown-ish text."""
         text = "Plain #heading text"
-        assert substitute(text, {"HEADING": "X"}) == "Plain #heading text"
+        out, unresolved = substitute(text, {"HEADING": "X"})
+        assert out == "Plain #heading text"
+        assert unresolved == set()
 
     def test_compute_all_is_stable_order(self) -> None:
         """`compute_all` returns a dict in sorted macro-name order so

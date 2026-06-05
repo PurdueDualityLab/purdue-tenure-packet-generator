@@ -23,10 +23,10 @@ from typing import IO
 BODY_FONT_SIZE = 22         # 11pt — canonical body size
 GROUP_HEADING_FS = 32       # 16pt — Roman + supergroup (V. / A. / C.)
 SUBGROUP_HEADING_FS = 28    # 14pt — PUBLISHED WORK / etc.
-SECTION_H1_FS = 28          # 14pt — C.1, A.1, B.1
-SECTION_H2_FS = 26          # 13pt — C.5.1, C.16.1
-SECTION_H3_FS = 24          # 12pt — C.16.2.3
-INLINE_SUBHEADING_FS = 26   # 13pt — italic C.5 fallback labels
+SECTION_H1_FS = 22          # 11pt — C.1, A.1, B.1 (Word template themes the color)
+SECTION_H2_FS = 22          # 11pt — C.5.1, C.16.1 (Purdue P&T uses body size at all heading levels)
+SECTION_H3_FS = 22          # 11pt — C.16.2.3
+INLINE_SUBHEADING_FS = 22   # 11pt — italic C.5 fallback labels
 
 # Stylesheet declaration spacing (sb/sa) per heading level. Carried into
 # both the `\s{N}` stylesheet declaration AND the runtime paragraph
@@ -70,19 +70,38 @@ STYLES: dict[str, str] = {
     # opens the document and the trailing re-baseline emitted after
     # every styled paragraph.
     "body":                 rf"\fs{BODY_FONT_SIZE}",
-    # Roman section heading (V. Supporting Documentation for Pending
-    # Publications.) — Title-Case text, bold, fs32, page break before.
-    # Word "heading 1" so Word's auto-TOC picks it up at the top level.
-    "roman_section":        rf"\s1\b\fs{GROUP_HEADING_FS}",
-    # Letter group heading (A. GENERAL INFORMATION, B. SELF-EVALUATION,
-    # C. SUPPORTING INFORMATION) — CAPS text, bold, fs32. Word
-    # "heading 1" so it shares the Roman level in the auto-TOC.
-    "group_heading":        rf"\s1\b\fs{GROUP_HEADING_FS}",
+    # Roman section heading ("MATERIAL PREPARED BY THE CANDIDATE",
+    # "Supporting Documentation for Pending Publications.") — Word
+    # "heading 1" (P&T template's top-level style); the template's
+    # heading-1 list auto-numbers as I., II., III., ..., so emitters
+    # MUST NOT include the Roman numeral in the rendered text (would
+    # produce "I. III. MATERIAL..." doubled). Font size + color come
+    # from the template's heading-1 theme (orange in the Purdue P&T
+    # template) — no explicit \fs override so the theme wins.
+    "roman_section":        r"\s1\b",
+    # Letter group heading ("GENERAL INFORMATION", "SELF-EVALUATION",
+    # "SUPPORTING INFORMATION") — Word "heading 2" (P&T template's
+    # A./B./C. level). The template's heading-2 style is link to a
+    # multilevel list that auto-numbers as A./B./C.; emitters DROP the
+    # literal letter prefix so Word's list provides it (otherwise
+    # doubled, e.g. "B. A. GENERAL…" when Word's list lands on B and
+    # we emitted A). Theme drives size + color.
+    "group_heading":        r"\s2\b",
     # Subgroup heading (PUBLISHED WORK, EXTERNAL VISIBILITY, ...) —
-    # centered, bold, underlined, fs28, page break before. Word
-    # "heading 2".
-    "subgroup_heading":     rf"\s2\qc\b\ul\fs{SUBGROUP_HEADING_FS}",
-    # Level-1 section heading (C.1, A.1, B.1, ...). Word "heading 3".
+    # P&T template's "Heading 4 + Bold, Not Italic, Underline, Centered"
+    # variant: `\s4` (Word heading 4) PLUS direct overrides for the
+    # template's variant. Heading 4's default is italic, so `\i0`
+    # explicitly forces italic OFF (matches the "Not Italic" annotation
+    # in Word's style panel). Heading 4 is shared with `section_h2` for
+    # the stylesheet declaration — both reference the same `\s4` style,
+    # which is fine since RTF style IDs are global per document.
+    "subgroup_heading":     rf"\s4\qc\b\ul\fs{SUBGROUP_HEADING_FS}\i0",
+    # Level-1 section heading (C.1, A.1, B.1, ...) — Word "heading 3"
+    # so the auto-TOC picks it up at the section level. Bold + body-size
+    # font (`\fs{SECTION_H1_FS}` = fs22 = 11pt) gives visual weight
+    # without competing with the heading-1/heading-2 P&T template theme.
+    # The template doesn't auto-number this level, so emitters DO
+    # include the "A.1" / "C.1" prefix as literal text.
     "section_h1":           rf"\s3\b\fs{SECTION_H1_FS}",
     # Level-2 section heading (C.5.1, C.16.1, ...). Word "heading 4".
     "section_h2":           rf"\s4\i\fs{SECTION_H2_FS}",
@@ -205,9 +224,14 @@ def _close_for(open_codes: str) -> str:
 # registry so a registry edit (e.g., bumping `SECTION_H1_FS` to 30)
 # automatically updates the stylesheet declaration too.
 _HEADING_STYLE_NAMES: list[tuple[str, str, int, int]] = [
-    # (style_key, Word-style-name, sb, sa)
-    ("group_heading",    "heading 1", SECTION_H1_SB, SECTION_H1_SA),
-    ("subgroup_heading", "heading 2", SECTION_H2_SB, SECTION_H2_SA),
+    # (style_key, Word-style-name, sb, sa). Maps each registry style key
+    # to its Word "heading N" name in the stylesheet block. The P&T
+    # template's TOC pulls heading 1 (III. Roman), heading 2 (A./B./C.),
+    # heading 3 (A.1/C.1). Subgroup bands (PUBLISHED WORK) and deeper
+    # nested headings (C.5.1, C.16.2.3) are intentionally absent — they
+    # carry only direct visual formatting, no `\sN` style ID.
+    ("roman_section",    "heading 1", SECTION_H1_SB, SECTION_H1_SA),
+    ("group_heading",    "heading 2", SECTION_H2_SB, SECTION_H2_SA),
     ("section_h1",       "heading 3", SECTION_H3_SB, SECTION_H3_SA),
     ("section_h2",       "heading 4", SECTION_H4_SB, SECTION_H4_SA),
 ]
@@ -258,6 +282,7 @@ def emit_styled(
     text: str,
     *,
     indent: int = 0,
+    suppress_page_break: bool = False,
 ) -> None:
     """Emit a fully-styled paragraph applying `STYLES[style]`.
 
@@ -283,7 +308,7 @@ def emit_styled(
     sb, sa = SPACING.get(style, (0, 0))
     border = BORDER_BLOCKS.get(style, "")
     close = _close_for(prefix)
-    if style in PAGE_BREAK_BEFORE:
+    if style in PAGE_BREAK_BEFORE and not suppress_page_break:
         out.write("\\pard\\page\\par\n")
     spacing = ""
     if sb:

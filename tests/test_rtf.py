@@ -1381,9 +1381,9 @@ class TestRenderStudentAwardsSection:
             buf,
         )
         out = buf.getvalue()
-        assert "bkmkstart C_16_3_3" in out
-        assert "Graduate Student Awards, Fellowships, Internships, and Placement" in out
-        assert "C_16_3_3_1}.\\tab" in out
+        assert "bkmkstart C_16_3_2" in out
+        assert "Graduate Student Awards and Fellowships" in out
+        assert "C_16_3_2_1}.\\tab" in out
 
     def test_filters_by_level(self) -> None:
         """The mixed list goes to BOTH calls; each filters by its own level."""
@@ -2112,8 +2112,11 @@ class TestRenderCandidateInformationSection:
         buf = io.StringIO()
         render_candidate_information_section(self._ci(), buf)
         out = buf.getvalue()
-        # Top-level "A. GENERAL INFORMATION" group heading.
-        assert "A. GENERAL INFORMATION" in out
+        # "GENERAL INFORMATION" group heading (no literal "A." prefix —
+        # Word's heading-2 list provides the letter). The FIRST emit
+        # after III. carries the `\pnstart1` restart marker.
+        assert "GENERAL INFORMATION" in out
+        assert "\\pnstart1" in out
         # Each A.X sub-section heading text.
         assert "A.1 Name and any appropriate scholarly identifiers" in out
         assert "A.2 Degrees." in out
@@ -2362,13 +2365,13 @@ class TestEmitInlineHeading:
         _emit_inline_heading(buf, "Sample Subheading", indent=720)
         out = buf.getvalue()
         # `\i` is the italic-open control word; `\i0` closes. The text
-        # itself sits between, prefixed by other control words (\fs26
+        # itself sits between, prefixed by other control words (\fs22
         # etc.) before the space separator.
-        assert "\\i\\fs26" in out
+        assert "\\i\\fs22" in out
         assert "Sample Subheading\\i0" in out
         # No bold control word — the whole point of factoring this out.
         assert "\\b Sample Subheading" not in out
-        assert "\\b\\fs26" not in out
+        assert "\\b\\fs22" not in out
 
     def test_indent_applied(self) -> None:
         from pubs_emitter.rtf import _emit_inline_heading
@@ -2415,9 +2418,9 @@ class TestEmitInlineHeading:
         )
         out = buf.getvalue()
         # Helper routes through `emit_styled("inline_subheading", …)`
-        # which emits: \pard\plain\f0\li{N}\sb120\sa60\i\fs26 {text}\i0.
+        # which emits: \pard\plain\f0\li{N}\sb120\sa60\i\fs22 {text}\i0.
         assert "National and International Awards\\i0" in out
-        assert "\\sb120\\sa60\\i\\fs26 National and International Awards" in out
+        assert "\\sb120\\sa60\\i\\fs22 National and International Awards" in out
         assert "\\b National and International Awards" not in out
 
     def test_career_phase_divider_routes_through_helper(self) -> None:
@@ -2929,7 +2932,7 @@ class TestLevelAwareBodyIndent:
         out = buf.getvalue()
         expected_label_pos = _label_position_for_code("A.2.1")  # 360
         expected_fi = expected_label_pos - indent  # -720
-        assert f"\\pard\\li{indent}\\fi{expected_fi}\\tx{indent}" in out
+        assert f"\\pard\\plain\\f0\\fs22\\li{indent}\\fi{expected_fi}\\tx{indent}" in out
 
     def test_hanging_indent_inherits_level_base(self) -> None:
         """`_hanging_indent_for_codes` uses the level-derived base so a

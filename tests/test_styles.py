@@ -146,7 +146,10 @@ class TestEmitStyledParagraphShape:
         out = buf.getvalue()
         assert out.startswith("\\pard\\page\\par\n")
         # Then the styled paragraph with the subgroup open tags.
-        assert "\\s2\\qc\\b\\ul\\fs28 PUBLISHED WORK\\ulnone\\b0\\par" in out
+        # Heading 4 + bold + underline + centered + force-not-italic.
+        # `\s4` brings Word's heading 4 style; `\i0` overrides heading 4's
+        # italic default to match the P&T "Not Italic" annotation.
+        assert "\\s4\\qc\\b\\ul\\fs28\\i0 PUBLISHED WORK" in out
 
     def test_career_phase_divider_emits_border_block(self) -> None:
         """BORDER_BLOCKS["career_phase_divider"] is the top/bottom border
@@ -163,11 +166,13 @@ class TestEmitStyledParagraphShape:
 
     def test_section_heading_h1_applies_s3_word_style(self) -> None:
         """`section_h1` carries `\\s3` (Word "heading 3") so the auto-
-        TOC picks it up at the section level."""
+        TOC picks it up at the section level. Bold + body-size font
+        (fs22) makes A.1 / C.1 visually stand out without competing
+        with the heading-1 / heading-2 P&T theme."""
         buf = io.StringIO()
         emit_styled(buf, "section_h1", "C.2 Journals", indent=0)
         out = buf.getvalue()
-        assert "\\s3\\b\\fs28 C.2 Journals\\b0\\par" in out
+        assert "\\s3\\b\\fs22 C.2 Journals\\b0\\par" in out
 
     def test_section_heading_h2_applies_s4_and_italic(self) -> None:
         """Level-2 sub-section headings are `\\s4` (Word "heading 4")
@@ -175,7 +180,7 @@ class TestEmitStyledParagraphShape:
         buf = io.StringIO()
         emit_styled(buf, "section_h2", "C.5.1 Magazine", indent=240)
         out = buf.getvalue()
-        assert "\\s4\\i\\fs26 C.5.1 Magazine\\i0\\par" in out
+        assert "\\s4\\i\\fs22 C.5.1 Magazine\\i0\\par" in out
         assert "\\li240" in out
 
     def test_text_is_not_escaped(self) -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 import io
 import logging
 import re
-from typing import IO, Optional
+from typing import IO, Optional, Sequence
 
 from .builders import escape_rtf
 from .styles import emit_styled, styled_inline
@@ -527,21 +527,38 @@ def build_paper_index(publications: Publications) -> dict[str, str]:
     return index
 
 
-def _emit_group_heading(out: IO[str], code: str, title: str) -> None:
-    """Emit a top-level Roman-numeral group heading ("A. GENERAL INFORMATION",
-    "C. SCHOLARLY CONTRIBUTIONS", etc.). Larger than `_emit_section_heading`'s
-    level-1 (fs32 vs fs28) so the visual hierarchy is: GROUP > section > sub.
-    No bookmark — these headings aren't cross-ref targets.
+def _emit_group_heading(
+    out: IO[str], code: str, title: str, *, restart_numbering: bool = False,
+) -> None:
+    """Emit a group heading ("GENERAL INFORMATION", "SELF-EVALUATION",
+    etc.). Uses Word "heading 2" (P&T template's A./B./C. level). The
+    template's heading-2 multilevel list auto-numbers the letter
+    prefix, so emitters DROP the literal "A." / "B." / "C." from the
+    rendered text — Word's list provides it.
+
+    `restart_numbering=True` emits an `{\\*\\pn\\pnlvlbody\\pnstart1}`
+    list-restart marker before the heading. Use on the FIRST heading-2
+    emit per Roman section so Word's heading-2 list restarts at A
+    instead of continuing the doc-global sequence (B/C/D…). `code` is
+    preserved in the signature for callsite intent + future cross-ref
+    bookmarks.
     """
     # Leading blank for breathing room above the group heading
     # (preserves the visual spacing the OLD inline emit had at this
-    # site). Then route the heading itself through `emit_styled`.
+    # site).
     out.write(f"\\pard\\plain\\f0\\fs{_BODY_FONT_SIZE}\\par\n")
-    emit_styled(out, "group_heading", f"{code} {title}")
+    if restart_numbering:
+        # `\pnstart1` resets the paragraph's auto-numbering start value
+        # to 1. The `\pn` group is paragraph-level numbering metadata
+        # that Word respects when computing the list letter for the
+        # paragraph that follows. Emitting it in the breathing-room
+        # paragraph keeps the styled heading clean.
+        out.write("\\pard\\plain{\\*\\pn\\pnlvlbody\\pnstart1}\\par\n")
+    emit_styled(out, "group_heading", title)
 
 
 def _emit_roman_section_heading(
-    out: IO[str], roman: str, title: str,
+    out: IO[str], roman: str, title: str, *, suppress_page_break: bool = False,
 ) -> None:
     """Emit a Purdue-template Roman-numeral section heading (e.g.
     "V. Supporting Documentation for Pending Publications.").
@@ -554,13 +571,23 @@ def _emit_roman_section_heading(
 
     Preceded by a hard page break, matching the template's "separate
     each major section with a page break" convention for the CAPS-
-    BOLD-UNDERLINED + Roman headings.
+    BOLD-UNDERLINED + Roman headings — EXCEPT when this heading is the
+    very first element of the document (set `suppress_page_break=True`),
+    where the leading page break would push the title onto a blank
+    second page. The III. opener at the top of the doc uses this; V.
+    keeps the default page break.
     """
     # Routes through `emit_styled("roman_section", …)`. The roman_section
-    # style in the registry already carries the page break
-    # (PAGE_BREAK_BEFORE), `\s1` Word "heading 1" marker, and
-    # `\b\fs32` styling.
-    emit_styled(out, "roman_section", f"{roman}. {escape_rtf(title)}")
+    # style in the registry carries the page break (PAGE_BREAK_BEFORE)
+    # + `\s1` Word "heading 1" marker + bold. The P&T template's
+    # heading-1 list auto-numbers the Roman prefix, so this emit drops
+    # the `roman` argument from the rendered text (would produce "I.
+    # III. MATERIAL…" doubled otherwise). `roman` is kept in the
+    # signature for callsite intent.
+    emit_styled(
+        out, "roman_section", escape_rtf(title),
+        suppress_page_break=suppress_page_break,
+    )
 
 
 def _emit_intro_note(
@@ -876,6 +903,42 @@ _B_SECTIONS: tuple[tuple[Section, str], ...] = (
 )
 
 
+_MARKDOWN_EMPHASIS_RE = re.compile(r"(\*\*[^*]+\*\*)|(\*[^*]+\*)")
+
+
+def _markdown_inline_to_rtf(text: str) -> str:
+    """Convert markdown `**bold**` and `*italic*` inline emphasis to RTF
+    while escaping the non-markdown segments. Bold is matched first
+    (greedy `**`) so `**X**` doesn't fall back to two `*X*` italics.
+
+    Single-character emphasis tokens that aren't paired (literal `*` in
+    body text) survive the regex unmatched and get RTF-escaped as plain
+    text. Markdown nesting (`**bold *italic* inside**`) isn't supported
+    — the inner `[^*]+` blocks both patterns from spanning a nested `*`;
+    fine for B-section prose which doesn't nest in practice.
+
+    Sentinel-wrapped `\\x01…\\x02` cross-refs survive intact: they don't
+    contain `*`, so the regex skips them, and they pass through
+    `escape_rtf` unchanged as documented at the post-pass site.
+    """
+    out_parts: list[str] = []
+    pos = 0
+    for m in _MARKDOWN_EMPHASIS_RE.finditer(text):
+        out_parts.append(escape_rtf(text[pos:m.start()]))
+        bold, italic = m.group(1), m.group(2)
+        # lint-allow: raw-rtf — markdown→RTF inline emit; close is implicit
+        # in the `{…}` group so emit_styled paragraph plumbing doesn't fit
+        if bold is not None:
+            inner = bold[2:-2]
+            out_parts.append(r"{\b " + escape_rtf(inner) + r"}")
+        else:
+            inner = italic[1:-1]
+            out_parts.append(r"{\i " + escape_rtf(inner) + r"}")
+        pos = m.end()
+    out_parts.append(escape_rtf(text[pos:]))
+    return "".join(out_parts)
+
+
 def _emit_b_section_body(out: IO[str], body: str, code: str) -> None:
     """Render the prose under a B.X heading. Paragraphs are split on
     blank-line gaps; each paragraph becomes one indented RTF `\\par`
@@ -887,9 +950,11 @@ def _emit_b_section_body(out: IO[str], body: str, code: str) -> None:
     SHOULD land — B.1-B.5 are level-1 so the indent is 720 today, but
     if a sub-section gets added the body nests automatically.
 
-    Sentinel-wrapped `\\x01…\\x02` cross-refs that were planted by
-    `resolve_refs_in_list` survive `escape_rtf` untouched and become
-    clickable hyperlinks in the final post-pass.
+    Inline markdown emphasis (`**bold**`, `*italic*`) is translated to
+    RTF via `_markdown_inline_to_rtf`. Sentinel-wrapped `\\x01…\\x02`
+    cross-refs that were planted by `resolve_refs_in_list` survive both
+    the markdown pass and `escape_rtf` untouched and become clickable
+    hyperlinks in the final post-pass.
     """
     indent = _body_indent_for_code(code)
     body = (body or "").strip()
@@ -904,7 +969,7 @@ def _emit_b_section_body(out: IO[str], body: str, code: str) -> None:
         # routinely soft-wrap mid-sentence and we don't want those breaks
         # surfaced as forced line breaks in the rendered packet.
         flat = re.sub(r"\s*\n\s*", " ", p)
-        out.write(f"\\pard\\li{indent} {escape_rtf(flat)}\\par\\par\n")
+        out.write(f"\\pard\\li{indent} {_markdown_inline_to_rtf(flat)}\\par\\par\n")
 
 
 def render_self_evaluation_section(
@@ -944,7 +1009,19 @@ def render_candidate_information_section(
     this generator. The "A.6 gap" is visible in the rendered output by
     design (Purdue template convention: skip but don't renumber).
     """
-    _emit_group_heading(out, "A.", "GENERAL INFORMATION")
+    # The III. opener anchors the front matter at the top of the document.
+    # `suppress_page_break=True` keeps the heading on page 1 (default V.
+    # emit pushes a page break for mid-doc section breaks).
+    _emit_roman_section_heading(
+        out, "III", "MATERIAL PREPARED BY THE CANDIDATE",
+        suppress_page_break=True,
+    )
+    # FIRST heading-2 emit after the III. Roman section — restart the
+    # auto-numbering so Word starts at A. instead of continuing the
+    # doc-global heading-2 list (which would land on B./C./… in the
+    # P&T template, where I. and II. already each contribute an A.
+    # entry).
+    _emit_group_heading(out, "A.", "GENERAL INFORMATION", restart_numbering=True)
 
     _emit_section_heading(
         out, SECTION_CODES["Identifiers"], SECTION_HEADINGS["Identifiers"],
@@ -2056,6 +2133,7 @@ def render_student_awards_section(
     section_key: Section,
     awards: list[StudentAward],
     out: IO[str],
+    *, intro_paragraphs: Sequence[str] = (),
 ) -> None:
     """C.16.2.4 (undergrad) / C.16.3.3 (grad) student awards / fellowships.
 
@@ -2081,6 +2159,10 @@ def render_student_awards_section(
     code = SECTION_CODES[section_key]
     heading = SECTION_HEADINGS[section_key]
     _emit_section_heading(out, code, heading)
+    if intro_paragraphs:
+        body_indent = _body_indent_for_code(code)
+        for p in intro_paragraphs:
+            out.write(f"\\pard\\li{body_indent} {escape_rtf(p)}\\par\\par\n")
     indent = _hanging_indent_for_codes([ref for ref, _ in indexed])
     # Emit tier subheadings as we walk the indexed list — tier changes are
     # detected by previous-tier comparison so we don't re-sort here.
@@ -2108,6 +2190,7 @@ _UNDERGRAD_PATHWAY_TABLE_WIDTHS: list[int] = [1900, 2900, 3200, 1360]
 
 def render_undergrad_pathways_section(
     pathways: list[UndergradPathway], out: IO[str],
+    *, intro_paragraphs: Sequence[str] = (),
 ) -> None:
     """C.16.2.2: Other Undergraduate Research Pathways — 4-column table.
 
@@ -2116,12 +2199,19 @@ def render_undergrad_pathways_section(
     narrative arrangement (longer-running pathways vs one-off events).
     Empty list → emit nothing (no orphan heading) per the C.16.2.X
     skip-when-empty pattern.
+
+    `intro_paragraphs` (optional): prose to emit between the section
+    heading and the table. Indented to match the table's left edge.
     """
     if not pathways:
         return
     code = SECTION_CODES["Undergraduate Research Pathways"]
     heading = SECTION_HEADINGS["Undergraduate Research Pathways"]
     _emit_section_heading(out, code, heading)
+    if intro_paragraphs:
+        body_indent = _body_indent_for_code(code)
+        for p in intro_paragraphs:
+            out.write(f"\\pard\\li{body_indent} {escape_rtf(p)}\\par\\par\n")
     table = RtfTable(_UNDERGRAD_PATHWAY_TABLE_WIDTHS)
     table.add_header(["Dates", "Pathway / activity", "Audience", "Participation"])
     for p in pathways:
@@ -2747,8 +2837,14 @@ def _emit_list_item(
     # width.
     label_pos = _label_position_for_code(code)
     fi = label_pos - indent  # negative; label starts at li + fi = label_pos
+    # `\plain\f0\fs{BODY_FONT_SIZE}` declares TNR 11pt explicitly so body
+    # entries don't silently inherit heading character formatting
+    # (`\fs28` / `\b`) when Word decides not to honor the blank-line
+    # font reset between heading and body — was the cause of the A.1.X
+    # identifier list rendering at the wrong size.
+    from .styles import BODY_FONT_SIZE
     out.write(
-        f"\\pard\\li{indent}\\fi{fi}\\tx{indent} "
+        f"\\pard\\plain\\f0\\fs{BODY_FONT_SIZE}\\li{indent}\\fi{fi}\\tx{indent} "
         f"{_ref_anchor(code, bookmark_prefix=bookmark_prefix)}.\\tab "
         f"{body}\\par\\par\n"
     )
@@ -2862,6 +2958,112 @@ def _emit_placeholder_subsection(
     # heading would land — routed through `_body_indent_for_code` so when
     # someone fills the slot later, the prose lands at the same indent.
     out.write(f"\\pard\\li{_body_indent_for_code(code)}\\par\\par\n")
+
+
+def _emit_subsection_with_prose(
+    out: IO[str], code: str, title: str, paragraphs: list[str],
+) -> None:
+    """Emit a sub-section heading followed by indented prose paragraphs.
+
+    Used for C.16 outline subsections (C.16.1 Overview, C.16.2.1 VIP,
+    C.16.3.1 Thesis Advising) whose prose lives in the Purdue Word
+    template body text — emitting it here keeps "full copy-paste-in"
+    safe (no missing prose to hand-author after the paste).
+
+    Each `paragraphs` entry is one `\\par` block at the same body
+    indent as the heading's child content. Markdown emphasis is NOT
+    processed — the prose is hand-curated and uses literal text only.
+    """
+    _emit_section_heading(out, code, title)
+    indent = _body_indent_for_code(code)
+    for p in paragraphs:
+        out.write(f"\\pard\\li{indent} {escape_rtf(p)}\\par\\par\n")
+
+
+# ---- C.16 outline prose constants ----------------------------------------
+#
+# Hand-authored prose for the C.16 mentoring subsections that don't have
+# YAML data of their own (Overview, VIP, Thesis Advising). Edit in place
+# when the candidate's mentoring story evolves — these are the
+# single source of truth for the rendered packet's mentoring narrative.
+
+_C_16_1_OVERVIEW_PROSE = [
+    "Davis's mentoring activities form a structured development "
+    "pipeline that moves students from project participation to "
+    "research independence, authorship, professional recognition, "
+    "and leadership. At the undergraduate level, this pipeline "
+    "includes Vertically Integrated Projects, senior design, "
+    "independent study, SURF, NSF REU projects, OUR Scholars, "
+    "visiting research programs, and paid or volunteer research "
+    "assistantships. At the graduate level, it includes thesis "
+    "advising, student-led publications, fellowship and internship "
+    "mentoring, peer mentoring, and professional formation through "
+    "research-group leadership. Across these activities, Davis "
+    "emphasizes scaffolded entry into research followed by "
+    "increasing independence: students learn to identify technical "
+    "gaps, formulate research questions, build and evaluate "
+    "artifacts, communicate results, respond to peer review, and "
+    "mentor junior collaborators.",
+    "The subsections below summarize his mentoring in two parts. "
+    "Section C.16.2 describes undergraduate mentoring, including "
+    "VIP and senior design, other undergraduate research pathways, "
+    "undergraduate research products and authorship, and "
+    "undergraduate awards and career development. Section C.16.3 "
+    "describes graduate mentoring, including thesis supervision, "
+    "graduate research leadership and publications, awards and "
+    "placements, and professional formation in the lab.",
+]
+
+_C_16_2_1_VIP_PROSE = [
+    "Davis has sponsored a Vertically Integrated Projects (VIP) "
+    "team in every semester since joining Purdue. The team enrolls "
+    "undergraduate students from ECE, Computer Science, and related "
+    "computing programs. It provides a sustained, multi-year "
+    "mentoring structure in which first-year through senior "
+    "undergraduate students work on open-ended software engineering "
+    "research and development problems. The team has enrolled over "
+    "170 students (enrollment of 10-20 students per semester), and "
+    "twelve students completed senior design projects under Davis's "
+    "supervision through the team.",
+    "The VIP structure supports both broad participation and "
+    "progressive responsibility. Newer students enter through "
+    "onboarding activities and subteam participation; continuing "
+    "students take on technical leadership, project coordination, "
+    "and near-peer mentoring roles. Senior design students use the "
+    "same structure to pursue more substantial engineering "
+    "deliverables under Davis's supervision. This model lets "
+    "students participate at different levels of preparation while "
+    "contributing to a shared, continuing research program rather "
+    "than isolated one-semester projects.",
+]
+
+_C_16_2_2_PATHWAYS_INTRO = [
+    "Beyond VIP and senior design, Davis has mentored undergraduate "
+    "students through several additional research and engagement "
+    "pathways, summarized in the following Table. These mechanisms "
+    "provide multiple entry points into research: summer programs, "
+    "course-credit independent study, visiting-student programs, "
+    "living-learning-community outreach, and discipline-level "
+    "student mentoring.",
+]
+
+_C_16_2_4_AWARDS_INTRO = [
+    "Davis has written over 60 recommendation letters for "
+    "undergraduates pursuing advanced degrees in computing and law. "
+    "His mentees have gone on to top graduate programs, e.g., "
+    "Stanford, Carnegie Mellon, UIUC, Michigan, Georgia Tech, and "
+    "UPenn.",
+    "Many of these mentees have received notable awards.",
+]
+
+_C_16_3_1_THESIS_PROSE = [
+    "Under Davis's supervision, two PhD students have defended "
+    "their dissertations, and seven MSc students have defended "
+    "their theses.",
+    "He currently sole-advises seven PhD students, and co-advises "
+    "two PhD students.",
+    "See table in C.14 for details.",
+]
 
 
 def write_rtf(
@@ -3165,16 +3367,22 @@ def write_rtf(
             # emit of the auto-derived data sub-sections (C.16.2.3 / C.16.2.4
             # / C.16.3.3) so the whole mentoring tree reads top-down per
             # the user-supplied 260603 structure.
-            _emit_placeholder_subsection(out, "C.16.1", "Overview")
+            _emit_subsection_with_prose(
+                out, "C.16.1", "Overview", _C_16_1_OVERVIEW_PROSE,
+            )
             _emit_placeholder_subsection(
                 out, "C.16.2", "Undergraduate Student Mentoring",
             )
-            _emit_placeholder_subsection(
+            _emit_subsection_with_prose(
                 out, "C.16.2.1", "Vertically Integrated Projects",
+                _C_16_2_1_VIP_PROSE,
             )
             if _emit("Undergraduate Research Pathways"):
                 if undergrad_pathways:
-                    render_undergrad_pathways_section(undergrad_pathways, out)
+                    render_undergrad_pathways_section(
+                        undergrad_pathways, out,
+                        intro_paragraphs=_C_16_2_2_PATHWAYS_INTRO,
+                    )
                 else:
                     # No YAML data yet → fall back to the placeholder
                     # so the C.16 outline reads correctly while the
@@ -3188,18 +3396,19 @@ def write_rtf(
             if _emit("Undergraduate Student Awards"):
                 render_student_awards_section(
                     "Undergraduate Student Awards", student_awards, out,
+                    intro_paragraphs=_C_16_2_4_AWARDS_INTRO,
                 )
             _emit_placeholder_subsection(
                 out, "C.16.3", "Graduate Student Mentoring",
             )
-            _emit_placeholder_subsection(
+            _emit_subsection_with_prose(
                 out, "C.16.3.1", "Thesis Advising and Research Supervision",
-            )
-            _emit_placeholder_subsection(
-                out, "C.16.3.2",
-                "Graduate Student Research Leadership and Publications",
+                _C_16_3_1_THESIS_PROSE,
             )
             if _emit("Graduate Student Awards"):
+                # Now C.16.3.2 (renumbered from C.16.3.3) — the
+                # "Research Leadership and Publications" sub-section
+                # was dropped per the 260605 outline revision.
                 render_student_awards_section(
                     "Graduate Student Awards", student_awards, out,
                 )

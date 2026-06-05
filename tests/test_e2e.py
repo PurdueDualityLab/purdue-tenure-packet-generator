@@ -505,8 +505,11 @@ class TestE2eSectionsFilter:
         # set of section headings. If this number changes you've either
         # added a new section or accidentally suppressed one.
         rtf, _ = e2e_outputs
-        # Count fs28 (level-1 section heading) lines.
-        heading_count = rtf.count("\\fs28 ")
+        # Count `\b\fs22` followed by the bookmark marker — the level-1
+        # section heading shape ("Normal" + bold + body-size, with a
+        # bookmark wrap for cross-refs). Proxy that's robust to font-
+        # size changes; tracks the SHAPE, not the size constant.
+        heading_count = rtf.count("\\b\\fs22 {\\*\\bkmkstart")
         # The fixture YAML is intentionally minimal; the full
         # production YAML emits ~29. The fixture exercises ~25.
         # Use a floor + ceiling so the test catches regressions in
