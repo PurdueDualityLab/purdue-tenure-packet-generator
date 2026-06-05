@@ -21,9 +21,9 @@ from .types import (
     CourseDevelopment, CourseTaught, Degree, EntrepreneurialActivity, Grant,
     GrantPerson, Identifiers, InvitedTalk, KeyWork, LeadershipRole,
     MediaAppearance, OtherPosition, Patent, PostdocVisiting,
-    ProfessionalMembership, Publications, Section, ServiceEntry,
-    SoftwareProduct, Student, StudentAward, TechnologyTransfer,
-    UndergradProduct, UnderReview,
+    ProfessionalMembership, Publications, Section, SelfEvaluation,
+    ServiceEntry, SoftwareProduct, Student, StudentAward,
+    TechnologyTransfer, UndergradProduct, UnderReview,
 )
 from .authors import parse_name_parts
 from .venue import parse_venue
@@ -691,6 +691,58 @@ def _render_a7_memberships(
         if m.acronym:
             body += f" ({escape_rtf(m.acronym)})"
         _emit_list_item(out, f"{code}.{idx}", body, indent=indent)
+
+
+_B_SECTIONS: tuple[tuple[Section, str], ...] = (
+    ("B1 Summary",         "b1"),
+    ("B2 Impact",          "b2"),
+    ("B3 Vision",          "b3"),
+    ("B4 External Events", "b4"),
+    ("B5 COVID Impact",    "b5"),
+)
+
+
+def _emit_b_section_body(out: IO[str], body: str) -> None:
+    """Render the prose under a B.X heading. Paragraphs are split on
+    blank-line gaps; each paragraph becomes one indented RTF `\\par`
+    block. Empty body → indented "(not yet populated)" placeholder so
+    the section heading isn't visually orphaned.
+
+    Sentinel-wrapped `\\x01…\\x02` cross-refs that were planted by
+    `resolve_refs_in_list` survive `escape_rtf` untouched and become
+    clickable hyperlinks in the final post-pass.
+    """
+    body = (body or "").strip()
+    if not body:
+        out.write("\\pard\\li720\\i (not yet populated)\\i0\\par\\par\n")
+        return
+    paragraphs = [p.strip() for p in re.split(r"\n{2,}", body) if p.strip()]
+    for p in paragraphs:
+        # Collapse single internal newlines to spaces — markdown paragraphs
+        # routinely soft-wrap mid-sentence and we don't want those breaks
+        # surfaced as forced line breaks in the rendered packet.
+        flat = re.sub(r"\s*\n\s*", " ", p)
+        out.write(f"\\pard\\li720 {escape_rtf(flat)}\\par\\par\n")
+
+
+def render_self_evaluation_section(
+    self_eval: SelfEvaluation, out: IO[str],
+) -> None:
+    """Emit Section IV — B.1 through B.5 statements.
+
+    Group-level "B. SELF-EVALUATION" heading at fs32, then each B.X
+    sub-section with the Purdue-template heading text and the
+    candidate's prose underneath. Cross-references (`@bibkey`, `@id`,
+    `@C.X.Y`) are pre-resolved upstream in `resolve_refs_in_list` so the
+    sentinel markers in each body string render as clickable hyperlinks
+    via the post-pass.
+    """
+    _emit_group_heading(out, "B.", "SELF-EVALUATION")
+    for section, field in _B_SECTIONS:
+        _emit_section_heading(
+            out, SECTION_CODES[section], SECTION_HEADINGS[section],
+        )
+        _emit_b_section_body(out, getattr(self_eval, field))
 
 
 def render_candidate_information_section(
@@ -2427,6 +2479,7 @@ def write_rtf(
     course_development: Optional[list[CourseDevelopment]] = None,
     courses_taught: Optional[list[CourseTaught]] = None,
     candidate_info: Optional[CandidateInformation] = None,
+    self_eval: Optional[SelfEvaluation] = None,
     sections_filter: Optional[set[str]] = None,
 ) -> None:
     log.info("Generating RTF file: %s", path)
@@ -2539,6 +2592,18 @@ def write_rtf(
             # one shot covering all of A.1-A.7).
             if any(_emit(s) for s in sections_in_front):  # type: ignore[arg-type]
                 render_candidate_information_section(candidate_info, out)
+
+        # Section IV — B.1-B.5 self-evaluation. Emitted between Section
+        # III front matter and the C.X scholarly contributions block.
+        # Skipped silently when no self-evaluation file was loaded
+        # (CLI `--self-eval` flag).
+        if self_eval is not None:
+            b_sections = {
+                "B1 Summary", "B2 Impact", "B3 Vision",
+                "B4 External Events", "B5 COVID Impact",
+            }
+            if any(_emit(s) for s in b_sections):  # type: ignore[arg-type]
+                render_self_evaluation_section(self_eval, out)
 
         # C.1 highlight section first (it's a curated promotion list);
         # then the rest of SECTION_ORDER; then Section V, A.1 (Appendix:

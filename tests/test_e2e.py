@@ -75,6 +75,7 @@ def e2e_outputs(
             # exercise A.X rendering live in test_rtf.py with hand-built
             # CandidateInformation fixtures.
             "--candidate-info", "",
+            "--self-eval", "",
         ]
     )
     return out.read_text(encoding="utf-8"), out
@@ -334,6 +335,7 @@ class TestE2eGrantTotalsExtended:
                 "--out", str(out),
                 "--cache", str(cache),
                 "--candidate-info", "",
+                "--self-eval", "",
             ]
         )
         rtf = out.read_text(encoding="utf-8")
@@ -382,6 +384,7 @@ class TestE2eUnresolvedAtIdRef:
                     "--out", str(out),
                     "--cache", str(cache),
                     "--candidate-info", "",
+                    "--self-eval", "",
                 ]
             )
         # The cli exits 1 (failure) when refs don't resolve.
@@ -425,6 +428,7 @@ class TestE2eUnresolvedAtIdRef:
                     "--out", str(out),
                     "--cache", str(cache),
                     "--candidate-info", "",
+                    "--self-eval", "",
                 ]
             )
         assert exc.value.code == 1
@@ -462,6 +466,7 @@ class TestE2eUnresolvedAtIdRef:
                 "--out", str(out),
                 "--cache", str(cache),
                 "--candidate-info", "",
+                "--self-eval", "",
             ]
         )
         rtf = out.read_text(encoding="utf-8")
@@ -515,6 +520,7 @@ class TestE2eSectionsFilter:
                 "--cache", str(cache),
                 "--sections", "C.4",
                 "--candidate-info", "",
+                "--self-eval", "",
             ]
         )
         rtf = out.read_text(encoding="utf-8")
@@ -560,6 +566,7 @@ class TestE2eSectionsFilter:
                 "--cache", str(cache),
                 "--sections", "C.16",
                 "--candidate-info", "",
+                "--self-eval", "",
             ]
         )
         rtf = out.read_text(encoding="utf-8")
@@ -587,6 +594,7 @@ class TestE2eSectionsFilter:
                 "--cache", str(cache),
                 "--sections", "C.4,C.6",
                 "--candidate-info", "",
+                "--self-eval", "",
             ]
         )
         rtf = out.read_text(encoding="utf-8")
@@ -615,6 +623,7 @@ class TestE2eSectionsFilter:
                 "--out", str(full_out),
                 "--cache", str(tmp_path / "full-cache.sqlite"),
                 "--candidate-info", "",
+                "--self-eval", "",
             ]
         )
         full_rtf = full_out.read_text(encoding="utf-8")
@@ -631,6 +640,7 @@ class TestE2eSectionsFilter:
                 "--cache", str(tmp_path / "c4-cache.sqlite"),
                 "--sections", "C.4",
                 "--candidate-info", "",
+                "--self-eval", "",
             ]
         )
         c4_rtf = c4_out.read_text(encoding="utf-8")

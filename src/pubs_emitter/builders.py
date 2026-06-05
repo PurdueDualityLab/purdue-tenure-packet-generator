@@ -30,9 +30,9 @@ from .types import (
     ConferencePresentation, CourseDevelopment, CourseTaught, Degree,
     EntrepreneurialActivity, Grant, GrantPerson, Identifiers, InvitedTalk,
     LeadershipRole, MediaAppearance, OtherPosition, Patent,
-    ProfessionalMembership, Publications, Rank, Section, ServiceEntry,
-    SoftwareProduct, Student, StudentAward, TechnologyTransfer,
-    UndergradProduct, UnderReview,
+    ProfessionalMembership, Publications, Rank, Section, SelfEvaluation,
+    ServiceEntry, SoftwareProduct, Student, StudentAward,
+    TechnologyTransfer, UndergradProduct, UnderReview,
 )
 from .venue import (
     CVE_ID_RE,
@@ -278,6 +278,7 @@ PROSE_FIELDS_BY_TYPE: dict[str, tuple[str, ...]] = {
     "UnderReview": ("title", "venue"),
     "Award": ("name", "significance"),
     "ServiceEntry": ("description",),
+    "SelfEvaluation": ("b1", "b2", "b3", "b4", "b5"),
     "PostdocVisiting": ("position_title_dates", "current_position"),
     "Student": ("position",),
 }
@@ -1120,6 +1121,114 @@ def build_candidate_information(raw: dict) -> CandidateInformation:
         awards=awards,
         professional_memberships=memberships,
     )
+
+
+# ----- B.1-B.5 self-evaluation parsing ------------------------------------
+
+
+# Section header form: "## B.X …optional trailing title text…"
+_B_SECTION_RE = re.compile(r"^##\s+B\.(\d+)\b[^\n]*$", re.MULTILINE)
+
+# Purdue template's soft word caps for the rendered self-evaluation
+# sections. None means "no cap." Over-cap is a build-time warning, not
+# an error — drafts routinely run over before the polish round.
+_B_WORD_CAPS: dict[str, Optional[int]] = {
+    "b1": 1000,   # Summary of achievements
+    "b2": 250,    # Impact of accomplishments
+    "b3": 500,    # Vision
+    "b4": None,   # Candidate comments on external events
+    "b5": None,   # Professional COVID-19 Impact Statement
+}
+
+
+def _count_words(text: str) -> int:
+    """Whitespace-split word count. `@ref` tokens count as one word each,
+    same as a regular word — close enough for the soft cap warning."""
+    return len(text.split())
+
+
+def load_self_evaluation(path: Optional[str]) -> Optional[SelfEvaluation]:
+    """Parse `assets/self-evaluation.md` into a typed SelfEvaluation.
+
+    Markdown structure: each `## B.X …` heading delimits a section; the
+    body is the prose between this heading and the next. The intro
+    block above the first `## B.1` heading is ignored (used for
+    authoring guidance, not rendered).
+
+    A missing path / missing file is NOT an error — the B section is
+    silently skipped in the rendered packet. A malformed file (no
+    `## B.1` heading at all, or duplicate section numbers) IS an error.
+
+    Word counts are checked against the Purdue template caps; over-cap
+    sections log a warning so the candidate sees the gap during build.
+    """
+    if not path:
+        return None
+    if not os.path.exists(path):
+        log.warning(
+            "Self-evaluation file not found at %s — skipping B section "
+            "(B.1-B.5).", path,
+        )
+        return None
+    log.info("Loading self-evaluation from %s", path)
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read()
+
+    sections: dict[str, str] = {}
+    matches = list(_B_SECTION_RE.finditer(text))
+    if not matches:
+        log.error(
+            "Self-evaluation %s contains no `## B.X` section headings.",
+            path,
+        )
+        sys.exit(1)
+    for i, m in enumerate(matches):
+        num = int(m.group(1))
+        if num < 1 or num > 5:
+            log.error(
+                "Self-evaluation %s: unknown section `## B.%d` "
+                "(only B.1-B.5 are supported).", path, num,
+            )
+            sys.exit(1)
+        key = f"b{num}"
+        if key in sections:
+            log.error(
+                "Self-evaluation %s: duplicate `## B.%d` heading.",
+                path, num,
+            )
+            sys.exit(1)
+        # Body runs from end-of-heading to start-of-next-heading (or EOF).
+        body_start = m.end()
+        body_end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        sections[key] = text[body_start:body_end].strip()
+
+    sev = SelfEvaluation(
+        b1=sections.get("b1", ""),
+        b2=sections.get("b2", ""),
+        b3=sections.get("b3", ""),
+        b4=sections.get("b4", ""),
+        b5=sections.get("b5", ""),
+    )
+    _warn_self_evaluation_word_counts(sev)
+    return sev
+
+
+def _warn_self_evaluation_word_counts(sev: SelfEvaluation) -> None:
+    """Log a warning for each B.X section that exceeds the Purdue
+    template's soft word cap. Over-cap is a warning, not an error —
+    polish passes routinely trim drafts back."""
+    for key in ("b1", "b2", "b3", "b4", "b5"):
+        cap = _B_WORD_CAPS.get(key)
+        if cap is None:
+            continue
+        text = getattr(sev, key) or ""
+        n = _count_words(text)
+        if n > cap:
+            log.warning(
+                "self-evaluation %s.upper(): %d words (cap: %d). "
+                "Trim before final submission.",
+                key, n, cap,
+            )
 
 
 def load_non_scholar(path: Optional[str]) -> dict:

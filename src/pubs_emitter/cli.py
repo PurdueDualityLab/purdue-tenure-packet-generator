@@ -42,6 +42,7 @@ from .builders import (
     build_under_review,
     load_candidate_information,
     load_non_scholar,
+    load_self_evaluation,
     validate_non_scholar,
 )
 from .config import (
@@ -52,6 +53,7 @@ from .config import (
     DEFAULT_EVALUATIONKIT_RAWDATA_FILE,
     DEFAULT_MAX_WORKERS,
     DEFAULT_OUT_FILE,
+    DEFAULT_SELF_EVALUATION_FILE,
     MANUAL_LINKS,
     SECTION_CODES,
     SECTION_ORDER,
@@ -357,6 +359,15 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--self-eval", metavar="PATH",
+        default=DEFAULT_SELF_EVALUATION_FILE,
+        help=(
+            "Path to the Section IV self-evaluation markdown file (B.1-B.5). "
+            "Default: %(default)s. Pass an empty string ('') to skip "
+            "Section IV entirely."
+        ),
+    )
+    parser.add_argument(
         "--sections", metavar="CODES", default=None,
         help=(
             "Comma-separated list of section codes to emit (e.g. "
@@ -399,6 +410,9 @@ def main(argv: Optional[list[str]] = None) -> None:
         # Section III front matter (A.1-A.7). Optional — None when no YAML
         # path is supplied or the file is missing.
         candidate_info = load_candidate_information(args.candidate_info or None)
+        # Section IV self-evaluation (B.1-B.5). Optional — None when no
+        # markdown path is supplied or the file is missing.
+        self_eval = load_self_evaluation(args.self_eval or None)
 
         # Populate students AFTER loading non-scholar YAML so we can union the
         # rich C.14 graduate_students names into STUDENTS["G"] for marker matching.
@@ -788,6 +802,13 @@ def main(argv: Optional[list[str]] = None) -> None:
         postdocs_visiting = _resolve(postdocs_visiting, "PostdocVisiting")
         undergraduate_students = _resolve(undergraduate_students, "Student")
         student_awards = _resolve(student_awards, "StudentAward")
+        # Section IV B.1-B.5 self-evaluation prose: resolve @-refs across
+        # all 5 fields and rebuild the NamedTuple. Skipped when no
+        # self-evaluation file was loaded.
+        if self_eval is not None:
+            resolved = _resolve([self_eval], "SelfEvaluation")
+            if resolved:
+                self_eval = resolved[0]
         # A.6 awards: live INSIDE candidate_info, so rebuild the NamedTuple
         # with the resolved list. Skip when no candidate_info was loaded.
         if candidate_info is not None and candidate_info.awards:
@@ -869,6 +890,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             course_development=course_development,
             courses_taught=courses_taught,
             candidate_info=candidate_info,
+            self_eval=self_eval,
             sections_filter=_parse_sections_filter(args.sections),
         )
     finally:

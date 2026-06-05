@@ -108,6 +108,12 @@ SECTION_ORDER: list[Section] = [
     "Licenses",
     "Awards",
     "Professional Memberships",
+    # Section IV (Self-Evaluation) — B.1-B.5. Emitted between A.7 and C.1.
+    "B1 Summary",
+    "B2 Impact",
+    "B3 Vision",
+    "B4 External Events",
+    "B5 COVID Impact",
     # Section V appendix — products under review. Emitted last per the
     # original appendix discipline. The A.1 code here REUSES the prefix
     # the front matter uses; the doc's Roman-numeral parent section
@@ -154,6 +160,11 @@ SECTION_CODES: dict[Section, str] = {
     "Licenses": "A.5",
     "Awards": "A.6",
     "Professional Memberships": "A.7",
+    "B1 Summary":         "B.1",
+    "B2 Impact":          "B.2",
+    "B3 Vision":          "B.3",
+    "B4 External Events": "B.4",
+    "B5 COVID Impact":    "B.5",
     # Section V appendix — bare code is A.1 too; cross-refs render with
     # the explicit "Section V, " prefix to disambiguate from A.1 above.
     "Under Review": "A.1",
@@ -198,6 +209,12 @@ SECTION_HEADINGS: dict[Section, str] = {
     "Licenses": "Licenses, registrations, and certificates.",
     "Awards": "Recognitions (honors and awards) and the significance of these recognitions.",
     "Professional Memberships": "Membership in professional organizations.",
+    # Section IV (Self-Evaluation) — text from the Purdue template.
+    "B1 Summary":         "Summary of achievements.",
+    "B2 Impact":          "Impact of accomplishments.",
+    "B3 Vision":          "Vision.",
+    "B4 External Events": "Candidate comments on any external events or issues that have impacted their productivity.",
+    "B5 COVID Impact":    "Professional COVID-19 Impact Statement (optional).",
     # Section V appendix.
     "Under Review": "Products under review (e.g. papers, books, software)",
     "Key Works": "Key Scholarly Publications or Patents",
@@ -280,6 +297,9 @@ DEFAULT_CANDIDATE_INFO_FILE = "assets/candidate-information.yaml"
 # --evaluationkit-rawdata. Missing file → CSV-derived rows are silently
 # skipped (the YAML-loaded `courses_taught:` list still emits).
 DEFAULT_EVALUATIONKIT_RAWDATA_FILE = "assets/evaluationkit-rawdata.csv"
+# Section IV self-evaluation source (B.1-B.5). Override via CLI
+# --self-eval. Missing file → B section silently skipped.
+DEFAULT_SELF_EVALUATION_FILE = "assets/self-evaluation.md"
 DEFAULT_MAX_WORKERS = 8
 
 # Patent table column widths in twips (1440 twips = 1 inch).

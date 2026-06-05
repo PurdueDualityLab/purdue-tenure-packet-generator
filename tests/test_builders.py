@@ -863,3 +863,105 @@ class TestLoadCandidateInformation:
         assert ci is not None
         assert ci.identifiers.name == "Test Person"
         assert ci.positions_at_purdue == "Asst Prof"
+
+
+class TestLoadSelfEvaluation:
+    """Markdown parser for `assets/self-evaluation.md`. Splits on
+    `^## B.X …` headings and harvests the prose between consecutive
+    headings into the corresponding NamedTuple field."""
+
+    def test_none_path_returns_none(self) -> None:
+        from pubs_emitter.builders import load_self_evaluation
+        assert load_self_evaluation(None) is None
+
+    def test_missing_file_returns_none(self) -> None:
+        from pubs_emitter.builders import load_self_evaluation
+        assert load_self_evaluation("/tmp/does-not-exist-XXXX.md") is None
+
+    def test_parses_all_five_sections(self, tmp_path) -> None:
+        from pubs_emitter.builders import load_self_evaluation
+        path = tmp_path / "self-eval.md"
+        path.write_text(
+            "intro junk that the parser ignores\n\n"
+            "## B.1 Summary\n\n"
+            "Body of B.1.\n\n"
+            "## B.2 Impact\n\n"
+            "Body of B.2.\n\n"
+            "## B.3 Vision\n\n"
+            "Body of B.3.\n\n"
+            "## B.4 External\n\n"
+            "Body of B.4.\n\n"
+            "## B.5 COVID\n\n"
+            "Body of B.5.\n",
+            encoding="utf-8",
+        )
+        sev = load_self_evaluation(str(path))
+        assert sev is not None
+        assert sev.b1 == "Body of B.1."
+        assert sev.b2 == "Body of B.2."
+        assert sev.b3 == "Body of B.3."
+        assert sev.b4 == "Body of B.4."
+        assert sev.b5 == "Body of B.5."
+
+    def test_missing_sections_default_empty(self, tmp_path) -> None:
+        """A file that has only some of the B.X sections fills the rest
+        with empty strings — the renderer's placeholder fires instead."""
+        from pubs_emitter.builders import load_self_evaluation
+        path = tmp_path / "self-eval.md"
+        path.write_text(
+            "## B.1 Summary\n\n"
+            "Body.\n",
+            encoding="utf-8",
+        )
+        sev = load_self_evaluation(str(path))
+        assert sev is not None
+        assert sev.b1 == "Body."
+        assert sev.b2 == ""
+        assert sev.b5 == ""
+
+    def test_no_b_heading_exits(self, tmp_path) -> None:
+        """A file with no `## B.X` heading is a structural error — the
+        candidate likely renamed or deleted the headings; bail loudly."""
+        from pubs_emitter.builders import load_self_evaluation
+        path = tmp_path / "self-eval.md"
+        path.write_text("just plain text, no headings\n", encoding="utf-8")
+        with pytest.raises(SystemExit):
+            load_self_evaluation(str(path))
+
+    def test_duplicate_section_exits(self, tmp_path) -> None:
+        from pubs_emitter.builders import load_self_evaluation
+        path = tmp_path / "self-eval.md"
+        path.write_text(
+            "## B.1 Summary\n\nfirst\n\n## B.1 Summary again\n\nsecond\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(SystemExit):
+            load_self_evaluation(str(path))
+
+    def test_word_count_warning_over_cap(self, tmp_path, caplog) -> None:
+        """B.1 has a 1000-word soft cap. Over-cap → warning at build."""
+        import logging
+        from pubs_emitter.builders import load_self_evaluation
+        path = tmp_path / "self-eval.md"
+        path.write_text(
+            "## B.1 Summary\n\n" + (" word" * 1500) + "\n",
+            encoding="utf-8",
+        )
+        with caplog.at_level(logging.WARNING):
+            load_self_evaluation(str(path))
+        # The over-cap message identifies the section + word count.
+        assert "1500 words" in caplog.text
+        assert "cap: 1000" in caplog.text
+
+    def test_no_warning_under_cap(self, tmp_path, caplog) -> None:
+        import logging
+        from pubs_emitter.builders import load_self_evaluation
+        path = tmp_path / "self-eval.md"
+        path.write_text(
+            "## B.1 Summary\n\n" + ("word " * 50) + "\n",
+            encoding="utf-8",
+        )
+        with caplog.at_level(logging.WARNING):
+            load_self_evaluation(str(path))
+        # No warning fired for the b1 section (other sections may have).
+        assert "b1.upper()" not in caplog.text
