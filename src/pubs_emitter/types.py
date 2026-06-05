@@ -280,6 +280,29 @@ class PostdocVisiting(NamedTuple):
     id: str = ""                    # OPTIONAL cross-ref id; @id resolves to "C.15.N"
 
 
+class UndergradPathway(NamedTuple):
+    """A C.16.2.2 row: one undergraduate-research pathway / activity entry.
+
+    Each row captures a distinct mentoring channel — REU programs, SURF,
+    independent study, a one-off hosting arrangement, a presentation —
+    with the dates over which it ran, the audience, and a rough head
+    count. The four columns intentionally map 1:1 onto the Purdue tenure
+    template's expected pathway-summary table so the reader scans by
+    column.
+
+    `dates` is free-form so it can express both "Summer 2023" and a
+    multi-year span like "Summer 2021, 2022, 2023, 2024; several
+    academic semesters". The renderer doesn't try to sort by these — it
+    emits in YAML order so the candidate controls the narrative
+    arrangement (newer-pathway vs longer-running-pathway-first is a
+    judgment call).
+    """
+    dates: str           # "Summer 2021, 2022, 2023, 2024; several academic semesters"
+    activity: str        # "SURF, NSF REU, OUR Scholars, and independent study"
+    audience: str        # "Undergraduate students in ECE and CS, including ..."
+    participation: str   # "~10 students" / "1 student" / "~30 students"
+
+
 class UndergradProduct(NamedTuple):
     """A C.16.2.3 record: a publication / artifact that includes ≥1 undergrad
     coauthor. Auto-derived from each bib entry's `author` list at build

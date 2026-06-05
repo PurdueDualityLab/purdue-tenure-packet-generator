@@ -505,7 +505,7 @@ class TestE2eSectionsFilter:
         # set of section headings. If this number changes you've either
         # added a new section or accidentally suppressed one.
         rtf, _ = e2e_outputs
-        # Count fs28 (Heading 1) section title lines.
+        # Count fs28 (level-1 section heading) lines.
         heading_count = rtf.count("\\fs28 ")
         # The fixture YAML is intentionally minimal; the full
         # production YAML emits ~29. The fixture exercises ~25.
@@ -807,7 +807,13 @@ class TestE2eNumericalOrdering:
         for match in self._BOOKMARK_START_RE.finditer(rtf):
             name = match.group(1)
             parts = name.split("_")
-            if len(parts) < 2:
+            # Skip top-level section-heading bookmarks (C_1, A_1, etc.) —
+            # they're section markers themselves and not subject to the
+            # "dense 1..N within each section" rule (the C.X family
+            # already covers 1-26, but the ordering check is about
+            # ENTRY-level density per parent section, not top-level
+            # section ordering).
+            if len(parts) < 3:
                 continue
             try:
                 code_tuple: tuple[int, ...] = (
@@ -829,6 +835,14 @@ class TestE2eNumericalOrdering:
         sequence."""
         rtf, _ = e2e_outputs
         groups = self._entries_by_parent(rtf)
+        # C.5 subcategories (Magazine = .1, Technical Reports = .2,
+        # Direct industry impacts = .3) are POPULATION-DEPENDENT. A run
+        # with no Magazine entries skips C.5.1 entirely — sparse codes
+        # at the subcategory level are valid by design. Skip the (C, 5)
+        # parent in the dense-numbering check; the WITHIN-subcategory
+        # densities (parents (C, 5, 1), (C, 5, 2), (C, 5, 3)) still get
+        # checked normally.
+        C5_PARENT = (ord("C"), 5)
         problems: list[str] = []
         for parent, codes in sorted(groups.items()):
             # Only check sections that actually emit numbered entries
@@ -847,6 +861,8 @@ class TestE2eNumericalOrdering:
                 problems.append(
                     f"{parent_dotted}: out-of-order suffixes {suffixes}"
                 )
+            if parent == C5_PARENT:
+                continue  # subcategory slot density is content-dependent
             expected = list(range(1, len(suffixes) + 1))
             if suffixes != expected:
                 problems.append(
@@ -1054,6 +1070,60 @@ class TestE2eChronologicalEmissionOrder:
         )
 
 
+class TestMergePagesCache:
+    """`merge_pages_cache` overlays the Crossref-backfilled cache onto
+    bib entries that lack a `pages` field. Author-written pages always
+    win — the cache is a fill-in for misses, not an override. Missing
+    cache file is a silent no-op so a fresh checkout (no backfill run
+    yet) just renders without page counts."""
+
+    def test_injects_when_pages_missing(self, tmp_path: pathlib.Path) -> None:
+        from pubs_emitter.cli import merge_pages_cache
+        cache_path = tmp_path / "page-cache.yaml"
+        cache_path.write_text(
+            "alice2024paper:\n"
+            "  pages: '1-12'\n"
+            "  doi: '10.1234/x'\n"
+            "  source: crossref\n",
+            encoding="utf-8",
+        )
+        entries: list = [{"ID": "alice2024paper", "title": "X"}]
+        merge_pages_cache(entries, str(cache_path))
+        assert entries[0]["pages"] == "1-12"
+
+    def test_author_written_pages_take_precedence(
+        self, tmp_path: pathlib.Path,
+    ) -> None:
+        """If the bib already carries a `pages` value, the cache MUST
+        NOT clobber it — the author's hand-curated value is authoritative."""
+        from pubs_emitter.cli import merge_pages_cache
+        cache_path = tmp_path / "page-cache.yaml"
+        cache_path.write_text(
+            "alice2024paper:\n  pages: '1-99'\n  doi: '10.x/y'\n",
+            encoding="utf-8",
+        )
+        entries: list = [{"ID": "alice2024paper", "pages": "1-12"}]
+        merge_pages_cache(entries, str(cache_path))
+        assert entries[0]["pages"] == "1-12"
+
+    def test_missing_cache_file_is_silent_noop(
+        self, tmp_path: pathlib.Path,
+    ) -> None:
+        from pubs_emitter.cli import merge_pages_cache
+        entries: list = [{"ID": "alice2024paper", "title": "X"}]
+        # File doesn't exist — should not raise, should not mutate entries.
+        merge_pages_cache(entries, str(tmp_path / "absent.yaml"))
+        assert "pages" not in entries[0]
+
+    def test_empty_cache_path_is_silent_noop(self) -> None:
+        """Empty-string cache path (set via `--pages-cache ''`) disables
+        the merge entirely — for users who don't want auto-backfill."""
+        from pubs_emitter.cli import merge_pages_cache
+        entries: list = [{"ID": "alice2024paper"}]
+        merge_pages_cache(entries, "")
+        assert "pages" not in entries[0]
+
+
 class TestFilterHidden:
     """Config-level `publication_hide:` filter — drops bib entries whose
     citation key appears in the list before paper_index assembly, so the
@@ -1254,28 +1324,33 @@ class TestE2eSectionBookmarkPlacement:
 
         Bookmark naming convention (single source of truth in
         `_ref_anchor`):
-          * "V_A_X_N" → Section V's A.X (V_A1 or V_A2)
-          * "A_X_N"   → Section III's A.X  (A1..A7)
+          * "V_A_X_N" → Section V's A.X (V_A1 or V_A2). Section V uses
+            the `V_` prefix to namespace its under-review (A.1.N) and
+            pending-proposals (A.2.N) bookmarks so they don't collide
+            with Section III's A.1 Identifiers / A.2 Degrees entries.
+          * "A_X_N"   → Section III's A.X (A1..A7). After A.1 became a
+            numbered list (A.1.1 / A.1.2 / A.1.3 Identifiers), the bare
+            `A_1_N` namespace belongs to Section III.
           * "C_X[_…]" → C.X family — strip suffix to top-level "C.X"
         """
+        # Top-level section-heading bookmarks (C_1, C_5, A_1, V_A_1, ...)
+        # are the section markers THEMSELVES — added so cross-refs like
+        # "see C.5" resolve. They fall right at the section boundary; the
+        # heading-text-position-based range build would classify them as
+        # the END of the previous section, which is semantically wrong.
+        # Skip them — the placement test cares about ENTRY bookmarks
+        # (sub-section / numbered entry), not section markers.
+        parts = name.split("_")
+        if parts[0] == "V" and len(parts) == 3:
+            return ""  # V_A_1 / V_A_2 — Section V section-heading markers
         if name.startswith("V_A_"):
             # "V_A_1_N" → V_A1; "V_A_2_N" → V_A2
-            parts = name.split("_")
             return f"V_A{parts[2]}"
-        if name.startswith("A_"):
-            # Section III A.X.N bookmark — bare-A form only emitted by
-            # Section III sub-section entries (Section V under-review
-            # also uses bare A_1_N because Section III A.1 is bullets
-            # and emits no A_1_N bookmark to collide with).
-            parts = name.split("_")
-            idx = parts[1]
-            # A_1_N is owned by Section V under-review (V_A1 range);
-            # all other A_X_N belong to Section III.
-            return "V_A1" if idx == "1" else f"A{idx}"
-        if name.startswith("C_"):
-            # Strip subscripts: C_16_2_3_1 → C16. The top-level section
-            # "C.16" owns every descendant bookmark.
-            parts = name.split("_")
+        if name.startswith("A_") or name.startswith("C_"):
+            if len(parts) == 2:
+                return ""  # top-level section-heading bookmark — skip
+            if name.startswith("A_"):
+                return f"A{parts[1]}"
             return f"C{parts[1]}"
         return ""  # bookmark we don't model — skip
 

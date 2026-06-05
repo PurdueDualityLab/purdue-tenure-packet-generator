@@ -17,6 +17,7 @@ from collections import defaultdict
 from typing import Optional, cast
 
 import bibtexparser
+import yaml
 
 from .builders import (
     build_book_chapter,
@@ -36,6 +37,7 @@ from .builders import (
     build_software_product,
     build_student_award,
     build_technology_transfer,
+    build_undergrad_pathway,
     build_undergrad_products,
     build_student,
     build_thesis,
@@ -49,6 +51,7 @@ from .config import (
     BIB_IGNORE,
     PUBLICATION_HIDE,
     DEFAULT_CANDIDATE_INFO_FILE,
+    DEFAULT_PAGES_CACHE_FILE,
     DEFAULT_DB_FILE,
     DEFAULT_EVALUATIONKIT_RAWDATA_FILE,
     DEFAULT_MAX_WORKERS,
@@ -67,7 +70,7 @@ from .types import (
     LeadershipRole, MediaAppearance, Patent, PostdocVisiting, Publications,
     CourseDevelopment, CourseTaught, EntrepreneurialActivity,
     ServiceEntry, SoftwareProduct, Student, StudentAward,
-    TechnologyTransfer, UndergradProduct, UnderReview,
+    TechnologyTransfer, UndergradPathway, UndergradProduct, UnderReview,
 )
 from .venue import (
     EntryParseError,
@@ -98,6 +101,45 @@ def load_bib(path: str) -> list[BibEntry]:
         db = bibtexparser.load(f)
     log.info("Loaded %d entries", len(db.entries))
     return cast(list[BibEntry], db.entries)
+
+
+def merge_pages_cache(entries: list[BibEntry], cache_path: str) -> None:
+    """Overlay the Crossref-backfilled page cache onto bib entries in-place.
+
+    The cache is a YAML mapping `bib_key -> {pages, doi, source, fetched,
+    bib_year}` populated by `tools/crossref_pages_backfill.py`. Only
+    entries that LACK a `pages` field receive the injection — author-
+    written pages always win. Missing cache file is a silent no-op
+    (first run / cache not yet populated). Logs one INFO line per
+    injected entry so a deploy log shows the backfill coverage.
+    """
+    if not cache_path:
+        return
+    if not os.path.exists(cache_path):
+        log.debug("Page cache not present at %s (skipping merge)", cache_path)
+        return
+    with open(cache_path, "r", encoding="utf-8") as f:
+        cache = yaml.safe_load(f) or {}
+    if not isinstance(cache, dict):
+        log.warning("Page cache %s root is not a mapping; skipping", cache_path)
+        return
+    injected = 0
+    for entry in entries:
+        if entry.get("pages"):
+            continue
+        key = entry.get("ID", "")
+        cached = cache.get(key)
+        if not cached:
+            continue
+        pages = cached.get("pages")
+        if not pages:
+            continue
+        entry["pages"] = pages
+        injected += 1
+    log.info(
+        "Page cache: %d entries had pages injected from %s",
+        injected, cache_path,
+    )
 
 
 def filter_ignored(entries: list[BibEntry], ignore_titles: list[str]) -> list[BibEntry]:
@@ -368,6 +410,17 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--pages-cache", metavar="PATH",
+        default=DEFAULT_PAGES_CACHE_FILE,
+        help=(
+            "Path to the Crossref-backfilled page-count cache (populated "
+            "by tools/crossref_pages_backfill.py). Entries missing a "
+            "`pages` field receive the cached value at load time. "
+            "Default: %(default)s. Missing file is a silent no-op. "
+            "Pass an empty string ('') to disable the merge."
+        ),
+    )
+    parser.add_argument(
         "--sections", metavar="CODES", default=None,
         help=(
             "Comma-separated list of section codes to emit (e.g. "
@@ -383,7 +436,35 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
             "the whole packet."
         ),
     )
+    parser.add_argument(
+        "--list-styles", action="store_true",
+        help=(
+            "Print the style registry (STYLES + SPACING + page-break "
+            "+ border markers from `pubs_emitter.styles`) and exit. "
+            "Diagnostic — shows what RTF open-tag sequence each named "
+            "style produces, useful when debugging an unexpected visual."
+        ),
+    )
     return parser.parse_args(argv)
+
+
+def _print_style_registry() -> None:
+    """Dump the styles.STYLES registry + sidecar dicts. Format:
+        STYLE NAME              OPEN TAGS            SPACING  PAGE? BORDER?
+    """
+    from .styles import (
+        BORDER_BLOCKS, PAGE_BREAK_BEFORE, SPACING, STYLES,
+    )
+    name_w = max(len(n) for n in STYLES) + 2
+    print(f"{'STYLE':<{name_w}} {'OPEN':<28} {'SPACING':<11} {'PAGE':<5} BORDER")
+    print(f"{'-' * (name_w - 1):<{name_w}} {'-' * 27:<28} {'-' * 10:<11} {'-' * 4:<5} ------")
+    for name in sorted(STYLES):
+        opens = STYLES[name] or "(empty)"
+        sb, sa = SPACING.get(name, (0, 0))
+        spacing = f"sb={sb},sa={sa}" if (sb or sa) else "-"
+        page = "yes" if name in PAGE_BREAK_BEFORE else "-"
+        border = "yes" if name in BORDER_BLOCKS else "-"
+        print(f"{name:<{name_w}} {opens:<28} {spacing:<11} {page:<5} {border}")
 
 
 def main(argv: Optional[list[str]] = None) -> None:
@@ -393,6 +474,12 @@ def main(argv: Optional[list[str]] = None) -> None:
         datefmt="%H:%M:%S",
         stream=sys.stderr,
     )
+    # `--list-styles` is a diagnostic short-circuit: dump the registry
+    # and exit before required-arg validation forces `--bib`.
+    raw_argv = argv if argv is not None else sys.argv[1:]
+    if "--list-styles" in raw_argv:
+        _print_style_registry()
+        return
     args = parse_args(argv)
     conn = open_db(args.cache)
     try:
@@ -404,6 +491,11 @@ def main(argv: Optional[list[str]] = None) -> None:
             filter_ignored(load_bib(args.bib), BIB_IGNORE),
             PUBLICATION_HIDE,
         )
+        # Merge in Crossref-backfilled page counts from the side cache
+        # (`tools/crossref_pages_backfill.py` populates this asynchronously).
+        # Renderer treats injected pages identically to bib-native pages;
+        # `format_details` converts ranges to "N pages" on emit.
+        merge_pages_cache(entries, args.pages_cache)
         # Load + validate YAML side file (CVEs etc.) before any network work.
         non_scholar = load_non_scholar(args.non_scholar)
         validate_non_scholar(non_scholar, entries)
@@ -700,6 +792,15 @@ def main(argv: Optional[list[str]] = None) -> None:
             under_review=under_review,
         )
 
+        # C.16.2.2 Other Undergraduate Research Pathways — 4-column table
+        # authored in YAML. Missing key → empty list → renderer falls
+        # back to the placeholder (heading + blank body) so the C.16
+        # outline still emits in order.
+        undergrad_pathways: list[UndergradPathway] = [
+            build_undergrad_pathway(e)
+            for e in (non_scholar.get("undergraduate_research_pathways") or [])
+        ]
+
         # ----- @id cross-reference resolution ---------------------------
         # Build a global ref_index of (user-assigned id) → C.X.Y by walking
         # every YAML-authored list in its FINAL render order. Then substitute
@@ -752,14 +853,16 @@ def main(argv: Optional[list[str]] = None) -> None:
             ref_index[bib_key] = code
 
         # Under-review entries live under Section V; the bare code "A.1.N"
-        # collides with the Section III front-matter A.1 prefix, so we
-        # disambiguate at cross-ref render time by storing the value as
-        # "Section V, A.1.N|A.1.N" — the pipe-form is honored by
-        # _finalize_ref_hyperlinks (display=LHS, bookmark target=RHS).
+        # collides with Section III's A.1 Identifiers entries (now also
+        # numbered A.1.1 / A.1.2 / A.1.3), so we namespace Section V's
+        # bookmark target with a `V.` prefix → bookmark name `V_A_1_N`.
+        # The ref_index value is the pipe-form "Section V, A.1.N|V.A.1.N"
+        # honored by `_finalize_ref_hyperlinks` (display=LHS, bookmark
+        # target=RHS). Mirrors the V.A.2 Pending Proposals namespace.
         ur_code = SECTION_CODES["Under Review"]
         for idx, ur in enumerate(under_review, 1):
             bare = f"{ur_code}.{idx}"
-            _register(ur, f"Section V, {bare}|{bare}")
+            _register(ur, f"Section V, {bare}|V.{bare}")
         _register_simple(key_works, "Key Works")
         _register_simple(invited_talks, "Invited Talks")
         _register_simple(leadership_roles, "Leadership Roles")
@@ -835,11 +938,34 @@ def main(argv: Optional[list[str]] = None) -> None:
         student_awards = _resolve(student_awards, "StudentAward")
         # Section IV B.1-B.5 self-evaluation prose: resolve @-refs across
         # all 5 fields and rebuild the NamedTuple. Skipped when no
-        # self-evaluation file was loaded.
+        # self-evaluation file was loaded. Then substitute `#MACRO_NAME`
+        # tokens with the computed Statistics — see `statistics.py`.
         if self_eval is not None:
             resolved = _resolve([self_eval], "SelfEvaluation")
             if resolved:
                 self_eval = resolved[0]
+            from .statistics import StatsContext, compute_all, substitute
+            stats_ctx = StatsContext(
+                publications=publications,
+                bib_entries=entries,
+                paper_index=paper_index,
+                conn=conn,
+                patents=patents,
+                invited_talks=invited_talks,
+                profession_service=profession_service,
+            )
+            macros = compute_all(stats_ctx)
+            log.info(
+                "Statistics macros computed: %s",
+                ", ".join(f"{k}={v}" for k, v in sorted(macros.items())),
+            )
+            self_eval = self_eval._replace(
+                b1=substitute(self_eval.b1, macros),
+                b2=substitute(self_eval.b2, macros),
+                b3=substitute(self_eval.b3, macros),
+                b4=substitute(self_eval.b4, macros),
+                b5=substitute(self_eval.b5, macros),
+            )
         # A.6 awards: live INSIDE candidate_info, so rebuild the NamedTuple
         # with the resolved list. Skip when no candidate_info was loaded.
         if candidate_info is not None and candidate_info.awards:
@@ -915,6 +1041,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             under_review=under_review,
             software_products=software_products,
             student_awards=student_awards,
+            undergrad_pathways=undergrad_pathways,
             undergrad_products=undergrad_products,
             entrepreneurial_activities=entrepreneurial_activities,
             technology_transfer=technology_transfer,

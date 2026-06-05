@@ -7,6 +7,7 @@ import re
 from typing import IO, Optional
 
 from .builders import escape_rtf
+from .styles import emit_styled, styled_inline
 from .config import (
     ORG_EXPANSIONS,
     PATENT_TABLE_WIDTHS,
@@ -23,7 +24,7 @@ from .types import (
     MediaAppearance, OtherPosition, Patent, PostdocVisiting,
     ProfessionalMembership, Publications, Section, SelfEvaluation,
     ServiceEntry, SoftwareProduct, Student, StudentAward,
-    TechnologyTransfer, UndergradProduct, UnderReview,
+    TechnologyTransfer, UndergradPathway, UndergradProduct, UnderReview,
 )
 from .authors import parse_name_parts
 from .venue import parse_venue
@@ -100,7 +101,10 @@ class RtfTable:
         # structure is lost — the cells visually concatenate AND pasting
         # into Word doesn't produce a real table.
         for cell in cells:
-            content = rf"\b {cell}\b0" if is_header else cell
+            # Header cells route bold through `styled_inline("table_header", …)`
+            # so the bold-wrap decision lives in the style registry, not
+            # inline at the table renderer. Body cells emit verbatim.
+            content = styled_inline("table_header", cell) if is_header else cell
             parts.append(rf"\pard\intbl {content}\cell")
         parts.append("\\row\n")
         return "".join(parts)
@@ -172,7 +176,7 @@ def render_citation(
         cve_id_field = render_link_field(cit.link).lstrip()
         body = f"{cve_id_field}. {cit.authors_rtf} ({cit.year_str}). {escape_rtf(cit.title)}"
         if venue:
-            body += f", \\i {escape_rtf(venue)}\\i0"
+            body += f", {styled_inline('venue_italic', escape_rtf(venue))}"
         body += "."
     else:
         # No comma between the last author and the year — the last-author
@@ -180,7 +184,7 @@ def render_citation(
         # a trailing comma before `(YEAR)` reads as a typo.
         body = f"{cit.authors_rtf} ({cit.year_str}). {escape_rtf(cit.title)}"
         if venue:
-            body += f", \\i {escape_rtf(venue)}\\i0"
+            body += f", {styled_inline('venue_italic', escape_rtf(venue))}"
         body += f"{escape_rtf(cit.details)}."
         # Append DOI (if any) and close it with a period so the regular
         # citation is fully terminated before the tier marker.
@@ -197,7 +201,7 @@ def render_citation(
     # wrap naturally — the awkward case is digit-orphaning.
     prefix = "Venue rank: " if cit.section in RANKED_SECTIONS else ""
     tier_label = TIER_LABELS[cit.rank].replace("Tier ", "Tier\\~")
-    body += f" \\ul {prefix}{tier_label}\\ulnone."
+    body += f" {styled_inline('underline_marker', f'{prefix}{tier_label}')}."
     if cit.back_ref_title and paper_index:
         ref = paper_index.get(normalize_title(cit.back_ref_title))
         if ref:
@@ -289,18 +293,13 @@ def _emit_inline_heading(
     heading sits at the same column the "C.X.Y.N." prefixes start at —
     leading the sub-list visually rather than floating to the left.
     """
-    if border:
-        out.write(
-            f"\\pard\\li{indent}\\sb120\\sa120"
-            f"\\brdrt\\brdrs\\brdrw15\\brsp40"
-            f"\\brdrb\\brdrs\\brdrw15"
-            f" \\i {escape_rtf(text)}\\i0\\par\n"
-        )
-    else:
-        out.write(
-            f"\\pard\\li{indent}\\i\\fs{font_size}\\sb120\\sa60 "
-            f"{escape_rtf(text)}\\i0\\fs24\\par\n"
-        )
+    # Border variant → `career_phase_divider` style (italic body-font
+    # text inside top + bottom borders, sb120/sa240). Non-border
+    # variant → `inline_subheading` style (italic fs26, sb120/sa60).
+    # Both route through `emit_styled`; the registry owns the open
+    # tags, spacing, and (for border) the border-block RTF.
+    style = "career_phase_divider" if border else "inline_subheading"
+    emit_styled(out, style, escape_rtf(text), indent=indent)
 
 
 def _career_phase_for_year(year: int) -> str:
@@ -385,7 +384,7 @@ def _emit_author_marker_legend(out: IO[str]) -> None:
     bullet_fi = -_HEADING_INDENT_PER_LEVEL  # small gutter for the glyph
     bullet_tx = bullet_li
     out.write(
-        f"\\pard\\li{notation_li}\\i Notation:\\i0\\par\n"
+        f"\\pard\\li{notation_li} {styled_inline('field_label', 'Notation:')}\\par\n"
     )
 
     def _bullet(rtf_body: str) -> None:
@@ -394,6 +393,7 @@ def _emit_author_marker_legend(out: IO[str]) -> None:
             f"\\u8226?\\tab {rtf_body}\\par\n"
         )
 
+    # lint-allow: raw-rtf — "Bold" demonstrates the marker visually.
     _bullet("\\b Bold\\b0  denotes the candidate (James C. Davis).")
     _bullet(
         "\\super *\\nosupersub{} denotes the corresponding author."
@@ -498,11 +498,32 @@ def build_paper_index(publications: Publications) -> dict[str, str]:
         ordered = order_citations_for_emission(
             section, publications.get(section, []),
         )
-        for idx, cit in enumerate(ordered, 1):
+        section_code = SECTION_CODES[section]
+        # C.5 uses subcategory-nested codes: C.5.{subcat_idx}.{within_idx}
+        # where subcat_idx is the subcategory's position in
+        # _C5_SUBCATEGORY_ORDER. Every other section uses the flat
+        # `{section_code}.{idx}` form. Keep the loop unified by tracking
+        # within-subcat counters when needed.
+        is_c5 = section == "Other publications and products"
+        prev_subcat: Optional[str] = None
+        within_idx = 0
+        flat_idx = 0
+        for cit in ordered:
             if cit.rank == "CVE":
                 continue
+            flat_idx += 1
+            if is_c5:
+                subcat = _C5_SUBCATEGORY_BY_RANK.get(cit.rank, "Other")
+                if subcat != prev_subcat:
+                    within_idx = 0
+                    prev_subcat = subcat
+                within_idx += 1
+                subcat_idx = _C5_SUBCATEGORY_IDX.get(subcat, 0)
+                code = f"{section_code}.{subcat_idx}.{within_idx}"
+            else:
+                code = f"{section_code}.{flat_idx}"
             if cit.title:
-                index[normalize_title(cit.title)] = f"{SECTION_CODES[section]}.{idx}"
+                index[normalize_title(cit.title)] = code
     return index
 
 
@@ -512,11 +533,88 @@ def _emit_group_heading(out: IO[str], code: str, title: str) -> None:
     level-1 (fs32 vs fs28) so the visual hierarchy is: GROUP > section > sub.
     No bookmark — these headings aren't cross-ref targets.
     """
-    out.write("\\pard\\plain\\fs24\\par\n")
-    out.write(
-        f"\\pard\\plain\\s1\\b\\fs32 {code} {title}\\par\n"
-        f"\\pard\\plain\\fs24\\par\n"
-    )
+    # Leading blank for breathing room above the group heading
+    # (preserves the visual spacing the OLD inline emit had at this
+    # site). Then route the heading itself through `emit_styled`.
+    out.write(f"\\pard\\plain\\f0\\fs{_BODY_FONT_SIZE}\\par\n")
+    emit_styled(out, "group_heading", f"{code} {title}")
+
+
+def _emit_roman_section_heading(
+    out: IO[str], roman: str, title: str,
+) -> None:
+    """Emit a Purdue-template Roman-numeral section heading (e.g.
+    "V. Supporting Documentation for Pending Publications.").
+
+    Distinguished from `_emit_group_heading` (A./B./C. sub-section
+    groups, which use CAPS BOLD text) by Title-Case rendering — the
+    Roman numeral is a TOP-LEVEL document section marker (the
+    candidate's tenure-packet template uses I., II., ..., V. for the
+    primary outline). Bold + fs32 + left-aligned + Title-Case.
+
+    Preceded by a hard page break, matching the template's "separate
+    each major section with a page break" convention for the CAPS-
+    BOLD-UNDERLINED + Roman headings.
+    """
+    # Routes through `emit_styled("roman_section", …)`. The roman_section
+    # style in the registry already carries the page break
+    # (PAGE_BREAK_BEFORE), `\s1` Word "heading 1" marker, and
+    # `\b\fs32` styling.
+    emit_styled(out, "roman_section", f"{roman}. {escape_rtf(title)}")
+
+
+def _emit_intro_note(
+    out: IO[str], text: str, *, indent: int = 0,
+) -> None:
+    """Emit an italic "introductory note" paragraph — the styled
+    one-liner that orients the reader at the top of a section before
+    the entries begin.
+
+    Use sites:
+      * C.9 Conference Presentations — explains the lead-author-talks
+        convention
+      * C.10-C.13 Grants — section totals ("Total amount of external
+        gifts and voluntary support: $421,478")
+      * C.22 Software Products — cross-ref to C.5 for non-software impact
+      * C.24 Profession Service — peer-review framing
+      * Future: any single-line orienter that introduces a section
+
+    All such notes share italic styling so a reader scanning the doc
+    sees "this is meta about the section that follows" at a glance,
+    distinct from entries and headings. The `indent` param matches the
+    section's body indent (use `_body_indent_for_code(code)`) when the
+    note should align with the entries it introduces.
+    """
+    # Routes through `emit_styled("intro_note", …)`. The intro_note
+    # style in the registry carries the italic emphasis + body-font
+    # size + sa120 trailing spacing.
+    emit_styled(out, "intro_note", text, indent=indent)
+
+
+def _emit_subgroup_heading(out: IO[str], title: str) -> None:
+    """Emit a centered, bold, underlined sub-group heading that divides
+    Section C into thematic clusters — PUBLISHED WORK (C.1-C.5),
+    EXTERNAL VISIBILITY (C.6 onward), MENTORING (C.14 onward),
+    LEARNING (C.17 onward). Matches the Purdue template's banner-style
+    sub-group dividers from the candidate's source template screenshots.
+
+    Each subgroup heading is preceded by a HARD PAGE BREAK per the
+    Purdue template convention ("Separate each major section with a
+    page break. These are identified in the template with CAPS BOLD
+    UNDERLINED."). So every CAPS-BOLD-UNDERLINED heading in the
+    rendered packet begins a fresh page.
+
+    Visual class: lighter than `_emit_group_heading` (no Roman code +
+    title pair) but heavier than `_emit_section_heading` because it
+    groups MULTIPLE sections under one label. fs28 + bold + underlined
+    + centered keeps it distinct from a section heading (fs28 + bold +
+    left-aligned) and a group heading (fs32 + bold + left-aligned).
+    """
+    # Routes through `emit_styled("subgroup_heading", …)`. The
+    # subgroup style in the registry already carries the page break
+    # (PAGE_BREAK_BEFORE), the `\s2` Word "heading 2" marker, and the
+    # CAPS BOLD UNDERLINED centered styling.
+    emit_styled(out, "subgroup_heading", escape_rtf(title))
 
 
 def _emit_external_url(label: str, url: str) -> str:
@@ -536,32 +634,44 @@ def _emit_external_url(label: str, url: str) -> str:
 
 
 def _render_a1_identifiers(out: IO[str], ident: Identifiers) -> None:
-    """A.1 sub-renderer — bullet list with bold field labels.
+    """A.1 sub-renderer — numbered list (A.1.1, A.1.2, A.1.3).
 
-    Shape per bullet: "• {bold label}: {value or URL hyperlink}". Empty
-    fields are SKIPPED entirely (no orphan bullet). The bullet character
-    is the Unicode \\u2022 escape; the hanging indent matches the existing
-    numbered-list shape (li1080, fi-360, tx1080) so visually the bullets
-    land in the same column as A.2.1 / A.4.1 / etc. labels.
+    Shape per entry: `A.1.N. {bold label}: {value or URL hyperlink}`.
+    Empty fields are SKIPPED entirely (no orphan entry), so the numbering
+    is dense over the present fields (e.g., if no ORCID, A.1.1 = Name
+    and A.1.2 = Google Scholar). Identifiers presence is voluntary —
+    every emitted entry IS a populated row.
+
+    Bookmark namespace: A.1.N → bookmark name `A_1_N`. Section V's
+    Under Review entries live at the SAME visible code prefix (A.1.M)
+    but are bookmarked with a `V_` prefix (`V_A_1_M`) so the two
+    sections' bookmarks don't collide. Cross-refs to Section V's A.1
+    entries carry the pipe-form ("Section V, A.1.M|V.A.1.M") so the
+    display reads "Section V, A.1.M" while the hyperlink targets
+    `V_A_1_M`.
     """
-    bullet_li = 1080      # body indent
-    bullet_fi = -360      # hanging outdent for the bullet char
-    bullet_tx = 1080      # tab stop = body indent
-
-    def _bullet(label: str, body_rtf: str) -> None:
-        out.write(
-            f"\\pard\\li{bullet_li}\\fi{bullet_fi}\\tx{bullet_tx} "
-            f"\\u8226?\\tab \\b {escape_rtf(label)}\\b0 : {body_rtf}\\par\n"
-        )
-
+    code = SECTION_CODES["Identifiers"]
+    # Build the rows in emission order; skip empty fields entirely so
+    # numbering stays dense.
+    rows: list[tuple[str, str]] = []
     if ident.name:
-        _bullet("Name", escape_rtf(ident.name))
+        rows.append(("Name", escape_rtf(ident.name)))
     if ident.orcid:
-        _bullet("ORCID", _emit_external_url("", ident.orcid))
+        rows.append(("ORCID", _emit_external_url("", ident.orcid)))
     if ident.google_scholar:
-        _bullet("Google Scholar", _emit_external_url("", ident.google_scholar))
-    # Trailing blank for visual spacing before A.2.
-    out.write("\\pard\\par\n")
+        rows.append(
+            ("Google Scholar", _emit_external_url("", ident.google_scholar))
+        )
+    if not rows:
+        out.write("\\pard\\par\n")
+        return
+    indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(rows)))
+    for idx, (label, body_rtf) in enumerate(rows, 1):
+        # `styled_inline("field_label", …)` returns `\i Name\i0` —
+        # italic mid-paragraph label. Keeps the A.1.N codes visually
+        # leading the row while the field name reads as a qualifier.
+        body = f"{styled_inline('field_label', escape_rtf(label))} : {body_rtf}"
+        _emit_list_item(out, f"{code}.{idx}", body, indent=indent)
 
 
 def _render_a2_degrees(out: IO[str], degrees: list[Degree]) -> None:
@@ -572,7 +682,7 @@ def _render_a2_degrees(out: IO[str], degrees: list[Degree]) -> None:
     omitted when `thesis_title` is empty (degrees without a thesis).
     """
     if not degrees:
-        out.write("\\pard\\li720 N/A\\par\\par\n")
+        emit_styled(out, "na_placeholder", "N/A", indent=720)
         return
     code = SECTION_CODES["Degrees"]
     indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(degrees)))
@@ -581,7 +691,8 @@ def _render_a2_degrees(out: IO[str], degrees: list[Degree]) -> None:
         if d.thesis_title:
             thesis_label = d.thesis_kind or "Thesis"
             body += (
-                f" {escape_rtf(thesis_label)}: \\i {escape_rtf(d.thesis_title)}\\i0"
+                f" {escape_rtf(thesis_label)}: "
+                f"{styled_inline('venue_italic', escape_rtf(d.thesis_title))}"
             )
             if d.advisor:
                 body += f", supervised by {escape_rtf(d.advisor)}"
@@ -598,7 +709,7 @@ def _render_a3_positions_at_purdue(out: IO[str], positions: list[str]) -> None:
     """
     if not positions:
         indent = _body_indent_for_code(SECTION_CODES["Positions at Purdue"])
-        out.write(f"\\pard\\li{indent} N/A\\par\\par\n")
+        emit_styled(out, "na_placeholder", "N/A", indent=indent)
         return
     code = SECTION_CODES["Positions at Purdue"]
     indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(positions)))
@@ -613,7 +724,7 @@ def _render_a4_positions_at_other(out: IO[str], positions: list[OtherPosition]) 
     parenthetical acronym is omitted when `acronym` is empty.
     """
     if not positions:
-        out.write("\\pard\\li720 N/A\\par\\par\n")
+        emit_styled(out, "na_placeholder", "N/A", indent=720)
         return
     code = SECTION_CODES["Positions at Other Institutions"]
     indent = _hanging_indent_for_codes(
@@ -691,7 +802,7 @@ def _render_a6_awards(out: IO[str], awards: list[Award]) -> None:
     order (externals first, then internals). Matches `index_awards`.
     """
     if not awards:
-        out.write("\\pard\\li720 N/A\\par\\par\n")
+        emit_styled(out, "na_placeholder", "N/A", indent=720)
         return
 
     externals = sorted(
@@ -741,7 +852,7 @@ def _render_a7_memberships(
     parenthetical acronym is omitted when `acronym` is empty.
     """
     if not memberships:
-        out.write("\\pard\\li720 N/A\\par\\par\n")
+        emit_styled(out, "na_placeholder", "N/A", indent=720)
         return
     code = SECTION_CODES["Professional Memberships"]
     indent = _hanging_indent_for_codes(
@@ -902,7 +1013,7 @@ def render_pending_proposals_section(
 def render_under_review_section(
     under_review: list[UnderReview], out: IO[str],
 ) -> None:
-    """A.1: numbered list of in-flight submissions.
+    """Section V, A.1: numbered list of in-flight submissions.
 
     Body shape per entry: `Authors. Title. Under review: /italic Venue/,
     NN pages. [Due: YYYY-MM-DD]`. The italic venue cell is prefixed with
@@ -911,6 +1022,14 @@ def render_under_review_section(
     appears when the YAML entry carries a known `due_date`; entries
     without one render without a deadline marker. Sorted by `due_date`
     ascending so near-deadline submissions surface first.
+
+    Bookmark namespace: entries use the `V_` prefix (V_A_1_1, V_A_1_2,
+    ...) so they don't collide with Section III's A.1.N Identifiers
+    bookmarks (A_1_1, A_1_2, A_1_3). Section V is the appendix; the
+    namespace pattern mirrors Section V A.2 Pending Proposals
+    (V_A_2_N). Cross-references to these entries carry the pipe-form
+    "Section V, A.1.N|V.A.1.N" so the display reads "Section V, A.1.N"
+    while the hyperlink targets `V_A_1_N`.
     """
     if not under_review:
         return
@@ -923,15 +1042,17 @@ def render_under_review_section(
     for idx, ur in enumerate(under_review, 1):
         body = (
             f"{ur.authors_rtf}. {escape_rtf(ur.title)}. "
-            f"Under review: \\i {escape_rtf(ur.venue)}\\i0"
+            f"Under review: {styled_inline('venue_italic', escape_rtf(ur.venue))}"
         )
         if ur.pages:
             body += f", {escape_rtf(ur.pages)}"
         body += "."
         # Sentinel "9999-99-99" means no known deadline → suppress the marker.
         if ur.due_date and ur.due_date != "9999-99-99":
-            body += f" \\ul Due: {escape_rtf(ur.due_date)}\\ulnone."
-        _emit_list_item(out, f"{code}.{idx}", body, indent=indent)
+            body += f" {styled_inline('underline_marker', f'Due: {escape_rtf(ur.due_date)}')}."
+        _emit_list_item(
+            out, f"{code}.{idx}", body, indent=indent, bookmark_prefix="V.",
+        )
 
 
 # C.5 "Other publications and products" subcategory map. Each Citation's
@@ -945,11 +1066,18 @@ _C5_SUBCATEGORY_BY_RANK: dict[str, str] = {
     "Disclosure": "Direct computing industry impacts",
 }
 
+# Subcategories now own their own numeric slot under C.5: Magazine →
+# C.5.1, Technical Reports → C.5.2, Direct computing industry impacts
+# → C.5.3. Entries within get C.5.{subcat_idx}.{within_idx} so cross-
+# references encode the subcategory directly in the code.
 _C5_SUBCATEGORY_ORDER: tuple[str, ...] = (
     "Magazine",
     "Technical Reports",
     "Direct computing industry impacts",
 )
+_C5_SUBCATEGORY_IDX: dict[str, int] = {
+    name: i + 1 for i, name in enumerate(_C5_SUBCATEGORY_ORDER)
+}
 
 
 def render_other_pubs_section(
@@ -977,32 +1105,44 @@ def render_other_pubs_section(
     ordered = order_citations_for_emission(
         "Other publications and products", citations,
     )
-    indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(ordered)))
+    # Pre-compute the hanging-indent baseline against the longest code
+    # this section will emit (C.5.3.N where N is the entry count of the
+    # largest subcategory). Using a representative wide code keeps the
+    # gutter consistent across subcategory boundaries.
+    indent = _hanging_indent_for_codes(
+        [f"{code}.{i}.{j}" for i in (1, 2, 3) for j in (1, len(ordered) or 1)]
+    )
     expansion_done: set[str] = set()
     prev_subcat: Optional[str] = None
     # Career-phase dividers are tracked PER SUBCATEGORY (Magazine /
     # Technical Reports / Direct computing industry impacts) — when a new
     # subcategory begins, the phase counter resets so the divider can
-    # fire again at the within-subcategory PhD→AP boundary. Mixing the
-    # divider across the subcategory subheading would be visually
-    # confusing (the reader's eye expects the subheading to "own" its
-    # contents).
+    # fire again at the within-subcategory PhD→AP boundary.
     phase = ""
-    for idx, cit in enumerate(ordered, 1):
+    within_idx = 0
+    for cit in ordered:
         subcat = _C5_SUBCATEGORY_BY_RANK.get(cit.rank, "Other")
         if subcat != prev_subcat:
-            _emit_inline_heading(
-                out, subcat, _label_position_for_code(f"{code}.1"),
-            )
+            # New subcategory → emit a sub-section heading (e.g.
+            # "C.5.1 Magazine") instead of an inline label, so the
+            # subcategory itself is a numbered cross-ref target and
+            # entries underneath read as C.5.{subcat}.{within}.
+            subcat_idx = _C5_SUBCATEGORY_IDX.get(subcat, 0)
+            _emit_section_heading(out, f"{code}.{subcat_idx}", subcat)
             prev_subcat = subcat
-            phase = ""  # reset; first entry of new subcategory re-fires
+            phase = ""        # reset; first entry of new subcategory re-fires divider
+            within_idx = 0    # restart within-subcategory entry counter
+        subcat_idx = _C5_SUBCATEGORY_IDX.get(subcat, 0)
         phase = _maybe_emit_career_phase_divider(
             out, cit.year, phase, indent,
         )
+        within_idx += 1
         body = render_citation(
             cit, expansion_done, paper_index, key_work_index,
         )
-        _emit_list_item(out, f"{code}.{idx}", body, indent=indent)
+        _emit_list_item(
+            out, f"{code}.{subcat_idx}.{within_idx}", body, indent=indent,
+        )
 
 
 def render_invited_talk(talk: InvitedTalk) -> str:
@@ -1037,7 +1177,7 @@ def render_leadership_role(role: LeadershipRole) -> str:
     tier-marker styling on citations.
     """
     body = f"{escape_rtf(role.role)}, {escape_rtf(role.description)}, {escape_rtf(role.year_str)}."
-    body += f" \\ul Society: {escape_rtf(role.society)}\\ulnone."
+    body += f" {styled_inline('underline_marker', f'Society: {escape_rtf(role.society)}')}."
     return body
 
 
@@ -1089,7 +1229,7 @@ def render_conference_presentation(
     # because the space after `\i0` is consumed as the control-word
     # delimiter (same class as the `\b0 $X` bug we hit on grant totals).
     return (
-        f"Talk at {{\\i {escape_rtf(venue_clean)}}} in {escape_rtf(year)}. "
+        f"Talk at {{{styled_inline('venue_italic', escape_rtf(venue_clean))}}} in {escape_rtf(year)}. "
         f"Associated with publication {_code_link(ref)}."
     )
 
@@ -1105,8 +1245,9 @@ def render_conference_presentations_section(
     code = SECTION_CODES["Conference Presentations"]
     heading = SECTION_HEADINGS["Conference Presentations"]
     _emit_section_heading(out, code, heading)
-    # Explanatory note (italic, full-width paragraph before the numbered list)
-    out.write(f"\\pard \\i {escape_rtf(_CONF_PRES_NOTE)}\\i0\\par\\par\n")
+    # Explanatory note routed through `_emit_intro_note` → italic
+    # intro-note style in the registry.
+    _emit_intro_note(out, escape_rtf(_CONF_PRES_NOTE))
     # Sort by linked-paper year for chronological order
     from .venue import normalize_title
     def _year(p: ConferencePresentation) -> int:
@@ -1125,7 +1266,7 @@ def render_conference_presentations_section(
 
 def render_media_appearance(media: MediaAppearance) -> str:
     """C.8 format: 'Title. Venue. Year. URL:...'"""
-    body = f"{escape_rtf(media.title)}. \\i {escape_rtf(media.venue)}\\i0, {escape_rtf(media.year_str)}."
+    body = f"{escape_rtf(media.title)}. {styled_inline('venue_italic', escape_rtf(media.venue))}, {escape_rtf(media.year_str)}."
     body += render_link_field(media.url)
     return body
 
@@ -1300,16 +1441,16 @@ def _format_grant_table(
     be "V_A_2_N" to avoid colliding with Section III A.2 Degrees entries.
     """
     # --- Row 1: numbered head ---
-    # Brace-scope the bold so the close-brace ends the bold AND emits a
-    # literal space — bare `\b0 ` consumes its trailing space as the
-    # control-word delimiter, producing "C.10.18.2526621" with no gap.
-    # Also: emit the full `{section_code}.{idx}` (e.g. "C.10.1") instead
-    # of the bare "1." — gives every grant row a parseable cross-ref
-    # code and lets `@id` refs into grants resolve to the same form as
-    # the rest of the document.
+    # Plain (non-bold) C.X.Y code — readers find their place via the
+    # section heading + table boundaries, and removing bold here keeps
+    # the cell content visually uniform with the rest of the row.
+    # Brace-scope the trailing period so its space survives RTF's
+    # control-word-delimiter eat-the-space rule. Emit the full
+    # `{section_code}.{idx}` (e.g. "C.10.1") so every grant row has a
+    # parseable cross-ref code matching `@id` references elsewhere.
     code = f"{section_code}.{idx}"
     head_bits: list[str] = [
-        f"{{\\b {_ref_anchor(code, bookmark_prefix)}.}} ",
+        f"{_ref_anchor(code, bookmark_prefix)}. ",
     ]
     gn_field = _format_grant_number_field(grant)
     if gn_field:
@@ -1391,14 +1532,14 @@ def render_grants_section(
     total_label = GRANT_TOTAL_LABELS.get(section)
     if total_label:
         # Section total sums `my_amount` — the tenure-credited share.
+        # Emitted as an italic "introductory note" (see _emit_intro_note)
+        # so it reads as orienting metadata for the grant tables that
+        # follow, not as content competing with the entries.
         total_amount = sum(g.my_amount for g in grants)
-        # Brace-scoped bold so the close-brace terminates the formatting
-        # AND the space after it renders as literal whitespace. The bare
-        # form `\b0 $X` drops the space (RTF consumes it as the \b0
-        # control-word delimiter), producing "...:$X" without a gap.
-        out.write(
-            f"\\pard {{\\b {escape_rtf(total_label)}:}} "
-            f"{escape_rtf(_format_usd(total_amount))}\\par\\par\n"
+        _emit_intro_note(
+            out,
+            f"{escape_rtf(total_label)}: "
+            f"{escape_rtf(_format_usd(total_amount))}",
         )
 
     section_code = SECTION_CODES[section]
@@ -1491,9 +1632,17 @@ def _student_pub_refs(
     def _key(r: str) -> tuple[int, ...]:
         # C.X.Y refs sort first (prefix "0"), A.1.N refs after (prefix "1").
         # Pipe-form values store "display|bookmark"; key off the bookmark.
+        # Section V's under-review entries now namespace their bookmark
+        # with a leading "V." (V.A.1.N) so they don't collide with
+        # Section III's A.1 Identifiers entries; strip the prefix here.
         bookmark = r.split("|", 1)[1] if "|" in r else r
         prefix = 0 if bookmark.startswith("C.") else 1
-        body = bookmark.replace("C.", "").replace("A.", "")
+        body = (
+            bookmark
+            .removeprefix("V.")
+            .removeprefix("C.")
+            .removeprefix("A.")
+        )
         return (prefix, *(int(x) for x in body.split(".")))
     return sorted(set(refs), key=_key)
 
@@ -1738,7 +1887,7 @@ def render_postdocs_section(
     _emit_section_heading(out, code, heading)
 
     if not postdocs:
-        out.write("\\pard\\li720 N/A\\par\\par\n")
+        emit_styled(out, "na_placeholder", "N/A", indent=720)
         return
 
     # Cumulative cellx for the 6-column postdoc table.
@@ -1788,13 +1937,15 @@ def render_postdocs_section(
     out.write("\\pard\\par\n")
 
 
-def _service_section_intro(section: "Section") -> str:
-    """Per-section intro paragraph emitted between the C.23/24/25/26
-    heading and the numbered list. Returns "" when the section has no
-    intro (most cases). Hardcoded for now — the C.24 intro is the
-    only canonical one (added 260603 per user direction) and a
-    YAML-driven schema would be over-engineering for one entry.
-    Future additions: add to this dict, no other code changes needed.
+def _section_intro(section: "Section") -> str:
+    """Per-section intro paragraph emitted between the section heading
+    and its content. Returns "" when the section has no intro (most
+    cases). Hardcoded for now — additions go directly to this dict,
+    and the consuming renderer needs to call this helper + emit the
+    returned text if non-empty.
+
+    Current consumers: render_service_section (C.23-C.26),
+    render_conference_presentations_section (C.9).
     """
     intros: dict[str, str] = {
         "Profession Service": (
@@ -1802,6 +1953,9 @@ def _service_section_intro(section: "Section") -> str:
             "through peer review. Following is a selected list. See also "
             f"leadership roles in {_code_link('C.7')}."
         ),
+        # C.9 Conference Presentations has its own dedicated constant
+        # (`_CONF_PRES_NOTE`) emitted directly by its renderer; not
+        # routed through this dict.
     }
     return intros.get(section, "")
 
@@ -1818,7 +1972,7 @@ def render_service_section(
     journal reviewing) the trailing year + period is suppressed.
 
     Sections may have an opt-in intro paragraph via
-    `_service_section_intro(section)` — emitted between the heading and
+    `_section_intro(section)` — emitted between the heading and
     the numbered list. Currently only C.24 (Profession Service) has one.
     """
     if not entries:
@@ -1826,9 +1980,11 @@ def render_service_section(
     code = SECTION_CODES[section]
     heading = SECTION_HEADINGS[section]
     _emit_section_heading(out, code, heading)
-    intro = _service_section_intro(section)
+    intro = _section_intro(section)
     if intro:
-        out.write(f"\\pard\\sa120 {intro}\\par\\par\n")
+        # Route through `_emit_intro_note` so the C.24 peer-review
+        # framing reads the same as C.9 / C.22 / grant totals.
+        _emit_intro_note(out, intro)
     indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(entries)))
     for idx, entry in enumerate(entries, 1):
         body = escape_rtf(entry.description)
@@ -1943,6 +2099,43 @@ def render_student_awards_section(
         _emit_list_item(out, ref, body, indent=indent)
 
 
+# C.16.2.2 four-column table widths (twips). Sum = 9360 = 6.5" usable
+# on US Letter at standard margins. Dates narrow (years/seasons are
+# short); pathway and audience get the most width because they carry
+# the descriptive text; participation is short (head counts).
+_UNDERGRAD_PATHWAY_TABLE_WIDTHS: list[int] = [1900, 2900, 3200, 1360]
+
+
+def render_undergrad_pathways_section(
+    pathways: list[UndergradPathway], out: IO[str],
+) -> None:
+    """C.16.2.2: Other Undergraduate Research Pathways — 4-column table.
+
+    Columns: Dates | Pathway / activity | Audience | Participation.
+    Rows are emitted in YAML order so the candidate controls the
+    narrative arrangement (longer-running pathways vs one-off events).
+    Empty list → emit nothing (no orphan heading) per the C.16.2.X
+    skip-when-empty pattern.
+    """
+    if not pathways:
+        return
+    code = SECTION_CODES["Undergraduate Research Pathways"]
+    heading = SECTION_HEADINGS["Undergraduate Research Pathways"]
+    _emit_section_heading(out, code, heading)
+    table = RtfTable(_UNDERGRAD_PATHWAY_TABLE_WIDTHS)
+    table.add_header(["Dates", "Pathway / activity", "Audience", "Participation"])
+    for p in pathways:
+        table.add_row([
+            escape_rtf(p.dates),
+            escape_rtf(p.activity),
+            escape_rtf(p.audience),
+            escape_rtf(p.participation),
+        ])
+    out.write(table.render())
+    # Trailing blank for visual spacing before the next sub-section.
+    out.write("\\pard\\par\n")
+
+
 def render_undergrad_products_section(
     products: list[UndergradProduct], out: IO[str],
 ) -> None:
@@ -1974,7 +2167,7 @@ def render_undergrad_products_section(
         "publication sections. This section provides a summary of "
         "undergraduate participation."
     )
-    out.write(f"\\pard\\sa120 {intro}\\par\\par\n")
+    _emit_intro_note(out, intro)
     indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(products)))
     for idx, p in enumerate(products, 1):
         plural = "co-authors" if p.n_coauthors > 1 else "co-author"
@@ -2018,7 +2211,9 @@ def _render_courses_taught_data_row(
         parts.append(_CELL_BORDER_BLOCK)
         parts.append(rf"\cellx{pos}")
     for cell in cells:
-        content = rf"\b {cell}\b0" if is_header else cell
+        # Header cells route through the registry's `table_header` style
+        # (same as `RtfTable._render_row`). Body cells emit verbatim.
+        content = styled_inline("table_header", cell) if is_header else cell
         parts.append(rf"\pard\intbl {content}\cell")
     parts.append("\\row\n")
     return "".join(parts)
@@ -2091,7 +2286,7 @@ def render_courses_taught_section(
     heading = SECTION_HEADINGS["Courses Taught"]
     _emit_section_heading(out, code, heading)
     if not rows:
-        out.write("\\pard\\li720 N/A\\par\\par\n")
+        emit_styled(out, "na_placeholder", "N/A", indent=720)
         return
     sorted_rows = sorted(rows, key=lambda r: (r.year, r.semester_order))
     cellx: list[int] = []
@@ -2149,6 +2344,10 @@ def render_courses_taught_section(
         ]))
     out.write("".join(parts))
     if any_partial:
+        # lint-allow: raw-rtf — small italic (fs20 = 10pt) footnote
+        # below the C.17 table, one-off style for the CIE-partial
+        # disclaimer. Not promoted to the registry because no other
+        # site uses this smaller-than-body italic.
         out.write(
             "\\pard\\li720\\fs20\\i *Computed on the relevant subset of "
             "questions asked.\\i0\\par\\par\n"
@@ -2170,11 +2369,11 @@ def render_course_development_section(
     heading = SECTION_HEADINGS["Course Development"]
     _emit_section_heading(out, code, heading)
     if not activities:
-        out.write("\\pard\\li720 N/A\\par\\par\n")
+        emit_styled(out, "na_placeholder", "N/A", indent=720)
         return
     indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(activities)))
     for idx, a in enumerate(activities, 1):
-        body = f"\\b {escape_rtf(a.summary)}\\b0: {escape_rtf(a.description)}"
+        body = f"{styled_inline('entry_summary', escape_rtf(a.summary))}: {escape_rtf(a.description)}"
         _emit_list_item(out, f"{code}.{idx}", body, indent=indent)
 
 
@@ -2191,11 +2390,11 @@ def render_entrepreneurial_activities_section(
     heading = SECTION_HEADINGS["Entrepreneurial Activities"]
     _emit_section_heading(out, code, heading)
     if not activities:
-        out.write("\\pard\\li720 N/A\\par\\par\n")
+        emit_styled(out, "na_placeholder", "N/A", indent=720)
         return
     indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(activities)))
     for idx, a in enumerate(activities, 1):
-        body = f"\\b {escape_rtf(a.summary)}\\b0: {escape_rtf(a.description)}"
+        body = f"{styled_inline('entry_summary', escape_rtf(a.summary))}: {escape_rtf(a.description)}"
         _emit_list_item(out, f"{code}.{idx}", body, indent=indent)
 
 
@@ -2219,7 +2418,7 @@ def render_technology_transfer_section(
     heading = SECTION_HEADINGS["Technology Transfer"]
     _emit_section_heading(out, code, heading)
     if not rows:
-        out.write("\\pard\\li720 N/A\\par\\par\n")
+        emit_styled(out, "na_placeholder", "N/A", indent=720)
         return
     # Column widths (twips) sum to 9360 = 6.5" usable on US Letter.
     table = RtfTable([1560, 1560, 1560, 1560, 1560, 1560])
@@ -2270,17 +2469,26 @@ def render_software_products_section(
     code = SECTION_CODES["Software Products"]
     heading = SECTION_HEADINGS["Software Products"]
     _emit_section_heading(out, code, heading)
+    # Explanatory note: this section only carries Davis-authored software
+    # products. Other impact channels (papers that became tools, CVEs,
+    # vulnerability disclosures, technical reports, magazine pieces) live
+    # in C.5 "Other publications and products". The cross-ref points the
+    # reader at the right section without duplicating entries.
+    other_pubs_code = SECTION_CODES["Other publications and products"]
+    intro = (
+        f"For other forms of impact, see {_code_link(other_pubs_code)}."
+    )
+    _emit_intro_note(out, intro, indent=_body_indent_for_code(code))
     sorted_products = sorted(products, key=lambda x: x.year)
     indent = _hanging_indent_for_codes(
         _section_codes_up_to(code, len(sorted_products))
     )
     for idx, p in enumerate(sorted_products, 1):
         # Header line: "C.22.N.\tab **name** (year_str)".
-        # Brace-scope the bold so the close-brace ends `\b` AND emits a
-        # literal space — bare `\b0 (year)` consumes its trailing space
-        # as the control-word delimiter, producing "safe-regex(2018-...)"
-        # with no gap. Same trap as the Grant Row 1 / Total: $X cases.
-        head = f"{{\\b {escape_rtf(p.name)}}}"
+        # Bold name via the registry. Brace-scope keeps the trailing
+        # space before "(year)" literal — bare `\b0 (year)` would
+        # consume the space as the control-word delimiter.
+        head = f"{{{styled_inline('entry_name', escape_rtf(p.name))}}}"
         if p.year_str:
             head += f" ({escape_rtf(p.year_str)})"
         _emit_list_item_with_body(
@@ -2304,12 +2512,16 @@ def render_patents_section(patents: list[Patent], out: IO[str]) -> None:
         # the trailing space literal (the `\b0 X` delimiter-eats-space
         # trap from CLAUDE.md).
         entry_code = f"{code}.{idx}"
+        # Bold entry code via the registry. Brace-scope keeps the
+        # trailing space + period readable.
         title_cell = (
-            f"{{\\b {_ref_anchor(entry_code)}.}} {escape_rtf(p.title)}"
+            f"{{{styled_inline('entry_name', _ref_anchor(entry_code))}.}} "
+            f"{escape_rtf(p.title)}"
         )
         table.add_row([
             title_cell,
-            p.co_inventors,  # already RTF-marked (\b for me); escaping would clobber it
+            # lint-allow: raw-rtf — co_inventors comes pre-formatted with `\b` bold-for-me markers from format_inventors; escaping would clobber them.
+            p.co_inventors,
             escape_rtf(p.date),
             escape_rtf(p.number),
             escape_rtf(p.impact),
@@ -2487,6 +2699,7 @@ def _section_codes_up_to(code_prefix: str, n: int) -> list[str]:
 
 def _emit_list_item(
     out: IO[str], code: str, body: str, indent: int = 720,
+    *, bookmark_prefix: str = "",
 ) -> None:
     """Canonical hanging-indent numbered list entry — the C.6 talks shape.
 
@@ -2536,7 +2749,8 @@ def _emit_list_item(
     fi = label_pos - indent  # negative; label starts at li + fi = label_pos
     out.write(
         f"\\pard\\li{indent}\\fi{fi}\\tx{indent} "
-        f"{_ref_anchor(code)}.\\tab {body}\\par\\par\n"
+        f"{_ref_anchor(code, bookmark_prefix=bookmark_prefix)}.\\tab "
+        f"{body}\\par\\par\n"
     )
 
 
@@ -2577,6 +2791,11 @@ _HEADING_FONT_SIZE_BY_LEVEL: dict[int, int] = {
     4: 22,   # C.16.2.3.1 etc. (rare; reserved)
 }
 _HEADING_INDENT_PER_LEVEL: int = 240  # twips per level (≈⅙″ ≈ 2-3 spaces)
+# RTF font size = half-points. 22 = 11pt — the canonical body size for
+# the rendered packet. Used everywhere body text is reset (post-heading,
+# post-inline-heading, post-group-heading). Headings stay at their
+# fs28 / fs32 values so the heading-vs-body contrast is preserved.
+_BODY_FONT_SIZE: int = 22
 
 
 def _heading_level(code: str) -> int:
@@ -2587,41 +2806,45 @@ def _heading_level(code: str) -> int:
 
 
 def _emit_section_heading(out: IO[str], code: str, heading: str) -> None:
-    """Section / sub-section header paragraph.
+    """Section / sub-section header paragraph — emphasized + level-scaled font.
 
-    The visual style scales by the code's depth: top-level headings (C.1,
-    C.2, ..., A.1) get the largest font (fs28) with no indent; sub-section
-    headings step down in font size AND step in by 360 twips per level so
-    the outline reads as a nested structure. C.16.1 ("Overview") indents
-    once relative to C.16; C.16.2.1 ("VIP") indents twice; etc.
+    Visual style scales by dot-depth so the reader can locate their
+    place in long lists:
+      * Level 1 (C.1 / A.1 / ...): BOLD at fs28 — strong "find your
+        place" anchors in long sections.
+      * Level 2+ (C.5.1 / C.16.1 / C.16.2.3 / ...): ITALIC at the
+        level-scaled font size — softer emphasis so nested sub-sections
+        don't compete with their parent for the reader's eye.
 
-    `\\pard\\plain` resets paragraph formatting; `\\s1` applies the named
-    style from the stylesheet; the explicit `\\b\\fs{N}` ensures the
-    heading renders correctly even if Word's stylesheet inheritance is
-    unusual. The trailing `\\pard\\plain\\fs24\\par` re-baselines the
-    body paragraph that follows.
+    Indent steps by `_HEADING_INDENT_PER_LEVEL` per level so the
+    outline nests visually.
 
     Top-level codes get a leading blank paragraph for visual breathing
-    room before the next major section. Sub-section codes skip the
-    leading blank — they nest directly under their parent's flow.
+    room. Sub-section codes skip the leading blank — they nest directly
+    under their parent's flow. Every heading carries a bookmark wrap so
+    cross-references resolve (level 1 wraps "{code} {heading}" so the
+    full heading text becomes the anchor span; deeper levels wrap just
+    the code).
     """
     level = _heading_level(code)
     indent = (level - 1) * _HEADING_INDENT_PER_LEVEL
-    font_size = _HEADING_FONT_SIZE_BY_LEVEL.get(level, 22)
+    # Level-1 codes get a leading blank for breathing room above the
+    # heading (the OLD inline emit preserved here pre-migration). Then
+    # build the bookmark-wrapped heading block and route through
+    # `emit_styled(section_h{level}, …)`. The section-h{level} styles
+    # in the registry already carry the level-scaled font + bold-or-
+    # italic emphasis + Word "heading 3" / "heading 4" markers.
     if level == 1:
-        out.write("\\pard\\plain\\fs24\\par\n")
-    # Top-level codes (C.1, C.16, A.1) render the code as plain text —
-    # they're never cross-ref targets (no `@C.16` use case) and skipping
-    # the bookmark wrap keeps the heading-text assertions in existing
-    # tests stable. Sub-section codes (C.16.1, C.16.2.1, ...) ARE
-    # cross-ref targets (the user-supplied 260603 C.16 outline uses
-    # them as in-doc anchors) so they get `_ref_anchor` wraps.
-    code_text = code if level == 1 else _ref_anchor(code)
-    out.write(
-        f"\\pard\\plain\\li{indent}\\s1\\b\\fs{font_size} "
-        f"{code_text} {heading}\\par\n"
-        f"\\pard\\plain\\fs24\\par\n"
-    )
+        out.write(f"\\pard\\plain\\f0\\fs{_BODY_FONT_SIZE}\\par\n")
+    bookmark_name = code.replace(".", "_")
+    if level == 1:
+        heading_block = (
+            f"{{\\*\\bkmkstart {bookmark_name}}}{code} {heading}"
+            f"{{\\*\\bkmkend {bookmark_name}}}"
+        )
+    else:
+        heading_block = f"{_ref_anchor(code)} {heading}"
+    emit_styled(out, f"section_h{level}", heading_block, indent=indent)
 
 
 def _emit_placeholder_subsection(
@@ -2667,6 +2890,7 @@ def write_rtf(
     under_review: Optional[list[UnderReview]] = None,
     software_products: Optional[list[SoftwareProduct]] = None,
     student_awards: Optional[list[StudentAward]] = None,
+    undergrad_pathways: Optional[list[UndergradPathway]] = None,
     undergrad_products: Optional[list[UndergradProduct]] = None,
     entrepreneurial_activities: Optional[list[EntrepreneurialActivity]] = None,
     technology_transfer: Optional[list[TechnologyTransfer]] = None,
@@ -2703,6 +2927,7 @@ def write_rtf(
     under_review = under_review or []
     software_products = software_products or []
     student_awards = student_awards or []
+    undergrad_pathways = undergrad_pathways or []
     undergrad_products = undergrad_products or []
     # C.20 and C.21 default to [] but the renderers EMIT "N/A" rather than
     # skipping — empty IS the signal pre-promotion.
@@ -2712,15 +2937,15 @@ def write_rtf(
     courses_taught = courses_taught or []
     # Section V, A.1 index — maps each under_review entry's position in
     # the (already-sorted-upstream) list to its emitted code in the
-    # pipe-form "Section V, A.1.{N}|A.1.{N}". The pipe-form is honored
+    # pipe-form "Section V, A.1.{N}|V.A.1.{N}". The pipe-form is honored
     # by `_finalize_ref_hyperlinks` (display=LHS, bookmark target=RHS)
     # so the rendered student-table cell shows "Section V, A.1.3" while
-    # hyperlinking to the bare-code bookmark on the under-review entry.
-    # Sort logic in `_student_pub_refs` keys off the bookmark portion
-    # (after the pipe) so the ordering invariant is preserved.
+    # hyperlinking to the namespaced bookmark `V_A_1_3` on the under-
+    # review entry. The `V.` bookmark prefix prevents collision with
+    # Section III A.1 Identifiers entries (also numbered A.1.N).
     ur_code = SECTION_CODES["Under Review"]
     under_review_index: dict[int, str] = {
-        i: f"Section V, {ur_code}.{i + 1}|{ur_code}.{i + 1}"
+        i: f"Section V, {ur_code}.{i + 1}|V.{ur_code}.{i + 1}"
         for i in range(len(under_review))
     }
     # Per-section emission filter (set by --sections CLI flag). Returns
@@ -2747,6 +2972,12 @@ def write_rtf(
             r"{\rtf1\ansi\ansicpg1252\deff0"
             r"{\fonttbl{\f0\froman\fcharset0 Times New Roman;}}"
         )
+        # Document-level body-text default: 11pt (RTF half-points = 22).
+        # Word inherits this for any paragraph that doesn't set its own
+        # font size; every body emission also resets to \fs{_BODY_FONT_SIZE}
+        # explicitly so a copy-paste-into-Word document keeps the body
+        # size when the user lifts a paragraph out of context.
+        out.write(f"\\fs{_BODY_FONT_SIZE}\n")
         # Color table: 1 = blue (hyperlinks), 2 = light grey (table-row dividers).
         out.write(r"{\colortbl;\red0\green0\blue255;\red220\green220\blue220;}")
         # Stylesheet: \s1 = Heading 1. Word maps the style name "heading 1"
@@ -2762,14 +2993,20 @@ def write_rtf(
         # The `\additive` flag means the style ADDS to existing formatting
         # rather than replacing it (so bold/italic surrounding the link
         # are preserved).
-        out.write(
-            r"{\stylesheet"
-            r"{\s1\b\fs28\sb240\sa120\keepn"
-            r" \sbasedon0\snext0 heading 1;}"
-            r"{\*\cs1\additive\cf1\ul"
-            r" \sbasedon10 Hyperlink;}"
-            r"}"
-        )
+        # `\sN` paragraph styles named "heading N" (lowercased per RTF
+        # convention) are what Word's "Insert Table of Contents"
+        # command scans for. The block is now DERIVED from the style
+        # registry via `styles.format_stylesheet_block()` so a registry
+        # edit (e.g. bumping `SECTION_H1_FS`) automatically updates
+        # the corresponding stylesheet declaration. No drift.
+        #
+        # TOC level mapping (see styles._HEADING_STYLE_NAMES):
+        #   \s1 → group_heading + roman_section (V. / A. / B. / C.)
+        #   \s2 → subgroup_heading (PUBLISHED WORK / ...)
+        #   \s3 → section_h1 (C.1, A.1, B.1, ...)
+        #   \s4 → section_h2/h3/h4 (C.5.1, C.16.2.3, ...)
+        from .styles import format_stylesheet_block
+        out.write(format_stylesheet_block())
 
         # Section III front matter — A. GENERAL INFORMATION (A.1-A.7;
         # A.6 absent by design). Emitted at the TOP per the Purdue
@@ -2805,7 +3042,15 @@ def write_rtf(
         # products under review) is emitted LAST so it reads as an
         # appendix. (The "A.1" code here is reused from Section III's
         # A.1 — see the disambiguation note at the top of write_rtf.)
+        # Group heading: "C. SUPPORTING INFORMATION" frames all C.X
+        # sections under it, matching the Purdue template's I/II/III
+        # outermost layer. Followed immediately by the "PUBLISHED WORK"
+        # subgroup that owns C.1-C.5. Only emitted when the section
+        # filter would allow ANY of the wrapped sections — the test for
+        # "Key Works" is a stand-in for "any C.X section is in scope."
         if _emit("Key Works"):
+            _emit_group_heading(out, "C.", "SUPPORTING INFORMATION")
+            _emit_subgroup_heading(out, "PUBLISHED WORK")
             render_key_works_section(key_works, paper_index, out)
 
         # Generic-loop sections: C.2 Journals, C.3 Books and Chapters,
@@ -2866,7 +3111,10 @@ def write_rtf(
                 publications.get("Other publications and products", []),
                 paper_index, key_work_index, out,
             )
+        # Subgroup: EXTERNAL VISIBILITY frames C.6-C.13 (presentations,
+        # leadership, media, conference talks, grants, gifts).
         if _emit("Invited Talks"):
+            _emit_subgroup_heading(out, "EXTERNAL VISIBILITY")
             render_invited_talks_section(invited_talks, out)
         if _emit("Leadership Roles"):
             render_leadership_section(leadership_roles, out)
@@ -2876,7 +3124,10 @@ def write_rtf(
             render_conference_presentations_section(
                 conference_presentations, bib_entries, paper_index, out,
             )
+        # Subgroup: RESEARCH GRANTS AND CONTRACTS AWARDED frames C.10-C.13
+        # (PI grants, Co-PI grants, gifts, internal grants).
         if _emit("Grants PI"):
+            _emit_subgroup_heading(out, "RESEARCH GRANTS AND CONTRACTS AWARDED")
             render_grants_section("Grants PI", grants_as_pi, out)
         if _emit("Grants Co-PI"):
             render_grants_section("Grants Co-PI", grants_as_co_pi, out)
@@ -2888,7 +3139,10 @@ def write_rtf(
         # so the bookmark stream emits tuple-monotone. C.16's entire
         # subtree (C.16.1 / C.16.2 / C.16.2.* / C.16.3 / C.16.3.*) emits
         # contiguously inside the C.16 block, before C.17.
+        # Subgroup: MENTORING frames C.14-C.16 (graduate students,
+        # postdocs, undergraduate research).
         if _emit("Graduate Students"):
+            _emit_subgroup_heading(out, "MENTORING")
             render_students_section(
                 "Graduate Students", graduate_students, bib_entries, paper_index, out,
                 under_review=under_review,
@@ -2918,9 +3172,17 @@ def write_rtf(
             _emit_placeholder_subsection(
                 out, "C.16.2.1", "Vertically Integrated Projects",
             )
-            _emit_placeholder_subsection(
-                out, "C.16.2.2", "Other Undergraduate Research Pathways",
-            )
+            if _emit("Undergraduate Research Pathways"):
+                if undergrad_pathways:
+                    render_undergrad_pathways_section(undergrad_pathways, out)
+                else:
+                    # No YAML data yet → fall back to the placeholder
+                    # so the C.16 outline reads correctly while the
+                    # candidate is populating their data.
+                    _emit_placeholder_subsection(
+                        out, "C.16.2.2",
+                        "Other Undergraduate Research Pathways",
+                    )
             if _emit("Undergraduate Research Products"):
                 render_undergrad_products_section(undergrad_products, out)
             if _emit("Undergraduate Student Awards"):
@@ -2941,12 +3203,18 @@ def write_rtf(
                 render_student_awards_section(
                     "Graduate Student Awards", student_awards, out,
                 )
-        # C.17 sits BEFORE C.18 — render the courses-taught table first.
+        # Subgroup: LEARNING frames C.17-C.18 (courses taught + course
+        # development).
         if _emit("Courses Taught"):
+            _emit_subgroup_heading(out, "LEARNING")
             render_courses_taught_section(courses_taught, out)
         if _emit("Course Development"):
             render_course_development_section(course_development, out)
+        # Subgroup: TECHNOLOGY TRANSFER frames C.19-C.22 (patents,
+        # entrepreneurial activities, technology transfer, software
+        # products).
         if _emit("Patents"):
+            _emit_subgroup_heading(out, "TECHNOLOGY TRANSFER")
             render_patents_section(patents, out)
         if _emit("Entrepreneurial Activities"):
             render_entrepreneurial_activities_section(entrepreneurial_activities, out)
@@ -2956,7 +3224,10 @@ def write_rtf(
             )
         if _emit("Software Products"):
             render_software_products_section(software_products, out)
+        # Subgroup: SERVICE frames C.23-C.26 (Purdue, profession, state/
+        # nation, other).
         if _emit("University Service"):
+            _emit_subgroup_heading(out, "SERVICE")
             render_service_section("University Service", university_service, out)
         if _emit("Profession Service"):
             render_service_section("Profession Service", profession_service, out)
@@ -2970,6 +3241,14 @@ def write_rtf(
         #   * Section V, A.1 — products under review
         #   * Section V, A.2 — pending proposals (status: pending grants
         #                       routed here from C.10 / C.11 at build time)
+        # The Roman-numeral section heading is emitted IF EITHER
+        # sub-section will fire — so the appendix is announced as a
+        # named region rather than appearing as bare A.1 entries.
+        if _emit("Under Review") or _emit("Pending Proposals"):
+            _emit_roman_section_heading(
+                out, "V",
+                "Supporting Documentation for Pending Publications.",
+            )
         if _emit("Under Review"):
             render_under_review_section(under_review, out)
         if _emit("Pending Proposals"):

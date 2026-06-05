@@ -33,7 +33,7 @@ from .types import (
     LeadershipRole, MediaAppearance, OtherPosition, Patent,
     ProfessionalMembership, Publications, Rank, Section, SelfEvaluation,
     ServiceEntry, SoftwareProduct, Student, StudentAward,
-    TechnologyTransfer, UndergradProduct, UnderReview,
+    TechnologyTransfer, UndergradPathway, UndergradProduct, UnderReview,
 )
 from .venue import (
     CVE_ID_RE,
@@ -60,25 +60,53 @@ def escape_rtf(text: str) -> str:
     return rtf_escape_unicode(text)
 
 
-def _format_pages(raw: str) -> str:
-    """Normalize Scholar's bib page strings to a CV-presentable form.
+def _pluralize_pages(count: int) -> str:
+    """Single source of truth for the "N page(s)" string. Singular form
+    when count == 1 ("1 page"), plural otherwise ("12 pages"). Every
+    site that emits a page-count string must route through here so a
+    "1 pages" / "0 pages" class regression can't slip back in."""
+    return f"{count} page" + ("" if count == 1 else "s")
 
-      * `"62--pages"`  → `"62 pages"`  — Scholar's quirky form for
-        article-number journals (paper has a page count but no range)
-      * `"1--12"`     → `"1–2"` (en-dash) — LaTeX range syntax to
-        the typographic en-dash that Word/TextEdit render correctly;
-        bare `--` passes through unchanged otherwise (and shows as two
-        hyphens, which looks wrong on a CV)
-      * Empty / non-range values pass through unchanged.
+
+def _format_pages(raw: str) -> str:
+    """Normalize bib page strings to a `"N page(s)"` signal.
+
+    The point of surfacing pages on a P&T packet line is "is this a
+    full paper, a short paper, or a poster?" — a length signal, not a
+    page span. So a range like "1--12" becomes "12 pages", not a span.
+    Already-formatted "N pages" / "1 page" passes through unchanged.
+
+      * `""`                       → `""`
+      * `"62--pages"`              → `"62 pages"`  (Scholar form)
+      * `"1--pages"`               → `"1 page"`    (singular Scholar form)
+      * `"N pages"` / `"1 page"`   → passthrough (author wrote it)
+      * `"N--M"` / `"N-M"` / `"N–M"` / `"N—M"` → `_pluralize_pages(K)`
+        where K = M - N + 1 (any of ASCII hyphen, LaTeX `--`,
+        en-dash, em-dash). Single-page ranges like "1604-1604" yield
+        "1 page" (singular), not "1 pages".
+      * Anything else (article numbers like "e12345", non-numeric forms)
+        passes through unchanged.
     """
     if not raw:
         return ""
-    # Scholar oddity: "{N}--pages" → "{N} pages"
+    # Scholar oddity: "{N}--pages" — emit via _pluralize_pages so a
+    # `1--pages` input correctly produces "1 page".
     if raw.endswith("--pages"):
-        return raw[:-len("--pages")] + " pages"
-    # LaTeX `--` page-range → typographic en-dash (U+2013)
-    if "--" in raw:
-        return raw.replace("--", "–")
+        prefix = raw[:-len("--pages")].strip()
+        if prefix.isdigit():
+            return _pluralize_pages(int(prefix))
+        # Non-numeric prefix → fall through to passthrough.
+    # Author already wrote "N page(s)" — trust it.
+    if "page" in raw.lower():
+        return raw
+    # Range form: detect "N{dash}M" with any dash character and convert
+    # to a page-count signal. The regex tolerates whitespace around the
+    # dashes and accepts ASCII hyphen, LaTeX `--`, en-dash, em-dash.
+    m = re.match(r"^\s*(\d+)\s*[-–—]+\s*(\d+)\s*$", raw)
+    if m:
+        start, end = int(m.group(1)), int(m.group(2))
+        if end >= start:
+            return _pluralize_pages(end - start + 1)
     return raw
 
 
@@ -516,6 +544,18 @@ _UNDERGRAD_PRODUCT_LABELS: dict[Section, str] = {
 }
 
 
+def build_undergrad_pathway(entry: dict) -> UndergradPathway:
+    """Build a C.16.2.2 row from a YAML dict. All four fields are
+    required (renderer doesn't tolerate missing columns — every row
+    needs to fill the 4-column grid)."""
+    return UndergradPathway(
+        dates=decode_latex(entry.get("dates", "")).replace("\n", " "),
+        activity=decode_latex(entry.get("activity", "")).replace("\n", " "),
+        audience=decode_latex(entry.get("audience", "")).replace("\n", " "),
+        participation=decode_latex(entry.get("participation", "")).replace("\n", " "),
+    )
+
+
 def build_undergrad_products(
     conn: sqlite3.Connection,
     publications: Publications,
@@ -574,10 +614,13 @@ def build_undergrad_products(
                 lead_is_undergrad=lead_is_under,
             ))
 
-    # Section V A.1 (under-review) — bare "A.1.N" code targets the bookmark
-    # placed by render_under_review_section. The "(Under review.)" suffix
-    # appended by the renderer disambiguates from Section III's A.1
-    # (Identifiers), which has no numbered sub-bookmarks anyway.
+    # Section V A.1 (under-review) — pipe-form "A.1.N|V.A.1.N" keeps the
+    # visible code compact ("Paper A.1.7 ...") while the hyperlink targets
+    # the namespaced bookmark `V_A_1_N` placed by render_under_review_
+    # section. The `V.` namespace prevents collision with Section III's
+    # A.1 Identifiers entries (also numbered A.1.N). The "(Under review.)"
+    # disambiguator appended by the renderer keeps the visible code
+    # legible without spelling out "Section V, " on every C.16.2.3 row.
     ur_code = SECTION_CODES["Under Review"]
     for idx, ur in enumerate(under_review, 1):
         n_under = 0
@@ -589,10 +632,11 @@ def build_undergrad_products(
                     lead_is_under = True
         if n_under == 0:
             continue
+        bare = f"{ur_code}.{idx}"
         products.append(UndergradProduct(
             year=ur.submission_year,
             product_label="Paper",
-            ref=f"{ur_code}.{idx}",
+            ref=f"{bare}|V.{bare}",
             n_coauthors=n_under,
             lead_is_undergrad=lead_is_under,
             is_under_review=True,

@@ -49,12 +49,19 @@ class TestFormatDetails:
         assert format_details({"volume": "10", "number": "3"}) == ", 10(3)"
 
     def test_volume_number_pages(self) -> None:
+        # Range "1-12" is converted to the page-count signal "12 pages"
+        # by _format_pages — the rendered CV line surfaces paper length,
+        # not page span, per the P&T-packet convention.
         assert format_details(
             {"volume": "10", "number": "3", "pages": "1-12"}
-        ) == ", 10(3), 1-12"
+        ) == ", 10(3), 12 pages"
 
     def test_pages_only(self) -> None:
-        assert format_details({"pages": "1-12"}) == ", 1-12"
+        assert format_details({"pages": "1-12"}) == ", 12 pages"
+
+    def test_pages_already_canonical(self) -> None:
+        """Already-formatted 'N pages' passes through untouched."""
+        assert format_details({"pages": "14 pages"}) == ", 14 pages"
 
     def test_empty(self) -> None:
         assert format_details({}) == ""
@@ -969,6 +976,75 @@ class TestLoadSelfEvaluation:
         assert "b1.upper()" not in caplog.text
 
 
+class TestFormatPages:
+    """Pages on a P&T line signal paper length, not page span.
+    `_format_pages` converts every range form into 'N pages' and
+    passes through already-canonical 'N pages' values unchanged.
+    """
+
+    def _f(self, raw: str) -> str:
+        from pubs_emitter.builders import _format_pages
+        return _format_pages(raw)
+
+    def test_empty_passthrough(self) -> None:
+        assert self._f("") == ""
+
+    def test_already_canonical_passthrough(self) -> None:
+        """An author-written 'N pages' must not be mangled — the value
+        already carries the signal we want, so the renderer surfaces
+        it verbatim."""
+        assert self._f("12 pages") == "12 pages"
+        assert self._f("1 page") == "1 page"
+
+    def test_scholar_article_number_form(self) -> None:
+        """Scholar's '{N}--pages' (article-number journals) → 'N pages'."""
+        assert self._f("62--pages") == "62 pages"
+        # Singular case — '1--pages' must produce '1 page', not '1 pages'.
+        assert self._f("1--pages") == "1 page"
+
+    def test_latex_double_dash_range_to_count(self) -> None:
+        assert self._f("1--12") == "12 pages"
+        assert self._f("55--72") == "18 pages"
+
+    def test_single_page_range_uses_singular(self) -> None:
+        """A range that resolves to exactly one page (e.g. Crossref's
+        '1604-1604' for journal articles printed on a single page)
+        must emit '1 page', not '1 pages'."""
+        assert self._f("1604-1604") == "1 page"
+        assert self._f("12--12") == "1 page"
+        assert self._f("1-1") == "1 page"
+
+    def test_ascii_hyphen_range_to_count(self) -> None:
+        """Crossref returns ranges with a single ASCII hyphen — those
+        get converted the same as LaTeX double-dash form."""
+        assert self._f("1-12") == "12 pages"
+        assert self._f("100-105") == "6 pages"
+
+    def test_en_dash_range_to_count(self) -> None:
+        """Some sources hand-type en-dashes — accept them too."""
+        assert self._f("1–2") == "2 pages"
+
+    def test_whitespace_tolerated(self) -> None:
+        """Leading / trailing / around-dash whitespace doesn't block
+        the range conversion."""
+        assert self._f("  1--12  ") == "12 pages"
+        assert self._f("1 -- 12") == "12 pages"
+
+    def test_inverted_range_passes_through(self) -> None:
+        """If end < start, the input is malformed; don't silently
+        produce a negative count — pass through unchanged so the
+        author can fix it."""
+        assert self._f("12--1") == "12--1"
+
+    def test_non_range_passes_through(self) -> None:
+        """Article-number prefixes (e1234, A5) and arbitrary strings
+        pass through unchanged — we don't guess a page count from a
+        single number that might be an article number."""
+        assert self._f("e1234") == "e1234"
+        assert self._f("Article 5") == "Article 5"
+        assert self._f("12") == "12"
+
+
 class TestBuildUndergradProductsUnderReview:
     """Pins the Section V A.1 → C.16.2.3 surfacing path.
 
@@ -1018,7 +1094,12 @@ class TestBuildUndergradProductsUnderReview:
         )
         assert len(products) == 1
         p = products[0]
-        assert p.ref == "A.1.1"
+        # Pipe-form ref: display "A.1.1" but the hyperlink targets the
+        # `V_A_1_1` bookmark (Section V's namespaced under-review entry).
+        # Section III also has A.1.N entries (Identifiers), so the V.
+        # prefix on the bookmark side disambiguates without changing
+        # the visible code.
+        assert p.ref == "A.1.1|V.A.1.1"
         assert p.n_coauthors == 1
         assert p.lead_is_undergrad is True  # Solarin is first author
         assert p.is_under_review is True

@@ -4,6 +4,7 @@ publications.rtf
 # Generated lookup caches (regenerable from Crossref / DBLP / NVD / USPTO)
 lookup_cache.sqlite
 doi_cache.sqlite
+assets/page-cache.yaml
 
 # Private input data (real paper list / CVE disclosures, may include unpublished work)
 my_papers*.bib

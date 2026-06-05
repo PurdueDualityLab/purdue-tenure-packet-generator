@@ -137,6 +137,8 @@ SECTION_ORDER: list[Section] = [
     "Graduate Students",
     "Postdocs and Visiting Scholars",
     "Undergraduate Students",
+    "Undergraduate Research Pathways",
+    "Undergraduate Research Pathways",
     "Undergraduate Research Products",
     "Undergraduate Student Awards",
     "Graduate Student Awards",
@@ -190,6 +192,7 @@ SECTION_CODES: dict[Section, str] = {
     "Graduate Students": "C.14",
     "Postdocs and Visiting Scholars": "C.15",
     "Undergraduate Students": "C.16",
+    "Undergraduate Research Pathways": "C.16.2.2",
     "Undergraduate Research Products": "C.16.2.3",
     "Undergraduate Student Awards": "C.16.2.4",
     "Graduate Student Awards": "C.16.3.3",
@@ -240,6 +243,7 @@ SECTION_HEADINGS: dict[Section, str] = {
     "Graduate Students": "Graduate students advised",
     "Postdocs and Visiting Scholars": "Mentoring of postdoctoral and visiting faculty scholars the candidate has directly supervised",
     "Undergraduate Students": "Undergraduate research or any other student mentoring activities",
+    "Undergraduate Research Pathways": "Other Undergraduate Research Pathways",
     "Undergraduate Research Products": "Undergraduate Research Products and Authorship",
     "Undergraduate Student Awards": "Undergraduate Awards, Fellowships, and Career Development",
     "Graduate Student Awards": "Graduate Student Awards, Fellowships, Internships, and Placement",
@@ -307,6 +311,11 @@ DEFAULT_EVALUATIONKIT_RAWDATA_FILE = "assets/evaluationkit-rawdata.csv"
 # Section IV self-evaluation source (B.1-B.5). Override via CLI
 # --self-eval. Missing file → B section silently skipped.
 DEFAULT_SELF_EVALUATION_FILE = "assets/self-evaluation.md"
+# Crossref-backfilled page-count cache (populated by
+# `tools/crossref_pages_backfill.py`). Missing file → silent no-op at
+# render time. Override via CLI --pages-cache. Pass empty string to
+# disable the merge entirely.
+DEFAULT_PAGES_CACHE_FILE = "assets/page-cache.yaml"
 DEFAULT_MAX_WORKERS = 8
 
 # Patent table column widths in twips (1440 twips = 1 inch).

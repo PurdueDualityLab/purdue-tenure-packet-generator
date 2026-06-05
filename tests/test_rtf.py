@@ -27,6 +27,7 @@ from pubs_emitter.rtf import (
     render_students_section,
     render_technology_transfer_section,
     render_under_review_section,
+    render_undergrad_pathways_section,
     render_undergrad_products_section,
 )
 from pubs_emitter.types import (
@@ -50,6 +51,7 @@ from pubs_emitter.types import (
     Student,
     StudentAward,
     TechnologyTransfer,
+    UndergradPathway,
     UndergradProduct,
     UnderReview,
 )
@@ -335,9 +337,11 @@ class TestBuildPaperIndex:
         # For C.5 specifically, build_paper_index mirrors the renderer's
         # subcategory grouping (Magazine → Technical Reports → Direct
         # computing industry impacts) so the index codes match what's
-        # actually emitted in the RTF. Preprint goes to "Technical Reports"
-        # (first non-empty bucket) → C.5.1; CVE goes to "Direct computing
-        # industry impacts" → would be C.5.2 but excluded from the index.
+        # actually emitted in the RTF. Subcategories own numeric slots
+        # under C.5: Magazine = .1, Technical Reports = .2, Direct
+        # computing industry impacts = .3. Preprint → Technical Reports
+        # → C.5.2.1 (first entry in that subcategory). CVE → Direct
+        # computing industry impacts but excluded from the index.
         pubs = {
             "Other publications and products": [
                 _citation(title="A CVE Entry", rank="CVE"),
@@ -346,7 +350,7 @@ class TestBuildPaperIndex:
         }
         idx = build_paper_index(pubs)
         assert "acvenetry" not in idx
-        assert idx["apreprint"] == "C.5.1"
+        assert idx["apreprint"] == "C.5.2.1"
 
 
 class TestOrderCitationsForEmission:
@@ -396,7 +400,12 @@ class TestOrderCitationsForEmission:
     def test_paper_index_codes_match_emit_order(self) -> None:
         """The structural invariant: paper_index codes line up with the
         positional order returned by order_citations_for_emission, so
-        rendered C.X.Y bookmarks and back-pointer codes always agree."""
+        rendered C.X.Y.Z bookmarks and back-pointer codes always agree.
+
+        C.5 now uses subcategory-nested codes (Magazine = C.5.1.N,
+        Technical Reports = C.5.2.N, Direct industry impacts = C.5.3.N).
+        Within each subcategory the within-counter resets to 1.
+        """
         from pubs_emitter.rtf import order_citations_for_emission
         cits = [
             _citation(title="A-preprint", rank="Preprint"),
@@ -404,15 +413,11 @@ class TestOrderCitationsForEmission:
         ]
         pubs = {"Other publications and products": cits}
         idx = build_paper_index(pubs)
-        ordered = order_citations_for_emission(
-            "Other publications and products", cits,
-        )
-        for i, cit in enumerate(ordered, 1):
-            if cit.rank == "CVE":
-                continue
-            expected_code = f"C.5.{i}"
-            from pubs_emitter.venue import normalize_title
-            assert idx[normalize_title(cit.title)] == expected_code
+        from pubs_emitter.venue import normalize_title
+        # Magazine sorts first (subcat 1) → B-magazine = C.5.1.1.
+        # Technical Reports follows (subcat 2) → A-preprint = C.5.2.1.
+        assert idx[normalize_title("B-magazine")] == "C.5.1.1"
+        assert idx[normalize_title("A-preprint")] == "C.5.2.1"
 
 
 def _grant(**overrides) -> Grant:
@@ -520,13 +525,13 @@ class TestGrantHeadShape:
         # Regression guard: no double-space, no orphan "/ " at start.
         assert "  /" not in out
 
-    def test_first_row_carries_bold_full_code(self) -> None:
+    def test_first_row_carries_full_code(self) -> None:
         # Each grant's Row 1 carries the full `C.X.Y` code (e.g. C.10.1)
-        # in bold, wrapped in a bookmark anchor so `@id` refs to grants
-        # can hyperlink to the same form used elsewhere in the document.
-        # Bold is brace-scoped (`{\b ... .}`) so the trailing space
-        # before the rest of the head renders literally instead of being
-        # eaten as the `\b0` control-word delimiter.
+        # as plain text — NOT bold — wrapped in a bookmark anchor so
+        # `@id` refs to grants hyperlink to the same form used elsewhere
+        # in the document. Bold was removed per user direction so the
+        # cell content reads as uniform table content rather than as
+        # a leading emphasis.
         buf = io.StringIO()
         render_grants_section(
             "Grants PI",
@@ -538,8 +543,10 @@ class TestGrantHeadShape:
         assert "\\*\\bkmkstart C_10_1" in out
         assert "\\*\\bkmkstart C_10_2" in out
         assert "\\*\\bkmkstart C_10_3" in out
-        # Display code is the dotted form, inside the brace-scoped bold.
-        assert "{\\b " in out and "C.10.1" in out
+        # Display code is the dotted form, no bold wrap on the cell.
+        assert "C.10.1" in out
+        # The Row-1 code MUST NOT be brace-bold-wrapped (was the old shape).
+        assert "{\\b {\\*\\bkmkstart C_10_1" not in out
 
     def test_internal_grant_no_funder_prefix(self) -> None:
         # Internal grants typically have a long agency string ("Office of the
@@ -661,7 +668,11 @@ class TestGrantTablePersonnelRow:
         assert "PI: Aravind Machiry; Co-PI: Carla Zoltowski; Co-PI: Justin Hess" in out
 
     def test_sole_pi_omits_personnel_row(self) -> None:
-        # No lead_pi, no co_pis → no other personnel → row 4 not emitted.
+        """No lead_pi, no co_pis → no other personnel → personnel row
+        emits 'Sole PI' instead of a named personnel listing. The grant
+        section total ("Total amount of external funding as PI: $X") is
+        an unrelated string that may also contain "PI:" — assert
+        against the cell-content shape, not a bare substring."""
         buf = io.StringIO()
         render_grants_section(
             "Grants PI",
@@ -669,9 +680,15 @@ class TestGrantTablePersonnelRow:
             buf,
         )
         out = buf.getvalue()
-        # Absence of "PI:" / "Co-PI:" labels (the role line is just "PI", not "PI:").
-        assert "PI: " not in out
-        assert "Co-PI: " not in out
+        # Row 4 should be the literal `Sole PI` cell.
+        assert "\\intbl Sole PI\\cell" in out
+        # And it should NOT carry a named-personnel "Co-PI: <name>" cell.
+        assert "Co-PI:" not in out
+        # Also assert NO "PI: <name>" cell-listing form (the section-
+        # total line lives in a `\pard\li…\sa120 \i ` paragraph, not a
+        # `\pard\intbl` cell — match the cell shape specifically).
+        import re
+        assert not re.search(r"\\pard\\intbl[^\\]*PI:", out)
 
 
 class TestGrantPersonnelAffiliations:
@@ -1025,13 +1042,18 @@ class TestGrantTotalsMath:
         # Should sum my_amount → $160,000, NOT purdue → $800,000.
         assert "$160,000" in out
         # Sanity guard: the headline doesn't accidentally sum purdue.
-        # Note: $500,000 / $300,000 / $100,000 / $60,000 also appear in the
-        # individual amount cells of each grant; the regression-sensitive
-        # token is the TOTAL line carrying $160,000.
-        # Bold is brace-scoped (`{\b ...:}`) so the trailing space renders
-        # as literal whitespace instead of being eaten as the `\b0`
-        # control-word delimiter.
-        assert "external funding as PI:} $160,000" in out
+        # Note: $500,000 / $300,000 / $100,000 / $60,000 also appear in
+        # the individual amount cells of each grant; the regression-
+        # sensitive token is the section-total intro-note line.
+        # The total line emits via `_emit_intro_note` as an italic
+        # paragraph; verify the dollar amount appears right after the
+        # label inside that paragraph shape.
+        assert "external funding as PI: $160,000" in out
+        # Italic intro-note style (registry-routed via `emit_styled`).
+        # Emit shape: `\i\fs22 Total amount ... PI: $160,000\i0`.
+        assert "\\i\\fs22 Total amount of external funding as PI:" in out
+        # MUST NOT be the legacy bold form.
+        assert "{\\b Total amount of external funding as PI:" not in out
 
 
 # ----- Student helpers ----------------------------------------------------
@@ -1255,11 +1277,13 @@ class TestRenderUnderReviewSection:
         render_under_review_section([self._ur()], buf)
         out = buf.getvalue()
         assert "A.1 Products under review" in out
-        # Numbered list cross-ref form: A.1.1 (inside a bookmark wrap, then
-        # the literal period + `\tab` follow). Confirm both the code and
-        # the bookmark anchor.
+        # Numbered list cross-ref form: visible code "A.1.1" with the
+        # bookmark target namespaced as `V_A_1_1`. The `V_` prefix
+        # disambiguates Section V's under-review entries from Section
+        # III's A.1 Identifiers entries (also numbered A.1.N).
         assert "A.1.1" in out
-        assert "\\*\\bkmkstart A_1_1" in out
+        assert "\\*\\bkmkstart V_A_1_1" in out
+        assert "\\*\\bkmkstart A_1_1}" not in out  # no bare collision
 
     def test_multiple_entries_increment_index(self) -> None:
         buf = io.StringIO()
@@ -1599,7 +1623,9 @@ class TestRenderPostdocsSection:
             "the candidate has directly supervised"
         ) in out
         # Indented N/A paragraph; not a table.
-        assert "\\pard\\li720 N/A\\par" in out
+        # N/A routes through `emit_styled("na_placeholder", …)`, which
+        # emits `\pard\plain\f0\li720\fs22 N/A\par`.
+        assert "\\pard\\plain\\f0\\li720\\fs22 N/A\\par" in out
         # No \trowd because there's no table for empty C.15.
         assert "\\trowd" not in out
 
@@ -1701,6 +1727,89 @@ class TestRenderKeyWorksSection:
         assert "\\super #\\nosupersub{}" in out
         assert "\\super G\\nosupersub{}" in out
         assert "\\super U\\nosupersub{}" in out
+
+
+class TestRenderUndergradPathwaysSection:
+    """C.16.2.2: Other Undergraduate Research Pathways — 4-column RTF
+    table (dates | activity | audience | participation). Rows emit in
+    input order (YAML position controls arrangement). Empty list
+    silently skips the section (no orphan heading)."""
+
+    def _p(self, **overrides) -> UndergradPathway:
+        base = dict(
+            dates="Summer 2024",
+            activity="Test pathway",
+            audience="Test audience",
+            participation="~5 students",
+        )
+        base.update(overrides)
+        return UndergradPathway(**base)
+
+    def test_heading_and_table_emitted(self) -> None:
+        buf = io.StringIO()
+        render_undergrad_pathways_section([self._p()], buf)
+        out = buf.getvalue()
+        assert "bkmkstart C_16_2_2" in out
+        assert "Other Undergraduate Research Pathways" in out
+        # 4-column header band
+        assert "Dates" in out
+        assert "Pathway / activity" in out
+        assert "Audience" in out
+        assert "Participation" in out
+        # Row body cells
+        assert "Summer 2024" in out
+        assert "Test pathway" in out
+        assert "Test audience" in out
+        assert "~5 students" in out
+
+    def test_rows_emit_in_input_order(self) -> None:
+        """No internal sort — YAML order is the source of truth."""
+        buf = io.StringIO()
+        render_undergrad_pathways_section(
+            [
+                self._p(dates="Summer 2025", activity="Second-by-position"),
+                self._p(dates="Summer 2021", activity="First-by-position"),
+            ],
+            buf,
+        )
+        out = buf.getvalue()
+        assert out.index("Second-by-position") < out.index("First-by-position")
+
+    def test_empty_list_emits_nothing(self) -> None:
+        """Like C.16.2.3, empty pathways silently skips the heading —
+        no orphan section block. Caller handles the placeholder fallback."""
+        buf = io.StringIO()
+        render_undergrad_pathways_section([], buf)
+        assert buf.getvalue() == ""
+
+
+class TestRenderSoftwareProductsSectionExplanatoryNote:
+    """C.22 leads with an italic cross-ref note pointing the reader at
+    C.5 for non-software impact channels (papers-as-tools, CVEs,
+    vulnerability disclosures, magazine pieces). The note is a stable
+    invariant — readers expect a one-line orienter at the top of C.22,
+    not a leap straight into the entry list."""
+
+    def test_note_present_with_cross_ref_to_c5(self) -> None:
+        from pubs_emitter.rtf import render_software_products_section
+        from pubs_emitter.types import SoftwareProduct
+        buf = io.StringIO()
+        render_software_products_section(
+            [SoftwareProduct(
+                year=2024, year_str="2024",
+                name="testprod", description="Test description.",
+            )],
+            buf,
+        )
+        out = buf.getvalue()
+        assert "For other forms of impact, see " in out
+        # Verify the C.5 cross-ref code is wrapped as a hyperlink target
+        # via `_code_link` (so Word makes the C.5 reference clickable).
+        from pubs_emitter.builders import REF_LINK_OPEN, REF_LINK_CLOSE
+        assert f"{REF_LINK_OPEN}C.5{REF_LINK_CLOSE}" in out
+        # Italic emphasis via `_emit_intro_note` → `emit_styled("intro_note")`
+        # which produces `\i\fs22 For other forms…`.
+        assert "\\i\\fs22 For other forms of impact" in out
 
 
 class TestRenderUndergradProductsSection:
@@ -2014,20 +2123,26 @@ class TestRenderCandidateInformationSection:
         assert "A.6 Recognitions" in out
         assert "A.7 Membership in professional organizations." in out
 
-    def test_a1_renders_as_bullet_list_with_bold_labels(self) -> None:
+    def test_a1_renders_as_numbered_list_with_italic_labels(self) -> None:
         buf = io.StringIO()
         render_candidate_information_section(self._ci(), buf)
         out = buf.getvalue()
-        # Bullet char (舦?) + bold labels Name:, ORCID:, Google Scholar:.
-        assert "\\u8226?" in out
-        assert "\\b Name\\b0" in out
-        assert "\\b ORCID\\b0" in out
-        assert "\\b Google Scholar\\b0" in out
+        # A.1 is a numbered list (A.1.1, A.1.2, A.1.3) with ITALIC inline
+        # labels — bold was reserved for section headings (where it
+        # signals heading boundaries in long lists) so labels here use
+        # italic to read as qualifiers rather than secondary headings.
+        # Section III owns the bare `A_1_N` bookmark namespace; Section
+        # V's Under Review entries use the `V_A_1_N` namespace.
+        assert "A.1.1" in out
+        assert "A.1.2" in out
+        assert "A.1.3" in out
+        assert "\\*\\bkmkstart A_1_1" in out
+        assert "\\i Name\\i0" in out
+        assert "\\i ORCID\\i0" in out
+        assert "\\i Google Scholar\\i0" in out
         # Identifier URLs become RTF HYPERLINK fields, not bare text.
         assert 'HYPERLINK "https://orcid.org/0000-0003-2495-686X"' in out
         assert 'HYPERLINK "https://scholar.google.com/citations?user=X"' in out
-        # No A.1.N codes are emitted (bullets, not numbered).
-        assert "A.1.1" not in out
 
     def test_a2_numbered_with_italic_thesis(self) -> None:
         buf = io.StringIO()
@@ -2270,7 +2385,9 @@ class TestEmitInlineHeading:
         out = buf.getvalue()
         assert "\\brdrt\\brdrs" in out
         assert "\\brdrb\\brdrs" in out
-        assert "\\i Phase Label\\i0" in out
+        # `\i` (italic) opens before the body font size; text follows.
+        # Close-tag `\i0` matches.
+        assert "\\i\\fs22 Phase Label\\i0" in out
 
     def test_default_variant_no_borders(self) -> None:
         from pubs_emitter.rtf import _emit_inline_heading
@@ -2297,9 +2414,10 @@ class TestEmitInlineHeading:
             buf,
         )
         out = buf.getvalue()
-        # Match the helper's emit shape: \i\fs26... text \i0\fs24.
+        # Helper routes through `emit_styled("inline_subheading", …)`
+        # which emits: \pard\plain\f0\li{N}\sb120\sa60\i\fs26 {text}\i0.
         assert "National and International Awards\\i0" in out
-        assert "\\i\\fs26\\sb120\\sa60 National and International Awards" in out
+        assert "\\sb120\\sa60\\i\\fs26 National and International Awards" in out
         assert "\\b National and International Awards" not in out
 
     def test_career_phase_divider_routes_through_helper(self) -> None:
@@ -2310,8 +2428,9 @@ class TestEmitInlineHeading:
         buf = io.StringIO()
         _maybe_emit_career_phase_divider(buf, 2020, current_phase="", indent=720)
         out = buf.getvalue()
-        # Border variant emits: ... \i Phase Label\i0\par.
-        assert "\\i PhD studies at Virginia Tech\\i0" in out
+        # Border variant routes through `emit_styled("career_phase_divider", …)`
+        # which emits: ... border-block \i\fs22 Phase Label\i0\par.
+        assert "\\i\\fs22 PhD studies at Virginia Tech\\i0" in out
         assert "\\brdrt\\brdrs" in out
         assert "\\brdrb\\brdrs" in out
 
