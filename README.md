@@ -46,7 +46,11 @@ copy-paste of the rendered RTF into Purdue's official Word template.
 The alternative is **40–80 hours of soul-crushing work in Word**,
 hand-formatting every citation and table, re-numbering cross-refs by
 hand every time you add an entry — and you'll have to redo most of
-it the next time Purdue updates the packet format (which they do).
+it the next time Purdue updates the packet format. Note: **the
+packet has been updated 5+ times since Davis joined Purdue in
+2020.** With this tool, the format changes are absorbed in the
+renderer code (a few hours of edits to `SECTION_HEADINGS` +
+`rtf.py`); your data stays untouched.
 
 This tool keeps the data in editable text / YAML / CSV substrates,
 and the renderer re-emits the entire packet on every change in ~3
@@ -197,32 +201,6 @@ empty string (`--candidate-info ""`) to skip a section entirely.
 Output: `publications.rtf` (override via `--out`). Open in Word, then
 **Paste Special → Unformatted Text** into your tenure-packet template
 if you want it to inherit the host doc's font.
-
----
-
-## Workflow: populating the data with an AI assistant
-
-You don't have to populate every field by hand. The data substrates
-were designed to be filled in by an LLM working from your existing CV:
-
-1. Open Davis's Overleaf CV (link above), or your own LaTeX / Word CV.
-2. Give an AI assistant (Claude, ChatGPT, etc.) one section at a time:
-   - **Screenshot a section** (awards table, grants list, student
-     roster) and tell it: *"convert this to the YAML schema in
-     `non-scholar-work.yaml`, matching the existing entries"*. The
-     assistant infers the schema by reading the existing entries.
-   - **Or paste the LaTeX source** of a section and ask the same.
-3. Drop the YAML into the right top-level key in
-   `non-scholar-work.yaml`. Re-run the build. Validation errors
-   surface in one batch — fix them all at once and re-run.
-4. Cross-references work the same way: in any prose field
-   (`activities:`, `responsibility:`, `description:`, `impact:`,
-   B.1-B.5 prose), reference an `@id` (any YAML entry's `id:` field)
-   or a raw `@C.X.Y` section code. The build resolves it to a
-   clickable hyperlink in the output.
-
-Word-count caps for B.1 / B.2 / B.3 are checked at build and surface
-as warnings, so you can write loose drafts and trim later.
 
 ---
 
