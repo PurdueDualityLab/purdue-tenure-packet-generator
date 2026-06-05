@@ -1,126 +1,450 @@
-# pubs-emitter
+# purdue-tenure-packet-generator
 
-Generates a formatted RTF publication list for a tenure packet, driven by
-two files:
+Generate the publications + self-evaluation + supporting-documentation
+portions of a **Purdue tenure packet** from a small set of editable
+input files. Output is an RTF document ready to paste into the host
+Word template, with formatting preserved: bold for you, superscripts
+for student / advisor / corresponding-author roles, italic venues +
+underlined tier markers, clickable hyperlinks (DOI / NVD / USPTO /
+LinkedIn / NSF awards page / arbitrary URLs), hanging-indent layout,
+RTF tables for patents / students / postdocs / grants / courses, and
+cross-references that resolve to in-doc bookmarks.
 
-- A **BibTeX file** exported from Google Scholar (publications + patents).
-- A **YAML side file** for everything Scholar doesn't track — invited
-  talks, leadership roles, media appearances, conference presentations,
-  grants, students, CVEs, security disclosures, key works.
+> **Tested against the Purdue tenure-doc format as of May 2026** —
+> Section III General Information (A.1–A.7), Section IV Self-Evaluation
+> (B.1–B.5), Section V Scholarly Contributions (C.1–C.26 + appendix
+> with under-review and pending proposals). When the Purdue template
+> updates (it has revised wording a few times), check that
+> `SECTION_HEADINGS` in [`src/pubs_emitter/config.py`](src/pubs_emitter/config.py)
+> still matches the live template heading text before submitting.
 
-Output is ready to paste into Word with formatting preserved: bold for
-you, superscripts for student / advisor / last-author roles, italic
-venue + tier, clickable hyperlinks to DOIs / NVD / USPTO / publisher
-pages, hanging-indent layout, RTF tables for patents + student lists.
+The system covers:
 
-## Why it's set up this way
+| Section | What lands here | Driven by |
+|---|---|---|
+| **III** General Information (A.1–A.7) | name + IDs, degrees, positions, licenses, awards, memberships | `candidate-information.yaml` |
+| **IV** Self-Evaluation (B.1–B.5) | summary, impact, vision, external-events note, COVID statement | `self-evaluation.md` |
+| **V** Scholarly Contributions (C.1–C.26 + appendix) | publications, talks, grants, students, courses, services + appendix (V.A.1 under-review, V.A.2 pending proposals) | `my_papers.bib` + `non-scholar-work.yaml` + EvaluationKit CSVs |
 
-1. **BibTeX is the canonical publication store.** This repo assumes you
-   are using Google Scholar as the master reference for your publications,
-   and that you use the *"James Davis (TM)" venue notation*: prefix every
-   `journal` / `booktitle` with `[ACRONYM'YY]`. The acronyms are
-   required because Purdue wants to see venue rankings in the packet,
-   and the acronym is what we look up in `assets/config.yaml`.
-2. **Everything else lives in `non-scholar-work.yaml`.** Talks, grants,
-   students, CVEs, etc. — Scholar can't carry them, so we keep them in
-   one hand-edited YAML file.
-3. **Cross-references are automatic.** CVE entries link back to the
-   originating paper (`(see C.4.7)`); Key Works cite the paper's
-   canonical location (`(listed as C.4.7)`); the conference-presentation
-   section name-drops the linked paper's section ref; student tables
-   auto-populate the "Related Publications" column from the bib.
+## Why use this
 
-> **Tip:** A GenAI tool --- Codex, Claude, etc. --- can help you populate
-> `non-scholar-work.yaml` from your CV. Just give it screenshots of each
-> section.
+A tenure packet pulls from many sources (bibliographies, grant systems,
+student records, course evaluations, service rosters). Doing it once
+in Word is painful; doing it again next year is much worse. This tool
+keeps the data in editable text/YAML/CSV substrates, and the renderer
+re-emits the entire packet on every change in ~3 seconds. Numbers stay
+consistent across cross-refs; tier markers + author markers + section
+codes are computed; you focus on writing prose, not formatting.
+
+Pre-revenue: ship without naming any specific commercial vendor. The
+output looks at home in Purdue's official Word template.
+
+---
+
+## Prerequisites
+
+The system is opinionated about **what data you bring**:
+
+### Hard requirements
+
+1. **A structured publication store.** Recommended: **Google Scholar**
+   as the master reference for your papers, exported to BibTeX. The
+   exporter labels every venue with a bracket-tag (`[ICSE'25]`) you
+   add yourself; the tag drives venue-rank lookup. See `BibTeX
+   conventions` below.
+2. **An up-to-date CV with equivalent fields to Davis's.** Use Davis's
+   CV as a template — a read-only copy is available on Overleaf for
+   forking:
+   <https://www.overleaf.com/read/ccxmympbnmzn#136112>
+   Items you'll want listed in your CV (the YAML / markdown substrate
+   reads them directly):
+   - publications (BibTeX from Scholar)
+   - awards + recognitions (external + internal, with dates + significance)
+   - grants (PI / Co-PI / gifts / internal, with personnel + amounts)
+   - students supervised (graduates, undergraduates, with placements / LinkedIn)
+   - postdocs + visiting scholars
+   - invited talks + leadership roles + media appearances
+   - service to Purdue / profession / state-and-nation / other
+   - courses taught (EvaluationKit CSVs cover the score columns)
+   - software products + patents + entrepreneurial activities + tech transfer
+3. **Venue rankings.** A list of conference / journal acronyms → Tier 1/2/3
+   / Workshop / Magazine, edited in `assets/config.yaml` under `ranks:`.
+   Add a new venue once; every paper that cites it picks up the tier.
+4. **A list of your students.** Names go in `assets/config.yaml` under
+   `students.G` (graduate) and `students.U` (undergraduate). The
+   author-rendering code adds a superscript `G` / `U` whenever it
+   spots a student name in the bib's author list — no markup needed
+   in the bib.
+5. **A list of senior co-authors / advisors.** Names go in
+   `assets/config.yaml` under `advisors:`. They get a superscript `#`
+   marker in every citation.
+
+### Soft requirements
+
+- **PatentsView API key** for issue-date lookup on US patents (free at
+  <https://patentsview.org/>). Without it, patents fall back to the
+  bib's `note`-field date.
+- **NVD API key** for CVE description lookup, 10× rate-limit raise
+  (free at <https://nvd.nist.gov/>).
+- **EvaluationKit raw-data + question-mapper CSVs** from Purdue's CIE
+  system, if you want C.17 (Courses Taught) populated automatically.
+  Without these, you populate `courses_taught:` by hand in
+  `non-scholar-work.yaml`. **See "EvaluationKit export" below** for
+  the exact click-path.
+- **Crossref polite-pool mailto** (set via `PUBS_EMITTER_USER_AGENT`
+  env var) — already configured to your email by default.
+
+### Recommended populating workflow: AI assistant + CV screenshots
+
+Don't try to hand-write the YAML. The ergonomic path: **work with a
+chat-based AI model and feed it screenshots of each part of your CV.**
+
+Concretely, what Davis did:
+
+1. Point a chat-based AI assistant (Davis used Claude) **at this git
+   repository** so it has the YAML schemas + the renderer code in
+   context. (Easiest: clone the repo locally and run the assistant in
+   the same workspace; or copy in the relevant `src/pubs_emitter/*.py`
+   + `assets/config.example.yaml` files.)
+2. **Screenshot each section** of your existing CV — one section at a
+   time (awards table, grants list, student roster, service list, etc.).
+3. Ask the assistant: *"convert this CV section to the YAML schema
+   used by this repo, matching the existing entries in
+   `non-scholar-work.yaml`."* The assistant reads the schemas + existing
+   entries and writes new YAML.
+4. Paste the YAML into the right top-level key. Re-run the build.
+   Validation errors come back in one batch — feed them to the
+   assistant or fix by hand.
+
+A few inputs DON'T go through this workflow:
+
+- **Publications** — your Google Scholar profile IS the master.
+  For each paper on Scholar, click into the entry → **Edit** → prefix
+  the `journal` / `conference` field with the bracket-tag
+  (`[ICSE'25]`, `[FSE'24]`, etc.). Once every paper is tagged, **export
+  the profile as BibTeX**; the tags ride along into the bib file and
+  drive venue-tier lookup at build time. New venue acronyms also need
+  to be added to `assets/config.yaml` under `ranks:`.
+  Davis's profile is a worked example you can mirror the editing
+  convention from:
+  <https://scholar.google.com/citations?user=VSAWPQ4AAAAJ>
+- **Courses taught (CIE scores)** — comes from Purdue's EvaluationKit
+  CSVs; see next section.
+- **Self-evaluation prose (B.1–B.5)** — plain markdown you write by
+  hand; AI assist optional but the prose is the human-judgment part of
+  the packet.
+
+### EvaluationKit export
+
+The CSVs the tool reads come straight from Purdue's EvaluationKit web UI:
+
+1. **Build report** — in EvaluationKit, build a new report.
+2. **All classes, and core-10 Qs** — scope: every class you've taught;
+   questions: the 10 core CIE questions.
+3. **Download Excel.**
+4. **Export the two tabs as CSVs** — the workbook has two tabs:
+   - The "question mapper" tab → save as `assets/evaluationkit-questionmapper.csv`
+   - The "raw data" tab → save as `assets/evaluationkit-rawdata.csv`
+
+The mapper maps EvaluationKit's internal QuestionKeys (which change
+between semesters as Purdue revises the survey wording) to the 10
+canonical core concepts; the raw data carries one row per
+(course-section × question × Likert value) with the response count.
+The parser auto-aliases new QuestionKey families if the mapper is
+up-to-date; if Purdue rolls out a new wording, you'll see an "unmapped
+QuestionKey" warning at build time and need to extend
+`QUESTION_KEY_TO_CONCEPT` in
+[`src/pubs_emitter/evaluations.py`](src/pubs_emitter/evaluations.py).
+
+---
 
 ## Quick start
 
 ```bash
-./setup.sh                                          # one-time: venv + editable install + dev extras
-./pubs-emitter.py --bib my_papers.bib \
-                  --non-scholar non-scholar-work.yaml
+./setup.sh   # one-time: venv + editable install + dev deps
+python3 pubs-emitter.py \
+    --bib my_papers.bib \
+    --non-scholar non-scholar-work.yaml \
+    --candidate-info candidate-information.yaml \
+    --self-eval self-evaluation.md \
+    --evaluationkit-rawdata evaluationkit-rawdata.csv
 ```
 
-Or once `setup.sh` has run, the shorter form works from anywhere in the venv:
+Or once the venv is active:
 
 ```bash
 source .venv/bin/activate
-pubs-emitter --bib my_papers.bib --non-scholar non-scholar-work.yaml
+pubs-emitter --bib my_papers.bib  --non-scholar non-scholar-work.yaml
 ```
 
-This writes `publications.rtf`. Open it in Word, then copy → "Paste
-Special → Unformatted Text" into your tenure-packet template if you
-want it to inherit the host doc's font.
+Defaults: all the asset-flag paths default to `assets/*` — pass an
+empty string (`--candidate-info ""`) to skip a section entirely.
 
-## Layout
+Output: `publications.rtf` (override via `--out`). Open in Word, then
+**Paste Special → Unformatted Text** into your tenure-packet template
+if you want it to inherit the host doc's font.
+
+---
+
+## Workflow: populating the data with an AI assistant
+
+You don't have to populate every field by hand. The data substrates
+were designed to be filled in by an LLM working from your existing CV:
+
+1. Open Davis's Overleaf CV (link above), or your own LaTeX / Word CV.
+2. Give an AI assistant (Claude, ChatGPT, etc.) one section at a time:
+   - **Screenshot a section** (awards table, grants list, student
+     roster) and tell it: *"convert this to the YAML schema in
+     `non-scholar-work.yaml`, matching the existing entries"*. The
+     assistant infers the schema by reading the existing entries.
+   - **Or paste the LaTeX source** of a section and ask the same.
+3. Drop the YAML into the right top-level key in
+   `non-scholar-work.yaml`. Re-run the build. Validation errors
+   surface in one batch — fix them all at once and re-run.
+4. Cross-references work the same way: in any prose field
+   (`activities:`, `responsibility:`, `description:`, `impact:`,
+   B.1-B.5 prose), reference an `@id` (any YAML entry's `id:` field)
+   or a raw `@C.X.Y` section code. The build resolves it to a
+   clickable hyperlink in the output.
+
+Word-count caps for B.1 / B.2 / B.3 are checked at build and surface
+as warnings, so you can write loose drafts and trim later.
+
+---
+
+## How it works — architecture
 
 ```
-publications/
-├── pubs-emitter.py            # root driver (delegates to src/pubs_emitter/cli.py)
-├── setup.sh                   # one-command bootstrap (venv + editable install)
-├── pyproject.toml             # build + pylint + mypy + pytest config + project deps
-├── README.md
-├── CLAUDE.md                  # editor-facing notes; non-derivable rules + pitfalls
+                          ┌─────────────────┐
+                          │   *.bib (BibTeX)│  ← Google Scholar export
+                          └────────┬────────┘
+                                   │
+                                   │   (DOI / patent / CVE lookup,
+                                   │    parallel, cached in SQLite)
+                                   ▼
+   ┌──────────────────────┐   ┌──────────────────────┐   ┌──────────────────────┐
+   │ candidate-information│   │   non-scholar-work   │   │  evaluationkit-*.csv │
+   │       .yaml          │   │       .yaml          │   │  (Purdue CIE data)   │
+   │                      │   │                      │   │                      │
+   │  identifiers         │   │  key_works           │   │  question mapper:    │
+   │  degrees             │   │  invited_talks       │   │   QuestionKey → text │
+   │  positions           │   │  leadership_roles    │   │                      │
+   │  licenses            │   │  media_appearances   │   │  raw data:           │
+   │  awards (ext+int)    │   │  grants_as_pi        │   │   per-section Likert │
+   │  memberships         │   │  grants_as_co_pi     │   │   response counts    │
+   │                      │   │  gifts               │   │                      │
+   └──────────┬───────────┘   │  internal_grants     │   └──────────┬───────────┘
+              │               │  graduate_students   │              │
+              │               │  postdocs_visiting   │              │
+              │               │  undergrad_students  │              │
+              │               │  student_awards      │              │
+              │               │  courses_taught      │              │
+              │               │  course_development  │              │
+              │               │  technology_transfer │              │
+              │               │  software_products   │              │
+              │               │  patent_impacts      │              │
+              │               │  cves                │              │
+              │               │  security_disclosures│              │
+              │               │  conference_presents │              │
+              │               │  university_service  │              │
+              │               │  profession_service  │              │
+              │               │  national_service    │              │
+              │               │  other_service       │              │
+              │               │  under_review        │              │
+              │               └──────────┬───────────┘              │
+              │                          │                          │
+              │                          │     ┌────────────────────┘
+              │                          │     │ (per-question pooling,
+              │                          │     │  10-concept aggregation,
+              │                          │     │  VIP cross-section merge)
+              │                          ▼     ▼
+              │              ┌──────────────────────────────┐
+              │              │   builders.py (typed records)│
+              │              │   + cross-ref index +        │
+              │              │   resolve_refs (@id → C.X.Y) │
+              │              └──────────────┬───────────────┘
+              │                             │
+              ▼                             ▼
+   ┌──────────────────┐         ┌──────────────────────┐
+   │ self-evaluation  │         │      rtf.py          │
+   │      .md         │────────►│  write_rtf (emission │
+   │                  │         │   in canonical order)│
+   │  ## B.1 …        │         └──────────┬───────────┘
+   │  ## B.2 …        │                    │
+   │  ## B.3 …        │                    │
+   │  ## B.4 …        │                    │
+   │  ## B.5 …        │                    │
+   └──────────────────┘                    ▼
+                                ┌──────────────────────┐
+                                │   publications.rtf   │
+                                │  (Word → Paste-Spec) │
+                                └──────────────────────┘
+```
+
+### Emission order
+
+```
+A. GENERAL INFORMATION   ← group heading (fs32)
+  A.1  Name + ORCID + Google Scholar             ← bullet list
+  A.2  Degrees                                   ← numbered (A.2.N)
+  A.3  Positions at Purdue                       ← prose
+  A.4  Positions at other institutions           ← numbered
+  A.5  Licenses                                  ← prose ("N/A" allowed)
+  A.6  Recognitions / Awards                     ← 2-tier table (ext + int)
+  A.7  Memberships                               ← numbered
+
+B. SELF-EVALUATION       ← group heading (fs32)
+  B.1  Summary of achievements                   ← prose (cap: 1000 words)
+  B.2  Impact of accomplishments                 ← prose (cap: 250 words)
+  B.3  Vision                                    ← prose (cap: 500 words)
+  B.4  Candidate comments on external events     ← prose (no cap)
+  B.5  Professional COVID-19 Impact Statement    ← prose (no cap; "N/A")
+
+(Roman "C." is implicit — never emitted as a group heading)
+  C.1   Key Scholarly Publications                ← 2-paragraph per entry
+  C.2   Journals                                  ← numbered, hanging indent
+  C.3   Books and chapters                        ← numbered
+  C.4   Conferences and Workshops                 ← numbered
+  C.5   Other publications (subcat: Magazine /    ← subcat headings,
+                            Tech Reports /          flat numbering
+                            Direct industry impacts)
+  C.6   Invited Talks                             ← numbered
+  C.7   Leadership Roles                          ← numbered
+  C.8   Media Appearances                         ← numbered
+  C.9   Conference Presentations                  ← numbered
+  C.10  Grants as PI            ← 4-row table per grant + section total
+  C.11  Grants as Co-PI / Co-I  ← same shape + section total
+  C.12  Gifts                   ← same shape + section total
+  C.13  Internal grants         ← same shape + section total
+  C.14  Graduate students       ← 6-column table, tier-grouped
+  C.15  Postdocs + Visiting     ← 6-column table (N/A when empty)
+  C.16  Undergraduate students  ← multi-sub-section:
+        C.16.1  Overview                          ← placeholder
+        C.16.2  Undergraduate Student Mentoring   ← placeholder
+        C.16.2.1  VIP                             ← placeholder
+        C.16.2.2  Other Pathways                  ← placeholder
+        C.16.2.3  Research Products               ← numbered (auto)
+        C.16.2.4  Awards (External + Internal)    ← numbered, tier-grouped
+        C.16.3  Graduate Student Mentoring        ← placeholder
+        C.16.3.3  Awards (External + Internal)    ← numbered, tier-grouped
+  C.17  Courses Taught          ← 6-column table; CSV-driven
+                                  (per-course CIE avg/min/max + responsibility)
+  C.18  Course Development      ← numbered
+  C.19  Patents                 ← 5-column table
+  C.20  Entrepreneurial Activities  ← numbered ("N/A" when empty)
+  C.21  Technology Transfer     ← table ("N/A" when empty)
+  C.22  Software Products       ← 2-paragraph per entry
+  C.23  Service to Purdue       ← numbered
+  C.24  Service to the profession   ← numbered (acronym auto-expand)
+  C.25  Service to State / Nation   ← numbered
+  C.26  Other external service      ← numbered
+
+(Section V appendix — emitted last, after C.26)
+  A.1  Products under review     ← cross-refs render as "Section V, A.1.N"
+  A.2  Pending proposals         ← cross-refs render as "Section V, A.2.N"
+                                   (bookmarks namespaced "V_A_2_N" to
+                                    avoid collision with Section III A.2)
+```
+
+### Cross-references
+
+Anywhere in any prose field, you can write:
+
+- **`@id`** — looks up the named id across every YAML / bib entry, resolves
+  to the entry's section code, renders as a clickable hyperlink.
+  Example: `@nsf-career-ptm-2026` → `C.10.7`.
+- **`@C.X.Y`** — a raw section code. Renders as a clickable hyperlink.
+  Example: `@C.16.2.1` → "C.16.2.1" with a jump to the VIP heading.
+- **`@@`** — escape: emits a literal `@`. Use for email addresses or
+  to talk about `@id` syntax in prose.
+
+Refs in Section V get the Roman prefix verbatim: under-review entries
+display as `Section V, A.1.N`; pending proposals as `Section V, A.2.N`.
+
+### Author markers (citation rendering)
+
+Every author in every citation flows through `format_author`, which
+adds superscript markers based on lookup tables:
+
+| Marker | Meaning | Source |
+|---|---|---|
+| **bold** | the candidate (Davis) | `me:` in `config.yaml` |
+| `*` | corresponding author (last by default; per-paper override) | `CORRESPONDING_AUTHORS` |
+| `#` | senior co-author / PhD or post-doc advisor | `advisors:` in `config.yaml` |
+| `G` | graduate student supervised by candidate | `students.G` in `config.yaml` |
+| `U` | undergraduate student supervised by candidate | `students.U` in `config.yaml` |
+
+A legend explaining these markers is auto-emitted at the top of C.1.
+
+### Career-phase dividers
+
+Publication sections (C.1–C.5) emit visual dividers between two
+regions:
+
+- **PhD studies at Virginia Tech** — papers with year ≤ 2020
+- **Assistant Professor at Purdue University** — papers with year ≥ 2021
+
+Numbering does NOT reset across the boundary — it's a visual cue so
+the reader can see continuity of publication output post-PhD.
+
+---
+
+## File layout
+
+```
+purdue-tenure-packet-generator/
+├── pubs-emitter.py                 # root entry; delegates to src/pubs_emitter/cli.py
+├── setup.sh                        # one-command bootstrap (venv + editable install)
+├── pyproject.toml                  # build + tests + dev-deps + lint config
+├── README.md                       # ← this file
+├── CLAUDE.md                       # editor-facing notes; non-derivable rules + pitfalls
 ├── .gitignore
 ├── assets/
-│   ├── config.example.yaml    # committed schema + starter venue rankings
-│   └── config.yaml            # ME, ADVISORS, STUDENTS, RANKS (gitignored — your data)
-├── src/
-│   └── pubs_emitter/
-│       ├── __init__.py
-│       ├── types.py           # NamedTuples + type aliases
-│       ├── config.py          # loads assets/config.yaml + code-side constants
-│       ├── latex.py           # decode_latex + rtf_escape_unicode
-│       ├── db.py              # SQLite cache + LOOKUP_STATS
-│       ├── network.py         # RateLimiter, polite_get, try_{crossref,dblp,nvd,patentsview}
-│       ├── authors.py         # name parsing + format_author / format_inventors
-│       ├── venue.py           # parse_venue, lookup_rank, classify_entry, ID extractors
-│       ├── lookup.py          # plan / dispatch / commit + cache-aware fetchers
-│       ├── builders.py        # build_* + load_non_scholar + validate_non_scholar
-│       ├── rtf.py             # RtfTable, render_*, write_rtf
-│       └── cli.py             # parse_args + main()
-└── tests/                     # pytest; ~190 tests, full coverage of the public API
+│   ├── config.example.yaml         # committed schema + starter venue rankings
+│   ├── config.yaml                 # me / advisors / students / venue-ranks   (gitignored)
+│   ├── my_papers_full.bib          # BibTeX export from Google Scholar         (gitignored)
+│   ├── non-scholar-work.yaml       # everything Scholar doesn't track          (gitignored)
+│   ├── candidate-information.yaml  # Section III front matter (A.1-A.7)        (gitignored)
+│   ├── self-evaluation.md          # Section IV self-evaluation (B.1-B.5)      (gitignored)
+│   ├── evaluationkit-rawdata.csv   # CIE response data → C.17                  (gitignored)
+│   └── evaluationkit-questionmapper.csv   # QuestionKey → text aliases         (gitignored)
+├── src/pubs_emitter/
+│   ├── types.py            # NamedTuples + Section literal + Publications alias
+│   ├── config.py           # loads assets/config.yaml + code-side constants
+│   ├── latex.py            # decode_latex + rtf_escape_unicode
+│   ├── db.py               # SQLite cache (DOI / patent / CVE)
+│   ├── network.py          # RateLimiter, polite_get, try_{crossref,dblp,nvd,patentsview}
+│   ├── authors.py          # name parsing + format_author / format_inventors
+│   ├── venue.py            # parse_venue, lookup_rank, classify_entry, ID extractors
+│   ├── lookup.py           # plan / dispatch / commit + cache-aware fetchers
+│   ├── builders.py         # build_*, load_*, validate_*, resolve_refs
+│   ├── evaluations.py      # EvaluationKit CSV → C.17 CourseTaught pipeline
+│   ├── rtf.py              # RtfTable, render_*_section, write_rtf
+│   └── cli.py              # parse_args + main()
+└── tests/                  # ~460 tests; sub-second; no real network
     ├── conftest.py
     ├── fixtures/
     │   ├── config.yaml
     │   ├── sample.bib
-    │   └── non-scholar.yaml
+    │   ├── non-scholar.yaml
+    │   ├── candidate-information.yaml
+    │   └── self-evaluation.md
     └── test_*.py
 ```
 
-The bib (`my_papers.bib`), the YAML (`non-scholar-work.yaml`), the live
-user config (`assets/config.yaml`), the cache (`lookup_cache.sqlite`),
-and the output (`publications.rtf`) are all gitignored. Only the example
-config (`assets/config.example.yaml`) is committed.
+Every input file under `assets/` is gitignored — your data stays
+local. Only the example config (`assets/config.example.yaml`) is
+committed.
 
-## Pipeline
-
-`main()` runs five phases:
-
-1. **`plan_lookups`** — walks every entry + CVE, emits `NetworkTask`s for
-   cache misses only.
-2. **`dispatch_parallel`** — runs all tasks concurrently via
-   `ThreadPoolExecutor`. Each host has its own `RateLimiter` (Crossref
-   ~10/s, DBLP ~5/s, NVD 5/30s without key or 50/30s with, PatentsView
-   ~2/s). Retries transient HTTP failures with exponential backoff
-   (1s, 2s, 4s) and honors `Retry-After` headers.
-3. **`commit_results`** — persists results into the appropriate cache table
-   (`doi_cache`, `patent_cache`, `cve_cache`).
-4. **`build_*`** — assembles `Citation` / `Patent` / `KeyWork` /
-   `InvitedTalk` / `LeadershipRole` / `MediaAppearance` /
-   `ConferencePresentation` / `Grant` / `Student` records. By now the
-   cache is warm; build is local-only.
-5. **`write_rtf`** — emits the final RTF, sections rendered in
-   `SECTION_ORDER`, with cross-reference indexes built between sort and
-   render.
+---
 
 ## BibTeX conventions
 
-- **Citations** — `journal` / `booktitle` MUST begin with a bracketed
-  acronym + year tag. The acronym is looked up in `assets/config.yaml`
-  under `ranks:`. Examples:
-  ```
+- **Citations** — every `journal` / `booktitle` MUST begin with a
+  bracketed `[ACRONYM'YY]` tag. The acronym is looked up in
+  `assets/config.yaml` under `ranks:` to determine venue tier.
+  Examples:
+  ```bibtex
   journal   = {[JSS'25] The Journal of Systems and Software}
   booktitle = {[ICSE'25] Proceedings of the International Conference on Software Engineering}
   journal   = {[arXiv'26] arXiv preprint arXiv:2605.10712}
@@ -129,218 +453,141 @@ config (`assets/config.example.yaml`) is committed.
   `note = {US Patent 11,176,090}` carries the number; USPTO date lookup is
   attempted via PatentsView when `PATENTSVIEW_API_KEY` is set.
 - **Book chapters** — `@incollection` or `@inbook`. No bracket-tag
-  needed (no venue field for it). DOI / URL comes from `manual_links:`
-  in `assets/config.yaml`.
-- **Theses** — `@phdthesis` / `@mastersthesis`. Built internally but not
-  emitted in any section yet — held for future cross-references.
+  needed (no venue field). DOI / URL comes from `manual_links:` in
+  `assets/config.yaml`.
+- **Theses** — `@phdthesis` / `@mastersthesis`. Built internally but
+  not emitted in any section yet — held for future cross-references.
 - **CVEs are NOT in the bib.** Bib stays Scholar-canonical. CVEs go in
   `non-scholar-work.yaml`.
 
-## Output sections
+---
 
-The renderer always emits sections in this order (skipped if the
-corresponding YAML / bib source is empty):
+## Section V: under-review + pending proposals
 
-| Code | Heading | Source |
-|------|---------|--------|
-| C.1 | Key Scholarly Publications or Patents | `key_works:` in YAML |
-| C.2 | Journals | bib `@article` |
-| C.3 | Books and chapters in books | bib `@incollection` / `@inbook` |
-| C.4 | Conferences and Workshops | bib `@inproceedings` |
-| C.5 | Other publications and products | bib arXiv + magazines + YAML `cves:` + `security_disclosures:` |
-| C.6 | Invited Talks | `invited_talks:` |
-| C.7 | Leadership Roles | `leadership_roles:` |
-| C.8 | Media Appearances | `media_appearances:` |
-| C.9 | Conference Presentations | `conference_presentations:` |
-| C.10 | Externally sponsored grants as PI | `grants_as_pi:` |
-| C.11 | Externally sponsored grants as Co-PI or Co-I | `grants_as_co_pi:` |
-| C.12 | External gifts and voluntary support | `gifts:` |
-| C.13 | Internal competitive grants as PI or Co-PI | `internal_grants:` |
-| C.14 | Graduate students advised | `graduate_students:` (RTF table) |
-| C.16 | Undergraduate students advised | `undergraduate_students:` (RTF table) |
-| C.19 | Issued U.S. and International Patents | bib `@misc` with `note = US Patent ...` (RTF table) |
-| C.23 | Service to Purdue | `university_service:` |
-| C.24 | Service to the profession through professional societies | `profession_service:` |
-| C.25 | Service to State, Nation, or International Organizations | `national_service:` |
-| C.26 | Other external service activities to the profession not noted above | `other_service:` |
+Section V is the appendix-style trailing block. Two sub-sections:
 
-Within each section, entries are sorted chronologically (oldest first).
-For peer-reviewed venues (C.2, C.4), the tier marker renders inline as
-`Venue rank: Tier 1` / `Tier 2` / etc. — italicized + underlined. Other
-sections use a bare label (`Preprint`, `CVE`, `Magazine`).
+- **V.A.1 — Products under review.** Driven by `under_review:` in
+  `non-scholar-work.yaml`. Bib stays clean of unpublished work;
+  in-flight submissions live here with a `due_date` for sort order.
+- **V.A.2 — Pending proposals.** Driven by `grants_as_pi:` /
+  `grants_as_co_pi:` entries tagged `status: pending`. Same Grant
+  schema as awarded — the tag is the only difference. The renderer
+  routes pending entries out of C.10 / C.11 to V.A.2 at build time,
+  inlining a "Purdue is (not) lead institution" annotation that's
+  suppressed for awarded grants (their position is already conveyed
+  by the section heading).
 
-Grant sections C.10–C.13 each render a `Total amount of ...: $X,XXX,XXX`
-line above the numbered list.
+Bookmark names for V.A.2 entries are namespaced with `V_` prefix
+(`V_A_2_1`, …) so they don't collide with Section III A.2 (Degrees)
+bookmarks. Cross-references render as `Section V, A.2.N` — display
+text includes the Roman parent so the reader can tell which `A.2`
+is being referenced.
 
-## Non-Scholar YAML (`--non-scholar`)
+---
 
-The YAML file is one big map; each top-level key drives one or more
-sections. Every section's schema is validated at load time; ALL errors
-are batched into one report (no first-fail crashes).
+## EvaluationKit ingest (C.17)
 
-```yaml
-key_works:
-  - paper_title: Engineering Patterns for Trust and Safety on Social Media Platforms
-    impact: |
-      A 100-word-ish impact statement on why this paper matters.
+If you supply Purdue's EvaluationKit raw-data CSV (`--evaluationkit-rawdata`),
+`evaluations.py` parses it and produces C.17 rows automatically:
 
-cves:
-  # CVE attached to a paper. C.5 entry inherits the paper's author list
-  # (with student markers) and gets a "(see C.4.N)" back-pointer.
-  - cve_id: CVE-2024-38373
-    organization: FreeRTOS                              # optional; auto-derived from NVD's CPE
-    paper_title: Engineering Patterns for Trust and Safety on Social Media Platforms
+- 5 question-key revisions are aliased onto **10 canonical concepts**:
+  course organized, assignments / projects / exams aid objectives,
+  instructor explains clearly / answers questions / cares / makes time
+  / fair / inclusive. The mapping handles wording drift across
+  semesters (`v496` ↔ `v614` ↔ `v657` ↔ `v679` ↔ `v737`).
+- Multi-section courses (especially VIP) are pooled across sections
+  via raw-count math: `Σ(Value × OptionRespondents) / Σ(OptionRespondents)`,
+  per concept, per merged course.
+- Research / thesis-supervision / independent-study courses (titles
+  containing "research" / "thesis" / "independent study" / "directed
+  reading") are dropped — they're not classroom teaching.
+- Per-row CIE summary is **avg of the 10 concept means**, with min +
+  max across the same 10. A row backed by fewer than 10 concepts (some
+  question revisions ship only 7) gets a `*` marker + a footnote
+  ("Computed on the relevant subset of questions asked").
 
-  # Stand-alone CVE — no associated paper. Provide the disclosers explicitly.
-  - cve_id: CVE-2025-1675
-    organization: Zephyr-RTOS
-    disclosers:
-      - Davis, James C
-      - Amusuo, Paschal C
+Per-course responsibility text is supplied via `courses_responsibility:`
+in `non-scholar-work.yaml` — a flat per-course list (one explicit
+entry per `(year, semester_str, course_number)` triple).
 
-security_disclosures:
-  # Vendor-acknowledged disclosure with no CVE assigned. Always linked to a paper.
-  - paper_title: Engineering Patterns for Trust and Safety on Social Media Platforms
-    vendor: VendorName
-    description: One-sentence description of the disclosure.
-    year: 2024
+Grey "no course taught" note rows (parental leave, ABET self-study
+release, etc.) are authored as `courses_taught:` entries with
+`is_note_row: true` in the YAML; the renderer merges all 6 cells into
+a grey-shaded row and prepends the semester label inline so the row
+reads in context.
 
-invited_talks:
-  - topic: Regular Expression Denial of Service
-    subtitle: ""                                        # optional
-    venue: Some University, City
-    year: 2024
+---
 
-leadership_roles:
-  - role: Co-Chair
-    description: The 12th International Workshop on X
-    society: ACM SIGSOFT
-    year: 2023
+## Validation + build warnings
 
-media_appearances:
-  - title: How software supply chains break
-    venue: Some Podcast
-    year: 2024
-    url: "https://example.com/episode"
+Every input is validated at load time; **all errors are batched into
+one report** (no first-fail crashes). Build warnings surface where
+fixable:
 
-conference_presentations:
-  # Links back to the bib via paper_title. Renders as
-  # "Talk at <venue> in <year>. Associated with publication C.4.N."
-  - paper_title: Engineering Patterns for Trust and Safety on Social Media Platforms
-
-grants_as_pi:
-  - title: NSF CAREER PROJECT
-    agency: US National Science Foundation
-    agency_short: NSF
-    grant_number: "2541917"
-    role: PI
-    start_year: 2025
-    end_year: 2030
-    amount: 600000
-    activities: Optional multi-sentence description.
-    responsibility: Optional free-text role/percent statement.
-    # Validated against the bib (titles must match) but NOT rendered in
-    # C.10. Reserved for C.1 Key Works cross-link wiring (TODO).
-    inspired_by: []
-    publication_outcomes: []
-
-grants_as_co_pi: []
-gifts: []
-internal_grants: []
-
-graduate_students:
-  - name: Paschal C. Amusuo
-    degree: PhD                                          # PhD / DEng / MS-Thesis / MS-Non-Thesis
-    role: Chair                                          # Chair / Co-Chair / Committee member
-    grad_year: 2025                                      # 9999 for ongoing; sorts to bottom
-    graduation: "2025 Spring"                            # display label
-    position: Software Engineer @ Some Co.               # optional
-
-undergraduate_students: []
-
-# C.23-C.26 service entries. Same shape across all four sections:
-# a free-form description (full role + venue string) and an optional year.
-# Year may be int (2025), string for multi-year ("2025, 2026, 2027"), or
-# range ("2024-2025" / "2023-present"). Omit `year:` entirely for ongoing
-# service with no fixed date (typically journal reviewing) — the renderer
-# emits description only and sorts such entries to the bottom.
-university_service:
-  - description: "Member, Purdue ECE ABET Committee"
-    year: "2023-present"
-
-profession_service:                                       # conference PC roles
-  - description: "PC Member, ICSE"
-    year: "2025, 2026, 2027"
-
-national_service:
-  - description: "US National Science Foundation, Panelist"
-    year: 2025
-
-other_service:
-  - description: "Reviewer, IEEE Transactions on Software Engineering (TSE)"  # journal, no year
-  - description: "PC Member, EuroSec"
-    year: "2024, 2025, 2026"
-```
-
-**Validation rules** (all checked at YAML load time, batched into one report):
-
-- `cves[].cve_id` required; must look like `CVE-YYYY-NNNN`.
-- Each `cves[]` entry must have at least one of `paper_title` or `disclosers`.
-- Every `paper_title` across `cves` / `security_disclosures` /
-  `conference_presentations` / `key_works` AND every title in each grant's
-  `inspired_by` / `publication_outcomes` MUST match a bib entry
-  (case + whitespace-insensitive).
-- Grants must have `title`, `agency`, `role`, `start_year`, `end_year`,
-  `amount`. `agency_short` is optional — when present it prefixes the
-  bolded head line as `{agency_short}[ #grant_number]: {title}`; when empty
-  the head renders as just the title (use this for fellowships and internal
-  Purdue programs that don't carry a canonical funder-name prefix).
-- Students must have `name`, `degree`, `role`, `grad_year`.
-- Service entries (C.23–C.26) must have `description`. `year` is optional —
-  when omitted, only the description is rendered (used for journal reviewing).
-- Invited talks must have `venue`, `year`, and at least one of `topic` /
-  `subtitle`.
+- B.1 / B.2 / B.3 word-count caps (Purdue template limits)
+- Self-evaluation file missing `## B.X` headings or duplicate headings
+- Courses without a matching `courses_responsibility:` entry render
+  blank + log a warning
+- 100+ word `key_works` impact statements (warning only)
+- Stale `bib_ignore:` / `publication_hide:` keys (titles listed but
+  no longer in the bib — possibly Scholar renamed them)
+- Unresolved `@id` refs (with the full list of known ids, so you can
+  fix typos in one pass)
 
 A failed validation prints every error and exits 1 — fix them all and re-run.
+
+---
 
 ## Environment variables
 
 | Variable | Effect |
-|----------|--------|
+|---|---|
 | `LOG_LEVEL` | `DEBUG` / `INFO` (default) / `WARNING` / `ERROR` |
 | `PATENTSVIEW_API_KEY` | Enables USPTO issue-date lookup for patents |
-| `NVD_API_KEY` | Raises NVD rate limit ~10x (5/30s → 50/30s) |
+| `NVD_API_KEY` | Raises NVD rate limit ~10× (5 / 30s → 50 / 30s) |
 | `PUBS_EMITTER_CONFIG` | Override path to `assets/config.yaml` |
-| `PUBS_EMITTER_USER_AGENT` | Override the HTTP User-Agent (mailto:) |
+| `PUBS_EMITTER_USER_AGENT` | Override the HTTP User-Agent (Crossref polite-pool mailto) |
+
+---
 
 ## Dev tools
 
 ```bash
 .venv/bin/pylint src/pubs_emitter    # 9.95/10 baseline
 .venv/bin/mypy                       # type-clean
-.venv/bin/pytest                     # ~190 tests, sub-second
+.venv/bin/pytest                     # ~460 tests, sub-second
 ```
-
-Pylint, mypy, and pytest configs all live in `pyproject.toml`. The
-pylint config disables the noisy style/code-org categories
-(`missing-docstring`, `too-many-arguments`, etc.) but keeps every
-substantive check (unused imports, broad except, dangerous default
-value, etc.).
 
 ### Test suite
 
-The test suite is structured as one file per package module
-(`test_latex.py`, `test_venue.py`, …) plus `test_e2e.py` which drives
-`cli.main` end-to-end with the three network entry points monkey-patched.
-No real HTTP, no real network. Fixtures live in `tests/fixtures/`:
+Structured as one file per package module (`test_latex.py`,
+`test_venue.py`, …) plus `test_e2e.py` which drives `cli.main`
+end-to-end with all three network entry points monkey-patched (no
+real HTTP, no real network).
 
-- `config.yaml` — minimal config used by all tests (loaded via
-  `PUBS_EMITTER_CONFIG` set in `conftest.py`).
-- `sample.bib` — one of each entry kind (article / inproceedings /
-  arXiv / patent / incollection / phdthesis), including a Çakar
-  coauthor for Unicode-escape coverage.
-- `non-scholar.yaml` — one entry under every YAML key.
+Key invariants pinned in tests:
 
-Run a single file with `pytest tests/test_latex.py`; a single class with
-`pytest tests/test_rtf.py::TestRtfTable`; a single test with `pytest
-tests/test_e2e.py::TestE2eContentInvariants::test_unicode_round_trip_through_rtf_escape`.
+- **Table of Contents** — every expected section heading (40 total —
+  Section III A.1–A.7, Section IV B.1–B.5, C.1–C.26, Section V A.1
+  + A.2) appears in the rendered RTF, in canonical emission order.
+- **Section bookmark placement** — every `\*\bkmkstart NAME` marker
+  falls inside the byte-range of the section that owns its named
+  code (catches the V.A.2 vs Section III A.2 bookmark collision class).
+- **Numerical ordering** — entry codes within each section emit in
+  tuple-monotone order; subcategory grouping (C.5) doesn't restart
+  the section-wide counter.
+- **Grant math** — section totals match the YAML sum, excluding
+  pending grants (which route to V.A.2 and don't contribute to
+  C.10 / C.11 totals).
+
+Run a single file: `pytest tests/test_latex.py`. Single class:
+`pytest tests/test_rtf.py::TestRtfTable`. Single test: `pytest
+tests/test_e2e.py::TestE2eTableOfContents::test_every_canonical_heading_present`.
+
+Fixtures live in `tests/fixtures/`:
+
+- `config.yaml` — minimal config (loaded via `PUBS_EMITTER_CONFIG` in `conftest.py`)
+- `sample.bib` — one of each entry kind (article / inproceedings / arXiv / patent / incollection / phdthesis), including a Çakar coauthor for Unicode-escape coverage
+- `non-scholar.yaml` — one entry under every YAML key, including a `status: pending` grant + an under-review entry for Section V coverage
+- `candidate-information.yaml` — minimal Section III for coverage of A.1–A.7
+- `self-evaluation.md` — minimal Section IV for coverage of B.1–B.5

@@ -966,20 +966,66 @@ def e2e_full_outputs(
     tmp_path: pathlib.Path,
     fake_network: None,  # noqa: ARG001 — pulled in for side effect
 ) -> str:
-    """Drive cli.main with full Section III/IV/V coverage — uses the
-    test-fixture candidate-information.yaml + self-evaluation.md so the
-    placement invariant can verify cross-section bookmark targeting
-    (Section III A.X, Section V A.1, Section V A.2, all C.X)."""
+    """Drive cli.main with full Section III/IV/V coverage. Augments the
+    on-disk non-scholar.yaml in-memory with stub entries for the
+    "skip-when-empty" sections (C.11 Co-PI grants, C.12 gifts, C.13
+    internal grants) so EVERY section in the canonical TOC fires.
+    Sections that emit "N/A" when empty (C.15 / C.17 / C.18 / C.20 /
+    C.21 / C.22) don't need stubs — their headings fire regardless.
+    """
     bib = fixtures_dir / "sample.bib"
-    non_scholar = fixtures_dir / "non-scholar.yaml"
     candidate_info = fixtures_dir / "candidate-information.yaml"
     self_eval = fixtures_dir / "self-evaluation.md"
     out = tmp_path / "publications.rtf"
     cache = tmp_path / "lookup_cache.sqlite"
+
+    # Augment YAML in-memory: add minimal entries so every C.X heading
+    # that would otherwise skip-when-empty fires. Keeps the on-disk
+    # fixture sparse for the existing e2e tests' empty-list assertions.
+    with open(fixtures_dir / "non-scholar.yaml", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    if not data.get("grants_as_co_pi"):
+        data["grants_as_co_pi"] = [{
+            "title": "Test Co-PI Grant",
+            "agency": "NSF", "agency_short": "NSF",
+            "role": "Co-PI", "start_year": 2024, "end_year": 2026,
+            "purdue_amount": 100000, "my_amount": 50000,
+        }]
+    if not data.get("gifts"):
+        data["gifts"] = [{
+            "title": "Test Gift",
+            "agency": "Test Vendor", "agency_short": "TV",
+            "role": "PI", "start_year": 2024, "end_year": 2024,
+            "purdue_amount": 5000,
+        }]
+    if not data.get("internal_grants"):
+        data["internal_grants"] = [{
+            "title": "Test Internal Grant",
+            "agency": "Purdue", "agency_short": "Purdue",
+            "role": "PI", "start_year": 2024, "end_year": 2025,
+            "purdue_amount": 10000,
+        }]
+    if not data.get("undergraduate_students"):
+        data["undergraduate_students"] = [{
+            "name": "Test Undergrad",
+            "degree": "BSc", "role": "Chair",
+            "grad_year": 2025, "graduation": "2025 Spring",
+            "position": "",
+        }]
+    if not data.get("software_products"):
+        data["software_products"] = [{
+            "year": 2024, "year_str": "2024",
+            "name": "Test Software",
+            "description": "Test description.",
+        }]
+    custom_yaml = tmp_path / "non-scholar.yaml"
+    with open(custom_yaml, "w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, sort_keys=False)
+
     cli.main(
         [
             "--bib", str(bib),
-            "--non-scholar", str(non_scholar),
+            "--non-scholar", str(custom_yaml),
             "--candidate-info", str(candidate_info),
             "--self-eval", str(self_eval),
             "--evaluationkit-rawdata", "",  # no CSV fixture
@@ -1163,3 +1209,123 @@ class TestE2eSectionBookmarkPlacement:
         assert s5_a2 >= 0
         v_a2_start, v_a2_end = ranges["V_A2"]
         assert v_a2_start <= s5_a2 < v_a2_end
+
+
+# ----- Table of Contents — every expected section heading must emit -------
+
+
+class TestE2eTableOfContents:
+    """Canonical TOC: every section heading the Purdue tenure packet
+    declares MUST appear in the rendered RTF. Catches:
+      * A section being silently dropped during a refactor (renderer
+        accidentally `return`s before `_emit_section_heading`)
+      * A new section being added to SECTION_CODES but missing from the
+        emission pipeline
+      * SECTION_HEADINGS text drift that breaks downstream tooling
+        scraping the doc
+
+    The 40 expected headings, in emission order:
+      * Section III — A.1 through A.7 (front matter; A.6 included)
+      * Section IV — B.1 through B.5 (self-evaluation)
+      * C.1 through C.26 (scholarly contributions; mandatory sections
+        emit even when empty via "N/A" placeholder rendering)
+      * Section V — A.1 (Products under review) + A.2 (Pending proposals)
+    """
+
+    _EXPECTED_HEADINGS: tuple[tuple[str, str], ...] = (
+        # Section III front matter
+        ("section3.A.1", "A.1 Name and any appropriate scholarly identifiers"),
+        ("section3.A.2", "A.2 Degrees"),
+        ("section3.A.3", "A.3 Positions at Purdue"),
+        ("section3.A.4", "A.4 Positions at other institutions"),
+        ("section3.A.5", "A.5 Licenses"),
+        ("section3.A.6", "A.6 Recognitions"),
+        ("section3.A.7", "A.7 Membership in professional organizations"),
+        # Section IV self-evaluation
+        ("section4.B.1", "B.1 Summary of achievements"),
+        ("section4.B.2", "B.2 Impact of accomplishments"),
+        ("section4.B.3", "B.3 Vision"),
+        ("section4.B.4", "B.4 Candidate comments"),
+        ("section4.B.5", "B.5 Professional COVID-19"),
+        # C.1-C.26 scholarly contributions
+        ("C.1",  "C.1 Key Scholarly Publications"),
+        ("C.2",  "C.2 Journals"),
+        ("C.3",  "C.3 Books and chapters"),
+        ("C.4",  "C.4 Conferences and Workshops"),
+        ("C.5",  "C.5 Other publications"),
+        ("C.6",  "C.6 Invited"),
+        ("C.7",  "C.7 Leadership"),
+        ("C.8",  "C.8 Appearances in media"),
+        ("C.9",  "C.9 Selected contributed conference"),
+        ("C.10", "C.10 Externally sponsored grants as PI"),
+        ("C.11", "C.11 Externally sponsored grants as Co-PI"),
+        ("C.12", "C.12 External gifts"),
+        ("C.13", "C.13 Internal competitive grants"),
+        ("C.14", "C.14 Graduate students advised"),
+        ("C.15", "C.15 Mentoring of postdoctoral"),
+        ("C.16", "C.16 Undergraduate research"),
+        ("C.17", "C.17 Courses taught"),
+        ("C.18", "C.18 Course development"),
+        ("C.19", "C.19 Issued U.S. and International Patents"),
+        ("C.20", "C.20 Major entrepreneurial"),
+        ("C.21", "C.21 Technology transfer"),
+        ("C.22", "C.22 Software products"),
+        ("C.23", "C.23 Service to Purdue"),
+        ("C.24", "C.24 Service to the profession"),
+        ("C.25", "C.25 Service to State"),
+        ("C.26", "C.26 Other external service"),
+        # Section V appendix
+        ("section5.A.1", "A.1 Products under review"),
+        ("section5.A.2", "A.2 Pending proposals"),
+    )
+
+    def test_every_canonical_heading_present(
+        self, e2e_full_outputs: str,
+    ) -> None:
+        rtf = e2e_full_outputs
+        missing: list[str] = []
+        for label, snippet in self._EXPECTED_HEADINGS:
+            if snippet not in rtf:
+                missing.append(f"{label}: {snippet!r}")
+        assert not missing, (
+            f"{len(missing)}/{len(self._EXPECTED_HEADINGS)} canonical "
+            f"section headings are missing from the rendered RTF:\n  "
+            + "\n  ".join(missing)
+        )
+
+    def test_headings_emit_in_canonical_order(
+        self, e2e_full_outputs: str,
+    ) -> None:
+        """Beyond presence: every heading must emit in declared order.
+        Pins against a future refactor that emits a section in the
+        wrong block (e.g., V.A.1 leaking before C.26)."""
+        rtf = e2e_full_outputs
+        positions: list[tuple[str, int]] = []
+        for label, snippet in self._EXPECTED_HEADINGS:
+            pos = rtf.find(snippet)
+            if pos < 0:
+                continue  # presence asserted by sibling test; skip here
+            positions.append((label, pos))
+        # Adjacent pairs must be in increasing-byte-position order.
+        out_of_order: list[str] = []
+        for (label_a, pos_a), (label_b, pos_b) in zip(
+            positions, positions[1:],
+        ):
+            if pos_a >= pos_b:
+                out_of_order.append(
+                    f"  {label_a} (pos {pos_a}) emits before/after {label_b} (pos {pos_b})"
+                )
+        assert not out_of_order, (
+            "Canonical section order violated:\n" + "\n".join(out_of_order)
+        )
+
+    def test_section_count_matches_expected(
+        self, e2e_full_outputs: str,
+    ) -> None:
+        """Belt-and-suspenders: the test snippets above are the
+        authoritative TOC. Pin the cardinality (40) so adding/removing
+        an expected heading forces an intentional update here."""
+        assert len(self._EXPECTED_HEADINGS) == 40, (
+            f"Canonical TOC has drifted to {len(self._EXPECTED_HEADINGS)} "
+            f"headings — update this test if intentional."
+        )

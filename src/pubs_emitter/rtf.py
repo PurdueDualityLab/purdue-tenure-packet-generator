@@ -541,7 +541,8 @@ def _render_a3_positions_at_purdue(out: IO[str], prose: str) -> None:
     text = prose.strip() if prose else ""
     if not text:
         text = "N/A"
-    out.write(f"\\pard\\li720 {escape_rtf(text)}\\par\\par\n")
+    indent = _body_indent_for_code(SECTION_CODES["Positions at Purdue"])
+    out.write(f"\\pard\\li{indent} {escape_rtf(text)}\\par\\par\n")
 
 
 def _render_a4_positions_at_other(out: IO[str], positions: list[OtherPosition]) -> None:
@@ -576,7 +577,8 @@ def _render_a5_licenses(out: IO[str], prose: str) -> None:
     text = prose.strip() if prose else ""
     if not text:
         text = "N/A"
-    out.write(f"\\pard\\li720 {escape_rtf(text)}\\par\\par\n")
+    indent = _body_indent_for_code(SECTION_CODES["Licenses"])
+    out.write(f"\\pard\\li{indent} {escape_rtf(text)}\\par\\par\n")
 
 
 # A.6 table column widths (twips). Sum = 9360 = 6.5" usable on US Letter.
@@ -702,19 +704,27 @@ _B_SECTIONS: tuple[tuple[Section, str], ...] = (
 )
 
 
-def _emit_b_section_body(out: IO[str], body: str) -> None:
+def _emit_b_section_body(out: IO[str], body: str, code: str) -> None:
     """Render the prose under a B.X heading. Paragraphs are split on
     blank-line gaps; each paragraph becomes one indented RTF `\\par`
     block. Empty body → indented "(not yet populated)" placeholder so
     the section heading isn't visually orphaned.
 
+    Body indent is routed through `_body_indent_for_code(code)` so the
+    prose lines up with where content under a heading at this level
+    SHOULD land — B.1-B.5 are level-1 so the indent is 720 today, but
+    if a sub-section gets added the body nests automatically.
+
     Sentinel-wrapped `\\x01…\\x02` cross-refs that were planted by
     `resolve_refs_in_list` survive `escape_rtf` untouched and become
     clickable hyperlinks in the final post-pass.
     """
+    indent = _body_indent_for_code(code)
     body = (body or "").strip()
     if not body:
-        out.write("\\pard\\li720\\i (not yet populated)\\i0\\par\\par\n")
+        out.write(
+            f"\\pard\\li{indent}\\i (not yet populated)\\i0\\par\\par\n"
+        )
         return
     paragraphs = [p.strip() for p in re.split(r"\n{2,}", body) if p.strip()]
     for p in paragraphs:
@@ -722,7 +732,7 @@ def _emit_b_section_body(out: IO[str], body: str) -> None:
         # routinely soft-wrap mid-sentence and we don't want those breaks
         # surfaced as forced line breaks in the rendered packet.
         flat = re.sub(r"\s*\n\s*", " ", p)
-        out.write(f"\\pard\\li720 {escape_rtf(flat)}\\par\\par\n")
+        out.write(f"\\pard\\li{indent} {escape_rtf(flat)}\\par\\par\n")
 
 
 def render_self_evaluation_section(
@@ -739,10 +749,9 @@ def render_self_evaluation_section(
     """
     _emit_group_heading(out, "B.", "SELF-EVALUATION")
     for section, field in _B_SECTIONS:
-        _emit_section_heading(
-            out, SECTION_CODES[section], SECTION_HEADINGS[section],
-        )
-        _emit_b_section_body(out, getattr(self_eval, field))
+        code = SECTION_CODES[section]
+        _emit_section_heading(out, code, SECTION_HEADINGS[section])
+        _emit_b_section_body(out, getattr(self_eval, field), code)
 
 
 def render_candidate_information_section(
@@ -2321,29 +2330,61 @@ def _finalize_ref_hyperlinks(rtf: str) -> str:
     return _REF_SENTINEL_PATTERN.sub(_sub, rtf)
 
 
+def _body_indent_for_code(code: str) -> int:
+    """Body indent (twips) for content beneath a section heading at `code`.
+
+    Single source of truth for "where does the content under a heading
+    start?" — every prose / placeholder / numbered-list renderer routes
+    its base indent through this helper so deeper sub-sections nest
+    visually inside their parents. Level-1 sections keep the historic
+    720-twip baseline; each additional level adds the per-heading-step
+    (360 twips, matching `_HEADING_INDENT_PER_LEVEL`) so a C.16.2.3
+    body lands two steps right of a C.6 body.
+
+    Mapping (level → indent):
+        1 → 720     (C.6, A.2, B.1, etc.)
+        2 → 1080    (C.16.1, C.16.2)
+        3 → 1440    (C.16.2.1, C.16.2.3)
+        4 → 1800    (C.16.2.3.1; reserved)
+    """
+    level = _heading_level(code)
+    return 720 + (level - 1) * _HEADING_INDENT_PER_LEVEL
+
+
 def _hanging_indent_for_codes(codes: list[str]) -> int:
     """Compute the per-section hanging-indent (in twips) that fits the
     longest entry code without the label overflowing the tab column.
 
-    Empirically: Times New Roman 12pt renders at ~100 twips per character.
-    The visible label is `{code}.` (code + trailing period). The historic
-    720-twip default fits up to 7 visible chars (single-dot codes like
-    `C.6.9.` or 2-digit `C.26.9.`). At 8+ chars the label spills past the
-    tab column and the `\\tab` jumps to the next stop (typically 1440),
-    producing the ragged layout the user flagged on C.26.10-19 (260603).
+    Two layers combine:
+      * Level base from `_body_indent_for_code` — deeper sub-sections
+        indent further so the nested structure is visible.
+      * Label fit: widens the indent when the longest code label is too
+        long for the level base, so the `\\tab` after the label lands
+        cleanly past the visible label width.
 
-    Returns a twips value rounded up to a multiple of 360 (½ tab stop) so
-    consecutive sections with similar code lengths land on the same
-    column boundary.
+    Empirically: Times New Roman 12pt renders at ~100 twips per character.
+    The visible label is `{code}.` (code + trailing period). At level 1
+    the 720-twip base fits up to 7 visible chars; at level 3 the 1440
+    base fits substantially more, so deeper sections rarely need the
+    label-fit widening at all. Result is rounded up to a multiple of
+    360 (½ tab stop) so consecutive sections land on aligned boundaries.
     """
     if not codes:
         return 720
+    # Derive the parent section's code from a sample child (strip the
+    # last numeric suffix). For codes=["C.16.2.3.1", "C.16.2.3.2"],
+    # parent_code="C.16.2.3" (level 3) → base=1440.
+    sample = codes[0]
+    parent_code = sample.rsplit(".", 1)[0]
+    base = _body_indent_for_code(parent_code)
     max_visible_chars = max(len(c) for c in codes) + 1  # +1 for trailing period
+    # Empirical: 720-twip base fits up to 7 visible chars (single-dot
+    # `C.6.9.` or 2-digit `C.26.9.`). For longer labels, compute a
+    # fit-target (110 twips/char + 80 buffer, rounded up to a 360 mark).
     if max_visible_chars <= 7:
-        return 720
-    # 110 twips/char + 80 twips tab buffer; round up to next 360-twip mark.
-    raw = max_visible_chars * 110 + 80
-    return max(720, ((raw + 359) // 360) * 360)
+        return base
+    label_fit = ((max_visible_chars * 110 + 80 + 359) // 360) * 360
+    return max(base, label_fit)
 
 
 def _section_codes_up_to(code_prefix: str, n: int) -> list[str]:
@@ -2496,8 +2537,10 @@ def _emit_placeholder_subsection(
     matches the heading's indent so future-added content lines up.
     """
     _emit_section_heading(out, code, title)
-    indent = (_heading_level(code) - 1) * _HEADING_INDENT_PER_LEVEL
-    out.write(f"\\pard\\li{indent}\\par\\par\n")
+    # Placeholder body lines up with where REAL content under this same
+    # heading would land — routed through `_body_indent_for_code` so when
+    # someone fills the slot later, the prose lands at the same indent.
+    out.write(f"\\pard\\li{_body_indent_for_code(code)}\\par\\par\n")
 
 
 def write_rtf(

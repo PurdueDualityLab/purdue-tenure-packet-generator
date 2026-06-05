@@ -2606,3 +2606,93 @@ class TestFormatRoleResponsibilityPurdueLead:
             status='pending', lead_institution='Loyola University Chicago',
         ))
         assert "Purdue is not lead institution (lead: Loyola University Chicago)" in out
+
+
+class TestLevelAwareBodyIndent:
+    """`_body_indent_for_code(code)` is the single source of truth for
+    "where does content under a heading at `code` start?". Every prose,
+    placeholder, and numbered-entry renderer routes its base indent
+    through it so deeper sub-sections nest visually inside their
+    parents.
+
+    Invariant: each additional level of nesting adds exactly
+    `_HEADING_INDENT_PER_LEVEL` twips (360 ≈ ¼ inch / "2 spaces") so
+    body content lines up step-for-step with how the heading-itself
+    indents at level 2, 3, ...
+    """
+
+    def test_level_1_body_at_720_baseline(self) -> None:
+        from pubs_emitter.rtf import _body_indent_for_code
+        assert _body_indent_for_code("C.6") == 720
+        assert _body_indent_for_code("A.3") == 720
+        assert _body_indent_for_code("B.1") == 720
+
+    def test_each_level_adds_one_step(self) -> None:
+        from pubs_emitter.rtf import (
+            _HEADING_INDENT_PER_LEVEL, _body_indent_for_code,
+        )
+        step = _HEADING_INDENT_PER_LEVEL  # 360
+        assert _body_indent_for_code("C.16")       == 720 + 0 * step
+        assert _body_indent_for_code("C.16.1")     == 720 + 1 * step
+        assert _body_indent_for_code("C.16.2.1")   == 720 + 2 * step
+        assert _body_indent_for_code("C.16.2.3.1") == 720 + 3 * step
+
+    def test_level_caps_at_4(self) -> None:
+        """`_heading_level` caps the depth at 4 (font size + indent stop
+        scaling beyond that hurts readability). Anything deeper than
+        five dots maps to the level-4 indent."""
+        from pubs_emitter.rtf import _body_indent_for_code
+        assert _body_indent_for_code("C.16.2.3.1.99") == _body_indent_for_code("C.16.2.3.1")
+
+    def test_hanging_indent_inherits_level_base(self) -> None:
+        """`_hanging_indent_for_codes` uses the level-derived base so a
+        section's numbered entries nest under its heading. Short codes
+        (≤ 7 visible chars) stay at the level base; long codes widen
+        only when the label demands more room."""
+        from pubs_emitter.rtf import _hanging_indent_for_codes
+        # Level 1 short labels — stay at 720.
+        assert _hanging_indent_for_codes(["C.6.1", "C.6.2"]) == 720
+        # Level 3 — base = 1440; short labels still at the base.
+        assert _hanging_indent_for_codes(["C.16.2.3.1", "C.16.2.3.2"]) == 1440
+        # Level 1 long labels (8+ visible chars) widen past the base.
+        # "C.26.10." has 8 visible chars → label-fit ≥ 1080.
+        long_label = _hanging_indent_for_codes(
+            [f"C.26.{i}" for i in range(1, 20)]
+        )
+        assert long_label >= 1080
+
+    def test_placeholder_body_uses_level_aware_indent(self) -> None:
+        """The `_emit_placeholder_subsection` body paragraph matches
+        `_body_indent_for_code` so when content is later added, it
+        lands at the same indent as the placeholder it replaces."""
+        import io
+        from pubs_emitter.rtf import (
+            _body_indent_for_code, _emit_placeholder_subsection,
+        )
+        buf = io.StringIO()
+        _emit_placeholder_subsection(buf, "C.16.2.1", "VIP")
+        out = buf.getvalue()
+        expected = _body_indent_for_code("C.16.2.1")
+        assert f"\\pard\\li{expected}\\par\\par" in out
+
+    def test_b_section_body_inherits_level_base(self) -> None:
+        """B.1-B.5 are level 1 — prose lands at 720."""
+        import io
+        from pubs_emitter.rtf import _emit_b_section_body
+        buf = io.StringIO()
+        _emit_b_section_body(buf, "Some prose.", "B.1")
+        out = buf.getvalue()
+        assert "\\pard\\li720 Some prose.\\par\\par" in out
+
+    def test_a3_a5_prose_at_level_1_baseline(self) -> None:
+        """A.3 + A.5 are both level 1 — prose lands at 720."""
+        import io
+        from pubs_emitter.rtf import (
+            _render_a3_positions_at_purdue, _render_a5_licenses,
+        )
+        buf = io.StringIO()
+        _render_a3_positions_at_purdue(buf, "Test Professor, 2020-2026")
+        _render_a5_licenses(buf, "N/A")
+        out = buf.getvalue()
+        assert "\\pard\\li720 Test Professor, 2020-2026" in out
+        assert "\\pard\\li720 N/A" in out
