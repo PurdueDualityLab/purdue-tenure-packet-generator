@@ -10,6 +10,11 @@ LinkedIn / NSF awards page / arbitrary URLs), hanging-indent layout,
 RTF tables for patents / students / postdocs / grants / courses, and
 cross-references that resolve to in-doc bookmarks.
 
+> **Tested on macOS only** (Davis's dev box). Should be portable to
+> Linux out of the box — `setup.sh` uses standard `python3 -m venv`
+> + `pip install`. Windows is untested; the path-handling and the
+> shell-driven `setup.sh` would likely need a small port.
+>
 > **Tested against the Purdue tenure-doc format as of May 2026** —
 > Section III General Information (A.1–A.7), Section IV Self-Evaluation
 > (B.1–B.5), Section V Scholarly Contributions (C.1–C.26 + appendix

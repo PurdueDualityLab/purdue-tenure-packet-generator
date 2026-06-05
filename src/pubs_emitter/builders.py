@@ -1110,6 +1110,21 @@ def build_candidate_information(raw: dict) -> CandidateInformation:
             acronym=_str(m, "acronym"),
         ))
 
+    # positions_at_purdue: accept either a plain string (legacy YAML
+    # shape — convert to a single-element list at build time) or a YAML
+    # list (recommended; promotions append a new entry).
+    pap_raw = raw.get("positions_at_purdue", []) or []
+    if isinstance(pap_raw, str):
+        positions_at_purdue: list[str] = [pap_raw] if pap_raw.strip() else []
+    elif isinstance(pap_raw, list):
+        positions_at_purdue = [str(p) for p in pap_raw if str(p).strip()]
+    else:
+        errors.append(
+            f"candidate_information.positions_at_purdue: must be a string "
+            f"or list of strings; got {type(pap_raw).__name__}",
+        )
+        positions_at_purdue = []
+
     if errors:
         log.error("Candidate-info schema errors:")
         for e in errors:
@@ -1119,7 +1134,7 @@ def build_candidate_information(raw: dict) -> CandidateInformation:
     return CandidateInformation(
         identifiers=identifiers,
         degrees=degrees,
-        positions_at_purdue=_str(raw, "positions_at_purdue"),
+        positions_at_purdue=positions_at_purdue,
         positions_at_other=other_positions,
         licenses=_str(raw, "licenses"),
         awards=awards,

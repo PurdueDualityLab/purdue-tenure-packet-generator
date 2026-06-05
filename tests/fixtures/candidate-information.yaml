@@ -22,7 +22,8 @@ candidate_information:
       thesis_title: "A Test Thesis"
       advisor: "Dr. Tester"
 
-  positions_at_purdue: "Test Professor, 2020-2026"
+  positions_at_purdue:
+    - "Test Professor, 2020-2026"
 
   positions_at_other:
     - title: "Engineer"

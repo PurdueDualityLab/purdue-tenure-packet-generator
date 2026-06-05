@@ -531,18 +531,21 @@ def _render_a2_degrees(out: IO[str], degrees: list[Degree]) -> None:
         _emit_list_item(out, f"{code}.{idx}", body, indent=indent)
 
 
-def _render_a3_positions_at_purdue(out: IO[str], prose: str) -> None:
-    """A.3 sub-renderer — single free-form paragraph (no numbering).
+def _render_a3_positions_at_purdue(out: IO[str], positions: list[str]) -> None:
+    """A.3 sub-renderer — numbered list (A.3.1, A.3.2, ...).
 
-    The screenshot shows a single-line "Assistant Professor, 2020-2026"
-    with no numbered child. We mirror that exactly: emit as an indented
-    paragraph. Empty string → "N/A".
+    A list rather than a single prose line so promotions append a new
+    entry (Assistant → Associate → Full) instead of editing the prose.
+    Empty list → indented "N/A" line.
     """
-    text = prose.strip() if prose else ""
-    if not text:
-        text = "N/A"
-    indent = _body_indent_for_code(SECTION_CODES["Positions at Purdue"])
-    out.write(f"\\pard\\li{indent} {escape_rtf(text)}\\par\\par\n")
+    if not positions:
+        indent = _body_indent_for_code(SECTION_CODES["Positions at Purdue"])
+        out.write(f"\\pard\\li{indent} N/A\\par\\par\n")
+        return
+    code = SECTION_CODES["Positions at Purdue"]
+    indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(positions)))
+    for idx, p in enumerate(positions, 1):
+        _emit_list_item(out, f"{code}.{idx}", escape_rtf(p), indent=indent)
 
 
 def _render_a4_positions_at_other(out: IO[str], positions: list[OtherPosition]) -> None:
@@ -2330,25 +2333,46 @@ def _finalize_ref_hyperlinks(rtf: str) -> str:
     return _REF_SENTINEL_PATTERN.sub(_sub, rtf)
 
 
+def _label_position_for_code(code: str) -> int:
+    """Twips column where a numbered entry's label visually starts.
+
+    The label sits one indent step to the RIGHT of its parent heading
+    so the entire entry block (label + body) reads as nested inside
+    the heading. Without this offset the hanging-indent gutter would
+    drop the label into the heading's own column, defeating the
+    visual nesting cue.
+
+    Mapping (parent level → label column):
+        1 → 360     (A.2.N entries under A.2, etc.)
+        2 → 720     (C.16.1.N under C.16.1)
+        3 → 1080    (C.16.2.3.N under C.16.2.3)
+    """
+    parent_code = code.rsplit(".", 1)[0]
+    parent_level = _heading_level(parent_code)
+    return parent_level * _HEADING_INDENT_PER_LEVEL
+
+
 def _body_indent_for_code(code: str) -> int:
     """Body indent (twips) for content beneath a section heading at `code`.
 
     Single source of truth for "where does the content under a heading
     start?" — every prose / placeholder / numbered-list renderer routes
     its base indent through this helper so deeper sub-sections nest
-    visually inside their parents. Level-1 sections keep the historic
-    720-twip baseline; each additional level adds the per-heading-step
-    (360 twips, matching `_HEADING_INDENT_PER_LEVEL`) so a C.16.2.3
-    body lands two steps right of a C.6 body.
+    visually inside their parents.
 
-    Mapping (level → indent):
-        1 → 720     (C.6, A.2, B.1, etc.)
-        2 → 1080    (C.16.1, C.16.2)
-        3 → 1440    (C.16.2.1, C.16.2.3)
-        4 → 1800    (C.16.2.3.1; reserved)
+    Computed as `label_position + 720` so the body wrap column sits
+    far enough right of the label (in a hanging-indent layout) for the
+    label width to fit. The 720-twip gap fits codes up to ~7 chars.
+
+    Mapping (level → body indent):
+        1 → 1080    (A.2 body wraps at 1080 — labels at 360)
+        2 → 1440    (C.16.1 — labels at 720)
+        3 → 1800    (C.16.2.3 — labels at 1080)
+        4 → 2160    (reserved)
     """
     level = _heading_level(code)
-    return 720 + (level - 1) * _HEADING_INDENT_PER_LEVEL
+    label_pos = level * _HEADING_INDENT_PER_LEVEL
+    return label_pos + 720
 
 
 def _hanging_indent_for_codes(codes: list[str]) -> int:
@@ -2376,14 +2400,16 @@ def _hanging_indent_for_codes(codes: list[str]) -> int:
     # parent_code="C.16.2.3" (level 3) → base=1440.
     sample = codes[0]
     parent_code = sample.rsplit(".", 1)[0]
-    base = _body_indent_for_code(parent_code)
+    label_pos = _label_position_for_code(sample)
+    base = _body_indent_for_code(parent_code)  # label_pos + 720
     max_visible_chars = max(len(c) for c in codes) + 1  # +1 for trailing period
-    # Empirical: 720-twip base fits up to 7 visible chars (single-dot
-    # `C.6.9.` or 2-digit `C.26.9.`). For longer labels, compute a
-    # fit-target (110 twips/char + 80 buffer, rounded up to a 360 mark).
+    # The 720-twip gap between label_pos and base fits up to 7 visible
+    # chars. For longer labels, widen the body indent so the label still
+    # fits in [label_pos, body_indent). 110 twips/char + 80 buffer,
+    # rounded up to a 360 mark.
     if max_visible_chars <= 7:
         return base
-    label_fit = ((max_visible_chars * 110 + 80 + 359) // 360) * 360
+    label_fit = ((label_pos + max_visible_chars * 110 + 80 + 359) // 360) * 360
     return max(base, label_fit)
 
 
@@ -2431,15 +2457,19 @@ def _emit_list_item(
     The `_ref_anchor` wrap on the code makes the entry a bookmark target
     for `@id` and raw section-code cross-refs.
     """
-    # `\\tx{indent}` sets an EXPLICIT tab stop at the hanging-indent
-    # column. Without this, the `\\tab` after the label uses RTF's
-    # default 720-twip tab stops — so a 7-char label tabs to 720 (small
-    # gap) but an 8-char label spills past 720 and tabs to 1440 (huge
-    # gap), producing the ragged C.23.10+ layout the user flagged on
-    # 260603. With `\\tx{indent}` every body starts at the same column
-    # regardless of label width.
+    # Hanging indent: label_pos is the FIRST-line column for the entry
+    # label; indent is the body wrap column. `\\fi` is the first-line
+    # indent relative to `\\li`, computed so the label lands at
+    # label_pos: `label_pos = li + fi` → `fi = label_pos - li`. With
+    # label_pos one step right of the parent heading, the entry visually
+    # nests under the heading instead of hanging into the heading's
+    # column. `\\tx{indent}` sets an explicit tab stop at the body column
+    # so the `\\tab` after the label lands cleanly regardless of label
+    # width.
+    label_pos = _label_position_for_code(code)
+    fi = label_pos - indent  # negative; label starts at li + fi = label_pos
     out.write(
-        f"\\pard\\li{indent}\\fi-{indent}\\tx{indent} "
+        f"\\pard\\li{indent}\\fi{fi}\\tx{indent} "
         f"{_ref_anchor(code)}.\\tab {body}\\par\\par\n"
     )
 
@@ -2463,8 +2493,10 @@ def _emit_list_item_with_body(
     `_hanging_indent_for_codes` and passes it to every call so labels
     align within the section.
     """
+    label_pos = _label_position_for_code(code)
+    fi = label_pos - indent  # negative; label starts at li + fi = label_pos
     out.write(
-        f"\\pard\\li{indent}\\fi-{indent}\\tx{indent} "
+        f"\\pard\\li{indent}\\fi{fi}\\tx{indent} "
         f"{_ref_anchor(code)}.\\tab {header}\\par\n"
     )
     out.write(

@@ -582,7 +582,8 @@ class CandidateInformation(NamedTuple):
     """
     identifiers: Identifiers
     degrees: list[Degree]
-    positions_at_purdue: str
+    positions_at_purdue: list[str]   # list so promotions append a new
+                                     # entry; renders as numbered A.3.N
     positions_at_other: list[OtherPosition]
     licenses: str
     awards: list[Award]

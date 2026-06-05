@@ -1944,7 +1944,7 @@ class TestRenderCandidateInformationSection:
                     advisor="Dr. T. Nishikawa",
                 ),
             ],
-            positions_at_purdue="Assistant Professor, 2020-2026",
+            positions_at_purdue=["Assistant Professor, 2020-2026"],
             positions_at_other=[
                 OtherPosition(
                     title="Software Engineer", years="2012-2017",
@@ -2010,14 +2010,15 @@ class TestRenderCandidateInformationSection:
         assert "\\i Some Title\\i0" in out
         assert "supervised by Dr. T. Nishikawa" in out
 
-    def test_a3_prose_no_numbering(self) -> None:
+    def test_a3_renders_as_numbered_list(self) -> None:
+        """A.3 is a numbered list so future promotions (Assoc → Full)
+        append a new entry rather than editing the prose."""
         buf = io.StringIO()
         render_candidate_information_section(self._ci(), buf)
         out = buf.getvalue()
-        # A.3 emits the literal prose line; no A.3.1 child.
         assert "Assistant Professor, 2020-2026" in out
-        assert "A.3.1" not in out
-        assert "\\*\\bkmkstart A_3_1" not in out
+        assert "A.3.1" in out
+        assert "\\*\\bkmkstart A_3_1" in out
 
     def test_a4_numbered_with_acronym_parenthetical(self) -> None:
         buf = io.StringIO()
@@ -2071,7 +2072,7 @@ class TestRenderA6Awards:
     def _ci_with_awards(self, awards: list[Award]) -> CandidateInformation:
         return CandidateInformation(
             identifiers=Identifiers(name="X", orcid="", google_scholar=""),
-            degrees=[], positions_at_purdue="", positions_at_other=[],
+            degrees=[], positions_at_purdue=[], positions_at_other=[],
             licenses="", awards=awards, professional_memberships=[],
         )
 
@@ -2621,21 +2622,27 @@ class TestLevelAwareBodyIndent:
     indents at level 2, 3, ...
     """
 
-    def test_level_1_body_at_720_baseline(self) -> None:
+    def test_level_1_body_indent_includes_label_offset(self) -> None:
+        """Level-1 body indent = label_position (360) + label-fit gap
+        (720) = 1080. Body content at level 1 sits at column 1080 in
+        the output."""
         from pubs_emitter.rtf import _body_indent_for_code
-        assert _body_indent_for_code("C.6") == 720
-        assert _body_indent_for_code("A.3") == 720
-        assert _body_indent_for_code("B.1") == 720
+        assert _body_indent_for_code("C.6") == 1080
+        assert _body_indent_for_code("A.3") == 1080
+        assert _body_indent_for_code("B.1") == 1080
 
     def test_each_level_adds_one_step(self) -> None:
+        """Each additional level adds exactly `_HEADING_INDENT_PER_LEVEL`
+        (360 twips) to the body indent. Body indent at level N is
+        N * 360 (label position) + 720 (gap for label width)."""
         from pubs_emitter.rtf import (
             _HEADING_INDENT_PER_LEVEL, _body_indent_for_code,
         )
         step = _HEADING_INDENT_PER_LEVEL  # 360
-        assert _body_indent_for_code("C.16")       == 720 + 0 * step
-        assert _body_indent_for_code("C.16.1")     == 720 + 1 * step
-        assert _body_indent_for_code("C.16.2.1")   == 720 + 2 * step
-        assert _body_indent_for_code("C.16.2.3.1") == 720 + 3 * step
+        assert _body_indent_for_code("C.16")       == 1 * step + 720  # 1080
+        assert _body_indent_for_code("C.16.1")     == 2 * step + 720  # 1440
+        assert _body_indent_for_code("C.16.2.1")   == 3 * step + 720  # 1800
+        assert _body_indent_for_code("C.16.2.3.1") == 4 * step + 720  # 2160
 
     def test_level_caps_at_4(self) -> None:
         """`_heading_level` caps the depth at 4 (font size + indent stop
@@ -2644,20 +2651,59 @@ class TestLevelAwareBodyIndent:
         from pubs_emitter.rtf import _body_indent_for_code
         assert _body_indent_for_code("C.16.2.3.1.99") == _body_indent_for_code("C.16.2.3.1")
 
+    def test_label_position_one_step_right_of_heading(self) -> None:
+        """`_label_position_for_code` puts the entry label one indent
+        step right of the parent heading. Without this offset the
+        hanging-indent would drop the label into the heading's column,
+        defeating the visual nesting cue."""
+        from pubs_emitter.rtf import (
+            _HEADING_INDENT_PER_LEVEL, _label_position_for_code,
+        )
+        step = _HEADING_INDENT_PER_LEVEL  # 360
+        # "A.2.1" parent = "A.2" (level 1) → label at 360
+        assert _label_position_for_code("A.2.1") == 1 * step
+        # "C.16.1.5" parent = "C.16.1" (level 2) → label at 720
+        assert _label_position_for_code("C.16.1.5") == 2 * step
+        # "C.16.2.3.7" parent = "C.16.2.3" (level 3) → label at 1080
+        assert _label_position_for_code("C.16.2.3.7") == 3 * step
+
+    def test_emit_list_item_label_visibly_offset_from_heading(self) -> None:
+        """The emitted `\\pard\\li{li}\\fi{fi}` markup puts the label at
+        column `li + fi`, which should equal `_label_position_for_code`
+        — one step right of the parent heading. Regression pin for the
+        bug class where labels rendered in the heading's column."""
+        import io
+        from pubs_emitter.rtf import (
+            _body_indent_for_code, _emit_list_item, _label_position_for_code,
+        )
+        buf = io.StringIO()
+        # Level-1 entry: A.2.1. Parent A.2, heading at column 0.
+        # Label should be at column 360, body wrap at 1080.
+        indent = _body_indent_for_code("A.2")  # 1080
+        _emit_list_item(buf, "A.2.1", "body", indent=indent)
+        out = buf.getvalue()
+        expected_label_pos = _label_position_for_code("A.2.1")  # 360
+        expected_fi = expected_label_pos - indent  # -720
+        assert f"\\pard\\li{indent}\\fi{expected_fi}\\tx{indent}" in out
+
     def test_hanging_indent_inherits_level_base(self) -> None:
         """`_hanging_indent_for_codes` uses the level-derived base so a
         section's numbered entries nest under its heading. Short codes
         (≤ 7 visible chars) stay at the level base; long codes widen
         only when the label demands more room."""
         from pubs_emitter.rtf import _hanging_indent_for_codes
-        # Level 1 short labels — stay at 720.
-        assert _hanging_indent_for_codes(["C.6.1", "C.6.2"]) == 720
-        # Level 3 — base = 1440; short labels still at the base.
-        assert _hanging_indent_for_codes(["C.16.2.3.1", "C.16.2.3.2"]) == 1440
-        # Level 1 long labels (8+ visible chars) widen past the base.
-        # "C.26.10." has 8 visible chars → label-fit ≥ 1080.
+        # Level 1 short labels — base = 1080 (= label_pos 360 + 720 gap).
+        assert _hanging_indent_for_codes(["C.6.1", "C.6.2"]) == 1080
+        # Level 3 + 10-char codes — wider than the base because the
+        # label needs more horizontal room (the label-fit widening fires).
+        # Base for level 3 = 1800; "C.16.2.3.1" + period = 11 chars, so
+        # label fit widens the indent.
+        assert _hanging_indent_for_codes(
+            ["C.16.2.3.1", "C.16.2.3.2"]
+        ) >= 1800
+        # Level 1 long labels (8+ visible chars) may widen past the base.
         long_label = _hanging_indent_for_codes(
-            [f"C.26.{i}" for i in range(1, 20)]
+            [f"C.26.{i}" for i in range(1, 100)]
         )
         assert long_label >= 1080
 
@@ -2676,23 +2722,31 @@ class TestLevelAwareBodyIndent:
         assert f"\\pard\\li{expected}\\par\\par" in out
 
     def test_b_section_body_inherits_level_base(self) -> None:
-        """B.1-B.5 are level 1 — prose lands at 720."""
+        """B.1-B.5 are level 1 — prose lands at the level-1 body indent (1080)."""
         import io
-        from pubs_emitter.rtf import _emit_b_section_body
+        from pubs_emitter.rtf import _body_indent_for_code, _emit_b_section_body
         buf = io.StringIO()
         _emit_b_section_body(buf, "Some prose.", "B.1")
         out = buf.getvalue()
-        assert "\\pard\\li720 Some prose.\\par\\par" in out
+        expected = _body_indent_for_code("B.1")
+        assert f"\\pard\\li{expected} Some prose.\\par\\par" in out
 
-    def test_a3_a5_prose_at_level_1_baseline(self) -> None:
-        """A.3 + A.5 are both level 1 — prose lands at 720."""
+    def test_a3_a5_at_level_1_baseline(self) -> None:
+        """A.3 is now a numbered list (A.3.N), A.5 stays prose. Both at
+        the level-1 baseline indent."""
         import io
         from pubs_emitter.rtf import (
-            _render_a3_positions_at_purdue, _render_a5_licenses,
+            _body_indent_for_code, _render_a3_positions_at_purdue,
+            _render_a5_licenses,
         )
         buf = io.StringIO()
-        _render_a3_positions_at_purdue(buf, "Test Professor, 2020-2026")
+        _render_a3_positions_at_purdue(buf, ["Test Professor, 2020-2026"])
         _render_a5_licenses(buf, "N/A")
         out = buf.getvalue()
-        assert "\\pard\\li720 Test Professor, 2020-2026" in out
-        assert "\\pard\\li720 N/A" in out
+        # A.3 emits a numbered A.3.1 entry, body indent at level 1.
+        expected_a3_indent = _body_indent_for_code("A.3")
+        assert "A.3.1" in out
+        assert "Test Professor, 2020-2026" in out
+        # A.5 prose at level-1 baseline indent.
+        expected_a5_indent = _body_indent_for_code("A.5")
+        assert f"\\pard\\li{expected_a5_indent} N/A" in out

@@ -759,7 +759,9 @@ class TestBuildCandidateInformation:
         assert ci.identifiers.orcid.startswith("https://orcid.org/")
         assert len(ci.degrees) == 1
         assert ci.degrees[0].institution == "Clarkson University"
-        assert ci.positions_at_purdue == "Assistant Professor, 2020-2026"
+        # Legacy plain-string YAML shape is accepted and gets wrapped in
+        # a single-element list at build time (back-compat).
+        assert ci.positions_at_purdue == ["Assistant Professor, 2020-2026"]
         assert len(ci.positions_at_other) == 1
         assert ci.positions_at_other[0].acronym == ""
         assert ci.licenses == "N/A"
@@ -771,7 +773,7 @@ class TestBuildCandidateInformation:
         ci = build_candidate_information({})
         assert ci.identifiers.name == ""
         assert ci.degrees == []
-        assert ci.positions_at_purdue == ""
+        assert ci.positions_at_purdue == []
         assert ci.positions_at_other == []
         assert ci.licenses == ""
         assert ci.awards == []
@@ -862,7 +864,7 @@ class TestLoadCandidateInformation:
         ci = load_candidate_information(str(path))
         assert ci is not None
         assert ci.identifiers.name == "Test Person"
-        assert ci.positions_at_purdue == "Asst Prof"
+        assert ci.positions_at_purdue == ["Asst Prof"]
 
 
 class TestLoadSelfEvaluation:

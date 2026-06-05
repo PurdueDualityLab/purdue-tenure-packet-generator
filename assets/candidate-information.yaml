@@ -52,7 +52,10 @@ candidate_information:
   # A.3 — Positions at Purdue. Free-form prose. Single line in the
   # current packet; structure as multi-line YAML scalar if the rank/title
   # history grows. Renderer emits as an indented paragraph (no numbering).
-  positions_at_purdue: "Assistant Professor, 2020-2026"
+  # A.3 is a list so future promotions append a new entry (Assistant →
+  # Associate → Full) instead of editing the prose mid-document.
+  positions_at_purdue:
+    - "Assistant Professor, 2020-2026"
 
   # A.4 — Positions at other institutions or organizations. Numbered list
   # (A.4.1, A.4.2, ...). Each entry renders as: "{title}, {years}.
