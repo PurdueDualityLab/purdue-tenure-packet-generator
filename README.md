@@ -28,16 +28,31 @@ The system covers:
 
 ## Why use this
 
-A tenure packet pulls from many sources (bibliographies, grant systems,
-student records, course evaluations, service rosters). Doing it once
-in Word is painful; doing it again next year is much worse. This tool
-keeps the data in editable text/YAML/CSV substrates, and the renderer
-re-emits the entire packet on every change in ~3 seconds. Numbers stay
-consistent across cross-refs; tier markers + author markers + section
-codes are computed; you focus on writing prose, not formatting.
+Prepping your source materials (CV, awards list, grant records,
+student roster, service log, etc.) to follow Davis's templates takes
+**~3 hours with AI support**, and the result will make them better
+for the rest of your scholarly career — you'll have one canonical
+structured copy of every fact you'd ever cite about yourself.
 
-Pre-revenue: ship without naming any specific commercial vendor. The
-output looks at home in Purdue's official Word template.
+Once your materials are in the expected style, AI can help you
+populate the **database** in **another ~2 hours**: feed each section
+of your CV to a chat-based assistant pointed at this repo (it sees
+the schemas) and let it write the YAML entries directly into the
+data files for you, then re-run the build. You're not editing YAML
+by hand or pasting it around — the assistant does that. Your job is
+the human-judgment prose (B.1–B.5 self-evaluation) and the final
+copy-paste of the rendered RTF into Purdue's official Word template.
+
+The alternative is **40–80 hours of soul-crushing work in Word**,
+hand-formatting every citation and table, re-numbering cross-refs by
+hand every time you add an entry — and you'll have to redo most of
+it the next time Purdue updates the packet format (which they do).
+
+This tool keeps the data in editable text / YAML / CSV substrates,
+and the renderer re-emits the entire packet on every change in ~3
+seconds. Numbers stay consistent across cross-refs; tier markers +
+author markers + section codes are computed; you focus on writing
+prose, not formatting.
 
 ---
 
@@ -96,25 +111,24 @@ The system is opinionated about **what data you bring**:
 
 ### Recommended populating workflow: AI assistant + CV screenshots
 
-Don't try to hand-write the YAML. The ergonomic path: **work with a
-chat-based AI model and feed it screenshots of each part of your CV.**
+You should never be reading or writing YAML by hand. The ergonomic
+path: **work with a chat-based AI model and feed it screenshots of
+each part of your CV.**
 
 Concretely, what Davis did:
 
 1. Point a chat-based AI assistant (Davis used Claude) **at this git
    repository** so it has the YAML schemas + the renderer code in
    context. (Easiest: clone the repo locally and run the assistant in
-   the same workspace; or copy in the relevant `src/pubs_emitter/*.py`
-   + `assets/config.example.yaml` files.)
+   the same workspace, e.g. Claude Code or a Cursor / Copilot session.)
 2. **Screenshot each section** of your existing CV — one section at a
    time (awards table, grants list, student roster, service list, etc.).
-3. Ask the assistant: *"convert this CV section to the YAML schema
-   used by this repo, matching the existing entries in
-   `non-scholar-work.yaml`."* The assistant reads the schemas + existing
-   entries and writes new YAML.
-4. Paste the YAML into the right top-level key. Re-run the build.
-   Validation errors come back in one batch — feed them to the
-   assistant or fix by hand.
+3. Tell the assistant: *"add these entries to my tenure-packet
+   database — match the existing entries in `non-scholar-work.yaml` /
+   `candidate-information.yaml`."* The assistant edits the files
+   directly. You never touch the YAML.
+4. Re-run the build. Validation errors come back in one batch — paste
+   them to the assistant and ask it to fix them in the files.
 
 A few inputs DON'T go through this workflow:
 
@@ -540,13 +554,16 @@ A failed validation prints every error and exits 1 — fix them all and re-run.
 
 ## Environment variables
 
-| Variable | Effect |
-|---|---|
-| `LOG_LEVEL` | `DEBUG` / `INFO` (default) / `WARNING` / `ERROR` |
-| `PATENTSVIEW_API_KEY` | Enables USPTO issue-date lookup for patents |
-| `NVD_API_KEY` | Raises NVD rate limit ~10× (5 / 30s → 50 / 30s) |
-| `PUBS_EMITTER_CONFIG` | Override path to `assets/config.yaml` |
-| `PUBS_EMITTER_USER_AGENT` | Override the HTTP User-Agent (Crossref polite-pool mailto) |
+All optional — you can ignore them in a typical run. They exist for
+the cases where the defaults don't fit:
+
+| Variable | When you'd set it | What it does |
+|---|---|---|
+| `LOG_LEVEL` | Build is silent on a problem and you want more output, or it's too noisy | Logging verbosity: `DEBUG` / `INFO` (default) / `WARNING` / `ERROR`. Read at startup in [`cli.py`](src/pubs_emitter/cli.py). |
+| `PATENTSVIEW_API_KEY` | You have patents and want accurate USPTO issue dates instead of the bib's `note`-field date (free key at <https://patentsview.org/>) | Authenticates calls to USPTO PatentsView. Without it, patent issue-date lookups are skipped and the bib date is used. Read in [`network.py`](src/pubs_emitter/network.py). |
+| `NVD_API_KEY` | You have a lot of CVE entries and the default 6.5s-per-call rate limit is too slow (free key at <https://nvd.nist.gov/>) | Raises the NVD per-call interval from 6.5s → 0.7s (≈ 10× throughput on CVE description lookups). Read in [`network.py`](src/pubs_emitter/network.py). |
+| `PUBS_EMITTER_CONFIG` | You're running the tool from a directory where `assets/config.yaml` doesn't resolve (testing, CI, multi-packet workflow) | Overrides the path to the venue-rankings + students + advisors config file. Default is `assets/config.yaml` relative to the package. Read in [`config.py`](src/pubs_emitter/config.py). |
+| `PUBS_EMITTER_USER_AGENT` | You're forking the tool and want your own email in the Crossref polite-pool header | Overrides the `User-Agent` header on all outbound HTTP (Crossref, DBLP, NVD, PatentsView). Default carries `mailto:davisjam@purdue.edu`. Read in [`config.py`](src/pubs_emitter/config.py). |
 
 ---
 
