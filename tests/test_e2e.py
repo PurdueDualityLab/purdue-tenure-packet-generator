@@ -8,6 +8,7 @@ section the YAML / bib drives lands in the generated RTF.
 from __future__ import annotations
 
 import pathlib
+import re
 import typing
 
 import pytest
@@ -92,22 +93,22 @@ class TestE2eSectionHeadings:
 
     def test_journals_emitted(self, e2e_outputs: tuple[str, pathlib.Path]) -> None:
         rtf, _ = e2e_outputs
-        assert "C.2 Journals" in rtf
+        assert "C.2 Refereed journal papers." in rtf
 
     def test_book_chapters_emitted(
         self, e2e_outputs: tuple[str, pathlib.Path]
     ) -> None:
         rtf, _ = e2e_outputs
-        assert "C.3 Books and chapters in books" in rtf
+        assert "C.3 Books and chapters in books." in rtf
 
     def test_conferences_emitted(self, e2e_outputs: tuple[str, pathlib.Path]) -> None:
         rtf, _ = e2e_outputs
-        assert "C.4 Conferences and Workshops" in rtf
+        assert "C.4 Refereed conferences, symposium papers or other refereed reports." in rtf
 
     def test_other_pubs_emitted(self, e2e_outputs: tuple[str, pathlib.Path]) -> None:
         rtf, _ = e2e_outputs
         # arXiv + CVE + security disclosure all land here.
-        assert "C.5 Other publications and products" in rtf
+        assert "C.5 Other publications and products." in rtf
 
     def test_invited_talks_emitted(
         self, e2e_outputs: tuple[str, pathlib.Path]
@@ -536,11 +537,11 @@ class TestE2eSectionsFilter:
             ]
         )
         rtf = out.read_text(encoding="utf-8")
-        assert "C.4 Conferences and Workshops" in rtf
+        assert "C.4 Refereed conferences, symposium papers or other refereed reports." in rtf
         # No other section headings emit. Spot-check a few that would
         # normally appear.
         assert "C.1 Key Scholarly Publications" not in rtf
-        assert "C.2 Journals" not in rtf
+        assert "C.2 Refereed journal papers" not in rtf
         assert "C.6 Invited Talks" not in rtf
 
     def test_filter_parent_code_includes_children(
@@ -610,10 +611,10 @@ class TestE2eSectionsFilter:
             ]
         )
         rtf = out.read_text(encoding="utf-8")
-        assert "C.4 Conferences and Workshops" in rtf
+        assert "C.4 Refereed conferences, symposium papers or other refereed reports." in rtf
         assert "C.6 Invited" in rtf
         # Other sections still suppressed.
-        assert "C.2 Journals" not in rtf
+        assert "C.2 Refereed journal papers" not in rtf
 
     def test_filter_preserves_full_document_numbering(
         self,
@@ -1444,88 +1445,67 @@ class TestE2eTableOfContents:
       * Section V — A.1 (Products under review) + A.2 (Pending proposals)
     """
 
-    _EXPECTED_HEADINGS: tuple[tuple[str, str], ...] = (
-        # Section III front matter
-        ("section3.A.1", "A.1 Name and any appropriate scholarly identifiers"),
-        ("section3.A.2", "A.2 Degrees"),
-        ("section3.A.3", "A.3 Positions at Purdue"),
-        ("section3.A.4", "A.4 Positions at other institutions"),
-        ("section3.A.5", "A.5 Licenses"),
-        ("section3.A.6", "A.6 Recognitions"),
-        ("section3.A.7", "A.7 Membership in professional organizations"),
-        # Section IV self-evaluation
-        ("section4.B.1", "B.1 Summary of achievements"),
-        ("section4.B.2", "B.2 Impact of accomplishments"),
-        ("section4.B.3", "B.3 Vision"),
-        ("section4.B.4", "B.4 Candidate comments"),
-        ("section4.B.5", "B.5 Professional COVID-19"),
-        # C.1-C.26 scholarly contributions
-        ("C.1",  "C.1 Key Scholarly Publications"),
-        ("C.2",  "C.2 Journals"),
-        ("C.3",  "C.3 Books and chapters"),
-        ("C.4",  "C.4 Conferences and Workshops"),
-        ("C.5",  "C.5 Other publications"),
-        ("C.6",  "C.6 Invited"),
-        ("C.7",  "C.7 Leadership"),
-        ("C.8",  "C.8 Appearances in media"),
-        ("C.9",  "C.9 Selected contributed conference"),
-        ("C.10", "C.10 Externally sponsored grants as PI"),
-        ("C.11", "C.11 Externally sponsored grants as Co-PI"),
-        ("C.12", "C.12 External gifts"),
-        ("C.13", "C.13 Internal competitive grants"),
-        ("C.14", "C.14 Graduate students advised"),
-        ("C.15", "C.15 Mentoring of postdoctoral"),
-        ("C.16", "C.16 Undergraduate research"),
-        ("C.17", "C.17 Courses taught"),
-        ("C.18", "C.18 Course development"),
-        ("C.19", "C.19 Issued U.S. and International Patents"),
-        ("C.20", "C.20 Major entrepreneurial"),
-        ("C.21", "C.21 Technology transfer"),
-        ("C.22", "C.22 Software products"),
-        ("C.23", "C.23 Service to Purdue"),
-        ("C.24", "C.24 Service to the profession"),
-        ("C.25", "C.25 Service to State"),
-        ("C.26", "C.26 Other external service"),
-        # Section V appendix
-        ("section5.A.1", "A.1 Products under review"),
-        ("section5.A.2", "A.2 Pending proposals"),
-    )
+    @staticmethod
+    def _expected_headings() -> list[tuple[str, str]]:
+        """Derive `(code, expected_substring_in_rtf)` from SECTION_CODES +
+        SECTION_HEADINGS.
+
+        Filter: only TOP-LEVEL codes (≤ 1 dot — A.1, B.1, C.1-C.26).
+        Sub-sections like C.16.2.2 are skip-when-empty and the e2e fixture
+        doesn't always populate them; they're covered by the SECTION_CODES
+        registry but not by this whole-document presence pin.
+
+        Expected substring is `"{code} {first-clause-of-heading}"` —
+        substring containment (not exact match), so minor heading text
+        edits after a comma or paren don't break the test.
+        """
+        from pubs_emitter.config import SECTION_CODES, SECTION_HEADINGS
+        out: list[tuple[str, str]] = []
+        for key, heading in SECTION_HEADINGS.items():
+            code = SECTION_CODES.get(key)
+            if not code:
+                continue
+            if code.count(".") > 1:
+                continue  # sub-section; skip-when-empty
+            head_prefix = re.split(r"[,(]", heading, maxsplit=1)[0].strip().rstrip(".")
+            head_prefix = head_prefix[:40].rstrip()
+            out.append((code, f"{code} {head_prefix}"))
+        return out
 
     def test_every_canonical_heading_present(
         self, e2e_full_outputs: str,
     ) -> None:
         rtf = e2e_full_outputs
+        expected = self._expected_headings()
         missing: list[str] = []
-        for label, snippet in self._EXPECTED_HEADINGS:
+        for code, snippet in expected:
             if snippet not in rtf:
-                missing.append(f"{label}: {snippet!r}")
+                missing.append(f"{code}: {snippet!r}")
         assert not missing, (
-            f"{len(missing)}/{len(self._EXPECTED_HEADINGS)} canonical "
-            f"section headings are missing from the rendered RTF:\n  "
+            f"{len(missing)}/{len(expected)} canonical section headings "
+            f"are missing from the rendered RTF:\n  "
             + "\n  ".join(missing)
         )
 
     def test_headings_emit_in_canonical_order(
         self, e2e_full_outputs: str,
     ) -> None:
-        """Beyond presence: every heading must emit in declared order.
+        """Every heading must emit in the declared SECTION_HEADINGS dict
+        order (which matches `SECTION_ORDER` for the C.X block).
         Pins against a future refactor that emits a section in the
         wrong block (e.g., V.A.1 leaking before C.26)."""
         rtf = e2e_full_outputs
         positions: list[tuple[str, int]] = []
-        for label, snippet in self._EXPECTED_HEADINGS:
+        for code, snippet in self._expected_headings():
             pos = rtf.find(snippet)
             if pos < 0:
                 continue  # presence asserted by sibling test; skip here
-            positions.append((label, pos))
-        # Adjacent pairs must be in increasing-byte-position order.
+            positions.append((code, pos))
         out_of_order: list[str] = []
-        for (label_a, pos_a), (label_b, pos_b) in zip(
-            positions, positions[1:],
-        ):
+        for (code_a, pos_a), (code_b, pos_b) in zip(positions, positions[1:]):
             if pos_a >= pos_b:
                 out_of_order.append(
-                    f"  {label_a} (pos {pos_a}) emits before/after {label_b} (pos {pos_b})"
+                    f"  {code_a} (pos {pos_a}) emits after {code_b} (pos {pos_b})"
                 )
         assert not out_of_order, (
             "Canonical section order violated:\n" + "\n".join(out_of_order)
@@ -1534,10 +1514,12 @@ class TestE2eTableOfContents:
     def test_section_count_matches_expected(
         self, e2e_full_outputs: str,
     ) -> None:
-        """Belt-and-suspenders: the test snippets above are the
-        authoritative TOC. Pin the cardinality (40) so adding/removing
-        an expected heading forces an intentional update here."""
-        assert len(self._EXPECTED_HEADINGS) == 40, (
-            f"Canonical TOC has drifted to {len(self._EXPECTED_HEADINGS)} "
-            f"headings — update this test if intentional."
+        """Cardinality pin — guards against a section being silently
+        deleted from SECTION_HEADINGS. Number is the count of
+        SECTION_HEADINGS entries that map to a code; update intentionally
+        when the canonical TOC grows or shrinks."""
+        actual = len(self._expected_headings())
+        assert actual == 40, (
+            f"Canonical TOC has drifted to {actual} headings (was 40 at "
+            f"last review); update this assertion if intentional."
         )

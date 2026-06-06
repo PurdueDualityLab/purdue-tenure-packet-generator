@@ -1881,6 +1881,8 @@ def render_students_section(
     out: IO[str],
     under_review: Optional[list[UnderReview]] = None,
     under_review_index: Optional[dict[int, str]] = None,
+    *,
+    suppress_heading: bool = False,
 ) -> None:
     """C.14 / C.16 student-table renderer.
 
@@ -1889,12 +1891,19 @@ def render_students_section(
     → MS Thesis Chair → Co-Chair → MS Non-Thesis → committee), and emits
     a short grey divider row at each tier transition. C.16 has no tier
     concept; the sort still applies but typically collapses to one tier.
+
+    `suppress_heading=True` skips this renderer's own
+    `_emit_section_heading` call — used by the C.16 call site which
+    emits the C.16 base heading unconditionally (the section is the
+    umbrella for the mentoring outline, not just the optional student
+    table).
     """
     if not students:
         return
     code = SECTION_CODES[section]
     heading = SECTION_HEADINGS[section]
-    _emit_section_heading(out, code, heading)
+    if not suppress_heading:
+        _emit_section_heading(out, code, heading)
 
     cellx = _student_cellx_positions()
     out.write(_render_student_header_row(cellx))
@@ -3248,11 +3257,21 @@ def write_rtf(
                 under_review_index=under_review_index,
             )
         if _emit("Undergraduate Students"):
+            # C.16 base heading ALWAYS emits — the section is the
+            # umbrella for mentoring outline + sub-sections, not a
+            # student-table-only section like C.14. `render_students_section`
+            # below skips its own heading emit when the student list is
+            # empty (its return-early branch), so we emit the C.16
+            # heading explicitly here.
+            _emit_section_heading(
+                out, "C.16", SECTION_HEADINGS["Undergraduate Students"],
+            )
             render_students_section(
                 "Undergraduate Students", undergraduate_students,
                 bib_entries, paper_index, out,
                 under_review=under_review,
                 under_review_index=under_review_index,
+                suppress_heading=True,
             )
             # C.16 outline: placeholders for prose subsections + inline
             # emit of the auto-derived data sub-sections (C.16.2.3 / C.16.2.4
