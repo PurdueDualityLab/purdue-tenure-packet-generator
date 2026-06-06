@@ -70,7 +70,7 @@ from .types import (
     BibEntry, Citation, ConferencePresentation, Grant, InvitedTalk, KeyWork,
     LeadershipRole, MediaAppearance, Patent, PostdocVisiting, Publications,
     CourseDevelopment, CourseTaught, EntrepreneurialActivity,
-    ServiceEntry, SoftwareProduct, Student, StudentAward,
+    Section, ServiceEntry, SoftwareProduct, Student, StudentAward,
     TechnologyTransfer, UndergradPathway, UndergradProduct, UnderReview,
 )
 from .venue import (
@@ -463,23 +463,13 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--use-markdown-master", action="store_true",
-        help=(
-            "Engage the markdown-master walker outline refactor "
-            "(docs/design/markdown-master-outline-refactor.md). When "
-            "set, sections listed in the --outline file emit via the "
-            "walker; matching entries in the legacy emit-order block "
-            "are skipped. Phase 2: C.19 Patents pilot. OFF by default."
-        ),
-    )
-    parser.add_argument(
         "--outline", default="assets/outline.md",
         help=(
-            "Path to the markdown-master walker outline file. The "
-            "walker reads this file when --use-markdown-master is set; "
-            "headings here become the document outline, !DIRECTIVE! "
-            "lines dispatch to registered renderers. Default: "
-            "assets/outline.md."
+            "Path to the markdown-master walker outline file — the "
+            "single source of truth for the document outline. Headings "
+            "here become the rendered packet's outline; !DIRECTIVE! "
+            "lines dispatch to renderers registered in "
+            "pubs_emitter.directives. Default: assets/outline.md."
         ),
     )
     parser.add_argument(
@@ -794,8 +784,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         for i, ct in enumerate(courses_taught):
             if ct.is_note_row or ct.responsibility:
                 continue
-            key = (ct.year, ct.semester_str, ct.course_number)
-            if key not in resp_table:
+            resp_key: tuple[int, str, str] = (ct.year, ct.semester_str, ct.course_number)
+            if resp_key not in resp_table:
                 log.warning(
                     "C.17 row %s %s %s has no `courses_responsibility:` "
                     "entry — responsibility cell will render blank. "
@@ -803,7 +793,7 @@ def main(argv: Optional[list[str]] = None) -> None:
                     ct.semester_str, ct.course_number, ct.title[:40],
                 )
                 continue
-            courses_taught[i] = ct._replace(responsibility=resp_table[key])
+            courses_taught[i] = ct._replace(responsibility=resp_table[resp_key])
         course_development: list[CourseDevelopment] = [
             build_course_development(e)
             for e in (non_scholar.get("course_development") or [])
@@ -936,8 +926,8 @@ def main(argv: Optional[list[str]] = None) -> None:
             title = entry.get("title", "") or ""
             if not bib_key or not title:
                 continue
-            code = paper_index.get(normalize_title(title))
-            if not code:
+            resolved_code = paper_index.get(normalize_title(title))
+            if not resolved_code:
                 continue  # not emitted (e.g., thesis)
             if bib_key in seen_ids:
                 log.error(
@@ -946,8 +936,8 @@ def main(argv: Optional[list[str]] = None) -> None:
                 )
                 sys.exit(1)
             seen_ids.add(bib_key)
-            ref_index[bib_key] = code
-            _record_section_bibkey(bib_key, code)
+            ref_index[bib_key] = resolved_code
+            _record_section_bibkey(bib_key, resolved_code)
 
         # Under-review entries live under Section V; the bare code "A.1.N"
         # collides with Section III's A.1 Identifiers entries (now also
@@ -977,9 +967,9 @@ def main(argv: Optional[list[str]] = None) -> None:
             if t and bk:
                 title_to_bibkey[normalize_title(t)] = bk
         for idx, kw in enumerate(key_works, 1):
-            bib_key = title_to_bibkey.get(normalize_title(kw.citation.title))
-            if bib_key:
-                _record_section_bibkey(bib_key, f"{kw_section_code}.{idx}")
+            kw_bib_key = title_to_bibkey.get(normalize_title(kw.citation.title))
+            if kw_bib_key:
+                _record_section_bibkey(kw_bib_key, f"{kw_section_code}.{idx}")
         _register_simple(invited_talks, "Invited Talks")
         _register_simple(leadership_roles, "Leadership Roles")
         _register_simple(media_appearances, "Media Appearances")
@@ -1012,8 +1002,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         # A.6 awards: use the dedicated indexer to match the renderer's
         # tier-group + chrono sort exactly (externals first, then internals).
         if candidate_info is not None and candidate_info.awards:
-            for ref, award in index_awards(candidate_info.awards):
-                _register(award, ref)
+            for ref, aw in index_awards(candidate_info.awards):
+                _register(aw, ref)
         _register_simple(courses_taught, "Courses Taught")
         _register_simple(course_development, "Course Development")
         _register_simple(entrepreneurial_activities, "Entrepreneurial Activities")
@@ -1026,7 +1016,7 @@ def main(argv: Optional[list[str]] = None) -> None:
 
         # Resolve `@id` refs in prose fields. Collect ALL unresolved refs
         # before exiting so the user sees the full list in one pass.
-        _all_errors: list[tuple[str, int, str]] = []
+        _all_errors: list[tuple[str, int | str, str]] = []
 
         def _resolve(items: list, type_name: str) -> list:
             # link_format=True wraps each resolved code with sentinel chars
@@ -1147,16 +1137,16 @@ def main(argv: Optional[list[str]] = None) -> None:
                 other_service = new_svc
 
         if _all_errors:
-            for type_name, idx, unresolved in _all_errors:
-                # `idx` is an int for list-item paths (Grant[3], Student[7])
+            for type_name, where, unresolved_id in _all_errors:
+                # `where` is an int for list-item paths (Grant[3], Student[7])
                 # and a string code for the section-prose path
                 # (SectionProse[B.1]); `%s` accommodates both. Hard-coded
                 # `%d` here previously crashed the log call itself on every
                 # section-prose unresolved ref, masking the underlying typo.
+                known_ids: list[str] | str = sorted(ref_index.keys()) or "(none)"
                 log.error(
                     "Unresolved @id ref @%s in %s[%s]; known ids: %s",
-                    unresolved, type_name, idx,
-                    sorted(ref_index.keys()) or "(none)",
+                    unresolved_id, type_name, where, known_ids,
                 )
             sys.exit(1)
         log.info(
@@ -1207,10 +1197,9 @@ def main(argv: Optional[list[str]] = None) -> None:
             section_prose=section_prose,
             pending_proposals=pending_proposals,
             sections_filter=_parse_sections_filter(args.sections),
-            use_markdown_master=args.use_markdown_master,
             ref_index=ref_index,
             macros=macros,
-            outline_text=load_outline(args.outline or None) if args.use_markdown_master else "",
+            outline_text=load_outline(args.outline or None),
             table_schemas_path=args.table_schemas or None,
             section_bibkey_index=section_bibkey_index,
         )

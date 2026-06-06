@@ -263,6 +263,63 @@ def _collect_declared_codes(nodes: list[NamedTuple]) -> set[str]:
     return {n.code for n in nodes if isinstance(n, HeadingNode)}
 
 
+def extract_stanzas(outline_text: str) -> dict[str, str]:
+    """Split `outline_text` into per-section-heading stanzas.
+
+    Each returned entry maps a heading code (`"C.19"`, `"C.20"`, …) to
+    the markdown lines covering that section's heading PLUS every
+    following paragraph / directive line up to (but excluding) the next
+    heading line at the same or shallower depth.
+
+    Used by `rtf.write_rtf` during the Phase-3+ migration: the walker
+    fires inline at each migrated section's legacy emit site, with the
+    outline scoped to that section's stanza only. Sections not yet
+    migrated still fire via the legacy renderer path; ordering is
+    preserved because the walker emits in the legacy block's slot.
+
+    `/* ... */` comments are stripped before stanza extraction so the
+    same authoring convention used for prose comments applies here.
+    """
+    text = _strip_comments(outline_text)
+    lines = text.splitlines(keepends=True)
+    stanzas: dict[str, str] = {}
+    current_code: Optional[str] = None
+    current_depth: int = 0
+    buf: list[str] = []
+
+    def _flush() -> None:
+        nonlocal buf
+        if current_code is not None and buf:
+            stanzas[current_code] = "".join(buf)
+        buf = []
+
+    for line in lines:
+        stripped = line.rstrip()
+        m = _HEADING_LINE_RE.match(stripped)
+        if m:
+            depth = len(m.group(1))
+            try:
+                _, code, _title = _split_heading_line(stripped)
+            except ValueError:
+                # Heading-shaped line without a structural code — flush
+                # the current stanza and skip (matches walker behavior).
+                _flush()
+                continue
+            # A new heading at the SAME OR SHALLOWER depth closes any
+            # in-progress stanza. Deeper headings stay PART of the
+            # parent's stanza so a section with nested sub-headings
+            # emits coherently when the walker fires.
+            if current_code is None or depth <= current_depth:
+                _flush()
+                current_code = code
+                current_depth = depth
+            buf.append(line)
+            continue
+        buf.append(line)
+    _flush()
+    return stanzas
+
+
 def _augment_ref_index(ctx: RenderContext, declared_codes: set[str]) -> None:
     """Self-resolve every declared heading code into `ctx.ref_index`.
 

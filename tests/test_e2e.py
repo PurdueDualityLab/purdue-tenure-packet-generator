@@ -249,7 +249,8 @@ class TestE2eGrantMath:
     @pytest.fixture
     def yaml_data(self, fixtures_dir: pathlib.Path) -> dict:
         with open(fixtures_dir / "non-scholar.yaml", encoding="utf-8") as f:
-            return yaml.safe_load(f)
+            data: dict = yaml.safe_load(f)
+            return data
 
     def _section_total_usd(self, yaml_data: dict, key: str) -> str:
         """Sum the `my_amount` fields under `key` (with `purdue_amount` as
@@ -1047,13 +1048,15 @@ class TestE2eChronologicalEmissionOrder:
             entries = self._entries_for_parent(rtf, parent_prefix)
             if len(entries) < 2:
                 continue
-            year_pairs = [
+            raw_year_pairs = [
                 (name, self._extract_year(body)) for name, body in entries
             ]
-            year_pairs = [(n, y) for n, y in year_pairs if y is not None]
+            year_pairs: list[tuple[str, int]] = [
+                (n, y) for n, y in raw_year_pairs if y is not None
+            ]
             if len(year_pairs) < 2:
                 continue
-            years = [y for _, y in year_pairs]
+            years: list[int] = [y for _, y in year_pairs]
             decreases = [
                 (year_pairs[i][0], years[i - 1], years[i])
                 for i in range(1, len(years))

@@ -12,7 +12,7 @@ import re
 import sqlite3
 import sys
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 import yaml
 
@@ -583,6 +583,9 @@ def build_under_review(conn: sqlite3.Connection, entry: dict) -> UnderReview:
         raw_authors=tuple(a.strip() for a in author_list),
         id=str(entry.get("id", "") or ""),
         submission_year=int(entry.get("submission_year", 0) or 0),
+        # Q7 — repo-relative path to a PNG/JPEG screenshot of the
+        # submission confirmation. Empty when no supporting doc.
+        supporting_image=str(entry.get("supporting_image", "") or ""),
     )
 
 
@@ -723,13 +726,19 @@ def _infer_semester_order(semester_str: str) -> int:
 def _maybe_int(v: object) -> Optional[int]:
     if v in (None, "", "—", "-"):
         return None
-    return int(v)  # type: ignore[arg-type]
+    if isinstance(v, (int, str)):
+        return int(v)
+    if isinstance(v, float):
+        return int(v)
+    raise TypeError(f"_maybe_int cannot coerce {type(v).__name__}: {v!r}")
 
 
 def _maybe_float(v: object) -> Optional[float]:
     if v in (None, "", "—", "-"):
         return None
-    return float(v)  # type: ignore[arg-type]
+    if isinstance(v, (int, float, str)):
+        return float(v)
+    raise TypeError(f"_maybe_float cannot coerce {type(v).__name__}: {v!r}")
 
 
 def build_course_taught(entry: dict) -> CourseTaught:
@@ -820,11 +829,17 @@ def build_student_award(entry: dict) -> StudentAward:
     """Build a StudentAward from a YAML dict (C.16.2.4 / C.16.3.3)."""
     year_raw = entry.get("year", "")
     year_str = str(entry.get("year_str", "") or year_raw or "")
-    level = str(entry.get("level", "") or "").strip().upper()
+    level_raw = str(entry.get("level", "") or "").strip().upper()
+    if level_raw not in ("U", "G"):
+        raise ValueError(
+            f"StudentAward level must be 'U' or 'G' (got {level_raw!r}); "
+            f"validate_non_scholar enforces this upstream — should not reach here"
+        )
+    level: Literal["U", "G"] = level_raw  # type: ignore[assignment]
     return StudentAward(
         year=parse_year(year_str) if year_str else 9999,
         year_str=year_str,
-        level=level,  # validated by validate_non_scholar to be "U" or "G"
+        level=level,
         tier=str(entry.get("tier", "") or ""),
         recipient=decode_latex(entry.get("recipient", "")).replace("\n", " "),
         award=decode_latex(entry.get("award", "")).replace("\n", " "),
@@ -1664,7 +1679,7 @@ def validate_non_scholar(non_scholar: dict, bib_entries: list[BibEntry]) -> None
         # responsibility may be blank (filled at build time from the
         # `courses_responsibility_*` lookup, default fallback included).
         is_note = bool(ct.get("is_note_row", False))
-        required_fields = ("year", "semester_str", "title")
+        required_fields: tuple[str, ...] = ("year", "semester_str", "title")
         if not is_note:
             required_fields = required_fields + ("course_number",)
         for required in required_fields:
@@ -1770,7 +1785,10 @@ def validate_non_scholar(non_scholar: dict, bib_entries: list[BibEntry]) -> None
                 f"`media_appearances[{i}]` must be a mapping; got {type(media).__name__}"
             )
             continue
-        for required in ("title", "venue", "year"):
+        # `venue` is OPTIONAL: when empty, render_media_appearance
+        # treats the entry as freeform-prose (title carries the full
+        # sentence). Title + year remain required.
+        for required in ("title", "year"):
             if not media.get(required):
                 errors.append(
                     f"media_appearances[{i}] missing required field `{required}`"

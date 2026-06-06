@@ -427,6 +427,7 @@ def render_key_works_section(
     key_works: list[KeyWork],
     paper_index: dict[str, str],
     out: IO[str],
+    *, suppress_heading: bool = False,
 ) -> None:
     """Emit C.1 entries as TWO paragraphs each:
 
@@ -441,8 +442,9 @@ def render_key_works_section(
     if not key_works:
         return
     code = SECTION_CODES["Key Works"]
-    heading = SECTION_HEADINGS["Key Works"]
-    _emit_section_heading(out, code, heading)
+    if not suppress_heading:
+        heading = SECTION_HEADINGS["Key Works"]
+        _emit_section_heading(out, code, heading)
     _emit_author_marker_legend(out)
     indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(key_works)))
     expansion_done: set[str] = set()
@@ -1105,6 +1107,13 @@ def render_under_review_section(
         _emit_list_item(
             out, f"{code}.{idx}", body, indent=indent, bookmark_prefix="V.",
         )
+        # Q7 — optional supporting documentation. When the YAML entry
+        # sets `supporting_image`, hex-encode the PNG/JPEG inline at
+        # the same indent the entry body wraps at. Missing file is
+        # build-fatal; see image_embed.emit_image.
+        if ur.supporting_image:
+            from .image_embed import emit_image
+            emit_image(out, ur.supporting_image, indent_twips=indent)
 
 
 # C.5 "Other publications and products" subcategory map. Each Citation's
@@ -1137,6 +1146,7 @@ def render_other_pubs_section(
     paper_index: dict[str, str],
     key_work_index: dict[str, str],
     out: IO[str],
+    *, suppress_heading: bool = False,
 ) -> None:
     """C.5: subcategory-grouped numbered list.
 
@@ -1151,8 +1161,9 @@ def render_other_pubs_section(
     if not citations:
         return
     code = SECTION_CODES["Other publications and products"]
-    heading = SECTION_HEADINGS["Other publications and products"]
-    _emit_section_heading(out, code, heading)
+    if not suppress_heading:
+        heading = SECTION_HEADINGS["Other publications and products"]
+        _emit_section_heading(out, code, heading)
 
     ordered = order_citations_for_emission(
         "Other publications and products", citations,
@@ -1210,12 +1221,16 @@ def render_invited_talk(talk: InvitedTalk) -> str:
     return f"{head}. {escape_rtf(talk.venue)}, {escape_rtf(talk.year_str)}."
 
 
-def render_invited_talks_section(talks: list[InvitedTalk], out: IO[str]) -> None:
+def render_invited_talks_section(
+    talks: list[InvitedTalk], out: IO[str],
+    *, suppress_heading: bool = False,
+) -> None:
     if not talks:
         return
     code = SECTION_CODES["Invited Talks"]
-    heading = SECTION_HEADINGS["Invited Talks"]
-    _emit_section_heading(out, code, heading)
+    if not suppress_heading:
+        heading = SECTION_HEADINGS["Invited Talks"]
+        _emit_section_heading(out, code, heading)
     indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(talks)))
     for idx, talk in enumerate(talks, 1):
         _emit_list_item(out, f"{code}.{idx}", render_invited_talk(talk), indent=indent)
@@ -1233,12 +1248,16 @@ def render_leadership_role(role: LeadershipRole) -> str:
     return body
 
 
-def render_leadership_section(roles: list[LeadershipRole], out: IO[str]) -> None:
+def render_leadership_section(
+    roles: list[LeadershipRole], out: IO[str],
+    *, suppress_heading: bool = False,
+) -> None:
     if not roles:
         return
     code = SECTION_CODES["Leadership Roles"]
-    heading = SECTION_HEADINGS["Leadership Roles"]
-    _emit_section_heading(out, code, heading)
+    if not suppress_heading:
+        heading = SECTION_HEADINGS["Leadership Roles"]
+        _emit_section_heading(out, code, heading)
     indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(roles)))
     for idx, role in enumerate(roles, 1):
         _emit_list_item(out, f"{code}.{idx}", render_leadership_role(role), indent=indent)
@@ -1291,12 +1310,14 @@ def render_conference_presentations_section(
     bib_entries: list[BibEntry],
     paper_index: dict[str, str],
     out: IO[str],
+    *, suppress_heading: bool = False,
 ) -> None:
     if not presentations:
         return
     code = SECTION_CODES["Conference Presentations"]
-    heading = SECTION_HEADINGS["Conference Presentations"]
-    _emit_section_heading(out, code, heading)
+    if not suppress_heading:
+        heading = SECTION_HEADINGS["Conference Presentations"]
+        _emit_section_heading(out, code, heading)
     # Explanatory note routed through `_emit_intro_note` → italic
     # intro-note style in the registry.
     _emit_intro_note(out, escape_rtf(_CONF_PRES_NOTE))
@@ -1317,18 +1338,31 @@ def render_conference_presentations_section(
 
 
 def render_media_appearance(media: MediaAppearance) -> str:
-    """C.8 format: 'Title. Venue. Year. URL:...'"""
+    """C.8 format: 'Title. Venue. Year. URL:...'
+
+    Empty-venue escape hatch: when `venue == ""`, the entry renders the
+    title verbatim (caller carries the full prose, including the year
+    if relevant). Use this for narrative-style entries where the
+    standard `Title. Venue, year.` shape doesn't fit (e.g., paper-coverage
+    summaries that read as one sentence).
+    """
+    if not media.venue:
+        return escape_rtf(media.title) + render_link_field(media.url)
     body = f"{escape_rtf(media.title)}. {styled_inline('venue_italic', escape_rtf(media.venue))}, {escape_rtf(media.year_str)}."
     body += render_link_field(media.url)
     return body
 
 
-def render_media_appearances_section(media: list[MediaAppearance], out: IO[str]) -> None:
+def render_media_appearances_section(
+    media: list[MediaAppearance], out: IO[str],
+    *, suppress_heading: bool = False,
+) -> None:
     if not media:
         return
     code = SECTION_CODES["Media Appearances"]
-    heading = SECTION_HEADINGS["Media Appearances"]
-    _emit_section_heading(out, code, heading)
+    if not suppress_heading:
+        heading = SECTION_HEADINGS["Media Appearances"]
+        _emit_section_heading(out, code, heading)
     indent = _hanging_indent_for_codes(_section_codes_up_to(code, len(media)))
     for idx, m in enumerate(media, 1):
         _emit_list_item(out, f"{code}.{idx}", render_media_appearance(m), indent=indent)
@@ -1565,6 +1599,7 @@ def render_grants_section(
     section: Section,
     grants: list[Grant],
     out: IO[str],
+    *, suppress_heading: bool = False,
 ) -> None:
     """Generic renderer for any of C.10 / C.11 / C.12 / C.13.
 
@@ -1583,8 +1618,9 @@ def render_grants_section(
         return
     from .config import GRANT_TOTAL_LABELS  # local: limit import surface
     code = SECTION_CODES[section]
-    heading = SECTION_HEADINGS[section]
-    _emit_section_heading(out, code, heading)
+    if not suppress_heading:
+        heading = SECTION_HEADINGS[section]
+        _emit_section_heading(out, code, heading)
 
     total_label = GRANT_TOTAL_LABELS.get(section)
     if total_label:
@@ -1943,14 +1979,16 @@ def render_postdocs_section(
     out: IO[str],
     under_review: Optional[list[UnderReview]] = None,
     under_review_index: Optional[dict[int, str]] = None,
+    *, suppress_heading: bool = False,
 ) -> None:
     """C.15 renderer. Empty list → section heading + indented "N/A" so the
     section still appears in the packet (Purdue convention) rather than
     being silently skipped like other empty sections.
     """
     code = SECTION_CODES["Postdocs and Visiting Scholars"]
-    heading = SECTION_HEADINGS["Postdocs and Visiting Scholars"]
-    _emit_section_heading(out, code, heading)
+    if not suppress_heading:
+        heading = SECTION_HEADINGS["Postdocs and Visiting Scholars"]
+        _emit_section_heading(out, code, heading)
 
     if not postdocs:
         emit_styled(out, "na_placeholder", "N/A", indent=720)
@@ -2030,6 +2068,7 @@ def render_service_section(
     section: Section,
     entries: list[ServiceEntry],
     out: IO[str],
+    *, suppress_heading: bool = False,
 ) -> None:
     """Generic renderer for C.23 / C.24 / C.25 / C.26.
 
@@ -2044,8 +2083,9 @@ def render_service_section(
     if not entries:
         return
     code = SECTION_CODES[section]
-    heading = SECTION_HEADINGS[section]
-    _emit_section_heading(out, code, heading)
+    if not suppress_heading:
+        heading = SECTION_HEADINGS[section]
+        _emit_section_heading(out, code, heading)
     intro = _section_intro(section)
     if intro:
         # Route through `_emit_intro_note` so the C.24 peer-review
@@ -2122,6 +2162,7 @@ def render_student_awards_section(
     section_key: Section,
     awards: list[StudentAward],
     out: IO[str],
+    *, suppress_heading: bool = False,
 ) -> None:
     """C.16.2.4 (undergrad) / C.16.3.3 (grad) student awards / fellowships.
 
@@ -2145,8 +2186,9 @@ def render_student_awards_section(
     if not indexed:
         return
     code = SECTION_CODES[section_key]
-    heading = SECTION_HEADINGS[section_key]
-    _emit_section_heading(out, code, heading)
+    if not suppress_heading:
+        heading = SECTION_HEADINGS[section_key]
+        _emit_section_heading(out, code, heading)
     indent = _hanging_indent_for_codes([ref for ref, _ in indexed])
     # Emit tier subheadings as we walk the indexed list — tier changes are
     # detected by previous-tier comparison so we don't re-sort here.
@@ -2174,6 +2216,7 @@ _UNDERGRAD_PATHWAY_TABLE_WIDTHS: list[int] = [1900, 2900, 3200, 1360]
 
 def render_undergrad_pathways_section(
     pathways: list[UndergradPathway], out: IO[str],
+    *, suppress_heading: bool = False,
 ) -> None:
     """C.16.2.2: Other Undergraduate Research Pathways — 4-column table.
 
@@ -2189,8 +2232,9 @@ def render_undergrad_pathways_section(
     if not pathways:
         return
     code = SECTION_CODES["Undergraduate Research Pathways"]
-    heading = SECTION_HEADINGS["Undergraduate Research Pathways"]
-    _emit_section_heading(out, code, heading)
+    if not suppress_heading:
+        heading = SECTION_HEADINGS["Undergraduate Research Pathways"]
+        _emit_section_heading(out, code, heading)
     table = RtfTable(_UNDERGRAD_PATHWAY_TABLE_WIDTHS)
     table.add_header(["Dates", "Pathway / activity", "Audience", "Participation"])
     for p in pathways:
@@ -2207,6 +2251,7 @@ def render_undergrad_pathways_section(
 
 def render_undergrad_products_section(
     products: list[UndergradProduct], out: IO[str],
+    *, suppress_heading: bool = False,
 ) -> None:
     """C.16.2.3: research products with undergraduate co-authors.
 
@@ -2225,8 +2270,9 @@ def render_undergrad_products_section(
     if not products:
         return
     code = SECTION_CODES["Undergraduate Research Products"]
-    heading = SECTION_HEADINGS["Undergraduate Research Products"]
-    _emit_section_heading(out, code, heading)
+    if not suppress_heading:
+        heading = SECTION_HEADINGS["Undergraduate Research Products"]
+        _emit_section_heading(out, code, heading)
     # Intro paragraph: explain the `U` superscript convention used
     # elsewhere in the packet, so the reader knows the section is a
     # summary, not a separate authorship claim.
@@ -2330,6 +2376,7 @@ def _render_courses_taught_note_row(
 
 def render_courses_taught_section(
     rows: list[CourseTaught], out: IO[str],
+    *, suppress_heading: bool = False,
 ) -> None:
     """C.17: 6-column table of course-sections taught with teaching scores.
 
@@ -2352,8 +2399,9 @@ def render_courses_taught_section(
     C.21 pattern). Mandatory section in the Purdue packet.
     """
     code = SECTION_CODES["Courses Taught"]
-    heading = SECTION_HEADINGS["Courses Taught"]
-    _emit_section_heading(out, code, heading)
+    if not suppress_heading:
+        heading = SECTION_HEADINGS["Courses Taught"]
+        _emit_section_heading(out, code, heading)
     if not rows:
         emit_styled(out, "na_placeholder", "N/A", indent=720)
         return
@@ -2427,6 +2475,7 @@ def render_courses_taught_section(
 
 def render_course_development_section(
     activities: list[CourseDevelopment], out: IO[str],
+    *, suppress_heading: bool = False,
 ) -> None:
     """C.18: numbered list of "Summary: description" entries — courses
     designed/re-designed + cross-cutting curricular contributions.
@@ -2435,8 +2484,9 @@ def render_course_development_section(
     pattern; the section is mandatory in the Purdue packet).
     """
     code = SECTION_CODES["Course Development"]
-    heading = SECTION_HEADINGS["Course Development"]
-    _emit_section_heading(out, code, heading)
+    if not suppress_heading:
+        heading = SECTION_HEADINGS["Course Development"]
+        _emit_section_heading(out, code, heading)
     if not activities:
         emit_styled(out, "na_placeholder", "N/A", indent=720)
         return
@@ -2448,16 +2498,22 @@ def render_course_development_section(
 
 def render_entrepreneurial_activities_section(
     activities: list[EntrepreneurialActivity], out: IO[str],
+    *, suppress_heading: bool = False,
 ) -> None:
     """C.20: numbered list of "Summary: description" entries.
 
     Empty list → section heading + indented "N/A" (same C.15-postdocs
     pattern; the section is mandatory in the Purdue packet even pre-
     revenue).
+
+    `suppress_heading=True` skips the `_emit_section_heading` call so
+    the body emit can be invoked from the walker, which emits the
+    heading via its own `### C.20 …` outline line.
     """
     code = SECTION_CODES["Entrepreneurial Activities"]
-    heading = SECTION_HEADINGS["Entrepreneurial Activities"]
-    _emit_section_heading(out, code, heading)
+    if not suppress_heading:
+        heading = SECTION_HEADINGS["Entrepreneurial Activities"]
+        _emit_section_heading(out, code, heading)
     if not activities:
         emit_styled(out, "na_placeholder", "N/A", indent=720)
         return
@@ -2471,6 +2527,7 @@ def render_technology_transfer_section(
     rows: list[TechnologyTransfer],
     paper_index: dict[str, str],
     out: IO[str],
+    *, suppress_heading: bool = False,
 ) -> None:
     """C.21: 6-column technology-transfer table.
 
@@ -2482,10 +2539,14 @@ def render_technology_transfer_section(
     `cited_publications` cell renders the resolved C.X.Y refs for each
     YAML title via `paper_index` (validation guarantees they all resolve).
     Unresolved at render time = bug — fall back to the raw title.
+
+    `suppress_heading=True` skips the section heading emit so the body
+    can be invoked from a walker directive.
     """
     code = SECTION_CODES["Technology Transfer"]
-    heading = SECTION_HEADINGS["Technology Transfer"]
-    _emit_section_heading(out, code, heading)
+    if not suppress_heading:
+        heading = SECTION_HEADINGS["Technology Transfer"]
+        _emit_section_heading(out, code, heading)
     if not rows:
         emit_styled(out, "na_placeholder", "N/A", indent=720)
         return
@@ -2525,6 +2586,7 @@ def _normalize_title_for_lookup(title: str) -> str:
 
 def render_software_products_section(
     products: list[SoftwareProduct], out: IO[str],
+    *, suppress_heading: bool = False,
 ) -> None:
     """C.22: itemized list of software products.
 
@@ -2536,8 +2598,9 @@ def render_software_products_section(
     if not products:
         return
     code = SECTION_CODES["Software Products"]
-    heading = SECTION_HEADINGS["Software Products"]
-    _emit_section_heading(out, code, heading)
+    if not suppress_heading:
+        heading = SECTION_HEADINGS["Software Products"]
+        _emit_section_heading(out, code, heading)
     # Explanatory note: this section only carries Davis-authored software
     # products. Other impact channels (papers that became tools, CVEs,
     # vulnerability disclosures, technical reports, magazine pieces) live
@@ -2999,7 +3062,6 @@ def write_rtf(
     section_prose: Optional[dict[str, list[str]]] = None,
     pending_proposals: Optional[list[Grant]] = None,
     sections_filter: Optional[set[str]] = None,
-    use_markdown_master: bool = False,
     ref_index: Optional[dict[str, str]] = None,
     macros: Optional[dict[str, str]] = None,
     outline_text: str = "",
@@ -3060,63 +3122,61 @@ def write_rtf(
         i: f"Section V, {ur_code}.{i + 1}|V.{ur_code}.{i + 1}"
         for i in range(len(under_review))
     }
-    # Markdown-master migration set. Section names whose emit has
-    # migrated to the walker (and is therefore SKIPPED in the legacy
-    # emit-order block when `--use-markdown-master` is set). Grows one
-    # entry per phase of the refactor.
-    #   Phase 2 (2026-06): Patents
-    #   Phase 3 (planned): Grants, Students, Service, Awards, …
-    # Design: docs/design/markdown-master-outline-refactor.md.
-    _MIGRATED_SECTIONS: set[str] = {"Patents"} if use_markdown_master else set()
+    # Phase 4 (2026-06-06): markdown-master walker is the SOLE emit
+    # path. The legacy emit-order block was deleted; outline.md drives
+    # document order and directives in `directives.DIRECTIVES` emit
+    # each section's body. Design: docs/design/markdown-master-outline-refactor.md.
 
-    # When the walker is engaged, build the RenderContext + register
-    # the tabular directives ONCE up front. The walker is invoked
-    # inline at each migrated section's legacy emit site (NOT at the
-    # end of the emit-order block) so document ordering is preserved
-    # while sections migrate one at a time. `_walker_ctx` is None when
-    # the flag is off; the inline call sites guard on `_MIGRATED_SECTIONS`
-    # membership so the None case is unreachable on the walker path.
-    _walker_ctx: Optional["RenderContext"] = None  # noqa: F821 — local fwd-ref
-    if use_markdown_master:
-        from .directives import register_tabular_directives
-        from .section_walker import RenderContext, walk_section_prose  # noqa: F401
-        register_tabular_directives(table_schemas_path)
-        _walker_ctx = RenderContext(
-            ref_index=dict(ref_index or {}),
-            macros=dict(macros or {}),
-            section_bibkey_index={
-                k: dict(v) for k, v in (section_bibkey_index or {}).items()
-            },
-            publications=publications,
-            patents=patents,
-            grants_as_pi=grants_as_pi,
-            grants_as_co_pi=grants_as_co_pi,
-            gifts=gifts,
-            internal_grants=internal_grants,
-            pending_proposals=pending_proposals,
-            graduate_students=graduate_students,
-            postdocs_visiting=postdocs_visiting,
-            undergraduate_students=undergraduate_students,
-            student_awards=student_awards,
-            invited_talks=invited_talks,
-            leadership_roles=leadership_roles,
-            media_appearances=media_appearances,
-            conference_presentations=conference_presentations,
-            software_products=software_products,
-            undergrad_pathways=undergrad_pathways,
-            undergrad_products=undergrad_products,
-            entrepreneurial_activities=entrepreneurial_activities,
-            technology_transfer=technology_transfer,
-            course_development=course_development,
-            courses_taught=courses_taught,
-            university_service=university_service,
-            profession_service=profession_service,
-            national_service=national_service,
-            other_service=other_service,
-            under_review=under_review,
-            candidate_info=candidate_info,
-            paper_index=paper_index,
-        )
+    # Build the walker context once up front. All emit paths flow
+    # through the walker; `_walker_ctx` is always set.
+    from .directives import register_tabular_directives
+    from .section_walker import (
+        RenderContext, extract_stanzas, walk_section_prose,
+    )
+    register_tabular_directives(table_schemas_path)
+    _outline_stanzas = extract_stanzas(outline_text)
+    _walker_ctx = RenderContext(
+        ref_index=dict(ref_index or {}),
+        macros=dict(macros or {}),
+        section_bibkey_index={
+            k: dict(v) for k, v in (section_bibkey_index or {}).items()
+        },
+        publications=publications,
+        patents=patents,
+        grants_as_pi=grants_as_pi,
+        grants_as_co_pi=grants_as_co_pi,
+        gifts=gifts,
+        internal_grants=internal_grants,
+        pending_proposals=pending_proposals,
+        graduate_students=graduate_students,
+        postdocs_visiting=postdocs_visiting,
+        undergraduate_students=undergraduate_students,
+        student_awards=student_awards,
+        invited_talks=invited_talks,
+        leadership_roles=leadership_roles,
+        media_appearances=media_appearances,
+        conference_presentations=conference_presentations,
+        software_products=software_products,
+        undergrad_pathways=undergrad_pathways,
+        undergrad_products=undergrad_products,
+        entrepreneurial_activities=entrepreneurial_activities,
+        technology_transfer=technology_transfer,
+        course_development=course_development,
+        courses_taught=courses_taught,
+        university_service=university_service,
+        profession_service=profession_service,
+        national_service=national_service,
+        other_service=other_service,
+        under_review=under_review,
+        candidate_info=candidate_info,
+        paper_index=paper_index,
+        extra={
+            "bib_entries": bib_entries or [],
+            "under_review_index": under_review_index,
+            "key_works": key_works,
+            "key_work_index": key_work_index,
+        },
+    )
 
     # Per-section emission filter (set by --sections CLI flag). Returns
     # True for every section when no filter is supplied (default — emit
@@ -3124,11 +3184,7 @@ def write_rtf(
     # in the filter OR any code in the filter is a parent of its code
     # (so `--sections C.16` also emits the C.16.2.3 / C.16.2.4 / C.16.3.3
     # sub-sections, useful for "give me all of mentoring" requests).
-    # Sections in `_MIGRATED_SECTIONS` are unconditionally suppressed
-    # so the walker is the sole emit path for them.
     def _emit(section_key: Section) -> bool:
-        if section_key in _MIGRATED_SECTIONS:
-            return False
         if sections_filter is None:
             return True
         code = SECTION_CODES[section_key]
@@ -3182,276 +3238,112 @@ def write_rtf(
         from .styles import format_stylesheet_block
         out.write(format_stylesheet_block())
 
-        # Section III front matter — A. GENERAL INFORMATION (A.1-A.7;
-        # A.6 absent by design). Emitted at the TOP per the Purdue
-        # tenure-template layout. Skipped silently when no candidate-info
-        # YAML was loaded (CLI `--candidate-info` flag).
-        if candidate_info is not None:
-            sections_in_front = {
-                "Identifiers", "Degrees", "Positions at Purdue",
-                "Positions at Other Institutions", "Licenses", "Awards",
-                "Professional Memberships",
-            }
-            # The full front matter is emitted when ANY of its sub-sections
-            # passes the --sections filter; rendering individual A.X
-            # sub-sections in isolation isn't supported (the renderer is
-            # one shot covering all of A.1-A.7).
-            if any(_emit(s) for s in sections_in_front):  # type: ignore[arg-type]
-                render_candidate_information_section(candidate_info, out)
+        # Phase 4 walker-driven emit. Every section goes through the
+        # walker; cross-cutting subgroup banners (PUBLISHED WORK /
+        # EXTERNAL VISIBILITY / RESEARCH GRANTS / MENTORING / LEARNING
+        # / TECHNOLOGY TRANSFER / SERVICE) emit inline before their
+        # walker calls because they map to `_emit_subgroup_heading`
+        # which doesn't have first-class markdown syntax (depth-2
+        # markdown headings route to `_emit_group_heading` instead).
+        # Per-section --sections filter is preserved via `_emit(name)`
+        # gating on each walker invocation.
+        def _walk(code: str) -> None:
+            walk_section_prose(_outline_stanzas[code], _walker_ctx, out)
 
-        # Section IV — B.1-B.5 self-evaluation. Emitted between Section
-        # III front matter and the C.X scholarly contributions block.
-        # Prose for each B.X auto-emits from `_section_prose` (loaded
-        # from `assets/section-prose.md`); B-section is skipped silently
-        # when no B.X entries are present in the prose dict.
-        if any(c in _section_prose for c in ("B.1", "B.2", "B.3", "B.4", "B.5")):
-            b_sections = {
-                "B1 Summary", "B2 Impact", "B3 Vision",
-                "B4 External Events", "B5 COVID Impact",
-            }
-            if any(_emit(s) for s in b_sections):  # type: ignore[arg-type]
-                render_self_evaluation_section(out)
+        # Section III — A.1-A.7 front matter.
+        if candidate_info is not None and any(_emit(s) for s in (  # type: ignore[arg-type]
+            "Identifiers", "Degrees", "Positions at Purdue",
+            "Positions at Other Institutions", "Licenses", "Awards",
+            "Professional Memberships",
+        )):
+            walk_section_prose("!CANDIDATE_INFO!\n", _walker_ctx, out)
 
-        # C.1 highlight section first (it's a curated promotion list);
-        # then the rest of SECTION_ORDER; then Section V, A.1 (Appendix:
-        # products under review) is emitted LAST so it reads as an
-        # appendix. (The "A.1" code here is reused from Section III's
-        # A.1 — see the disambiguation note at the top of write_rtf.)
-        # Group heading: "C. SUPPORTING INFORMATION" frames all C.X
-        # sections under it, matching the Purdue template's I/II/III
-        # outermost layer. Followed immediately by the "PUBLISHED WORK"
-        # subgroup that owns C.1-C.5. Only emitted when the section
-        # filter would allow ANY of the wrapped sections — the test for
-        # "Key Works" is a stand-in for "any C.X section is in scope."
+        # Section IV — B.1-B.5 self-evaluation.
+        if any(c in _section_prose for c in ("B.1", "B.2", "B.3", "B.4", "B.5")) \
+                and any(_emit(s) for s in (  # type: ignore[arg-type]
+                    "B1 Summary", "B2 Impact", "B3 Vision",
+                    "B4 External Events", "B5 COVID Impact",
+                )):
+            walk_section_prose("!SELF_EVALUATION!\n", _walker_ctx, out)
+
+        # Section C — SUPPORTING INFORMATION (group heading + PUBLISHED
+        # WORK subgroup frame C.1-C.5).
         if _emit("Key Works"):
             _emit_group_heading(out, "C.", "SUPPORTING INFORMATION")
             _emit_subgroup_heading(out, "PUBLISHED WORK")
-            render_key_works_section(key_works, paper_index, out)
-
-        # Generic-loop sections: C.2 Journals, C.3 Books and Chapters,
-        # C.4 Conferences and Workshops. C.5 ("Other publications") is
-        # SKIPPED in this loop and emitted via its own subcategory-aware
-        # renderer below.
-        for section in SECTION_ORDER:
-            # Special-section renderers handle these via their own data structures.
-            if section in (
-                # Section III front matter (handled by render_candidate_information_section).
-                "Identifiers", "Degrees", "Positions at Purdue",
-                "Positions at Other Institutions", "Licenses", "Awards",
-                "Professional Memberships",
-                "Under Review",
-                "Other publications and products",
-                "Key Works", "Invited Talks", "Leadership Roles",
-                "Media Appearances", "Conference Presentations",
-                "Grants PI", "Grants Co-PI", "Gifts", "Internal Grants",
-                "Graduate Students", "Postdocs and Visiting Scholars",
-                "Undergraduate Students",
-                "Undergraduate Research Products",
-                "Undergraduate Student Awards",
-                "Graduate Student Awards",
-                "Courses Taught",
-                "Course Development",
-                "Patents",
-                "Entrepreneurial Activities",
-                "Technology Transfer",
-                "Software Products",
-                "University Service", "Profession Service",
-                "National Service", "Other Service",
-            ):
-                continue
-            if not _emit(section):
-                continue
-            citations = publications.get(section, [])
-            if not citations:
-                continue
-            code = SECTION_CODES[section]
-            heading = SECTION_HEADINGS[section]
-            _emit_section_heading(out, code, heading)
-
-            expansion_done = set()
-            indent = _hanging_indent_for_codes(
-                _section_codes_up_to(code, len(citations))
-            )
-            phase = ""
-            for idx, cit in enumerate(citations, 1):
-                phase = _maybe_emit_career_phase_divider(
-                    out, cit.year, phase, indent,
-                )
-                body = render_citation(cit, expansion_done, paper_index, key_work_index)
-                _emit_list_item(out, f"{code}.{idx}", body, indent=indent)
-
-        # C.5 with subcategory subheadings; flat sequential numbering.
+            _walk("C.1")
+        if _emit("Journals"):
+            _walk("C.2")
+        if _emit("Books and Chapters"):
+            _walk("C.3")
+        if _emit("Conferences and Workshops"):
+            _walk("C.4")
         if _emit("Other publications and products"):
-            render_other_pubs_section(
-                publications.get("Other publications and products", []),
-                paper_index, key_work_index, out,
-            )
-        # Subgroup: EXTERNAL VISIBILITY frames C.6-C.13 (presentations,
-        # leadership, media, conference talks, grants, gifts).
+            _walk("C.5")
+
+        # Subgroup: EXTERNAL VISIBILITY frames C.6-C.9.
         if _emit("Invited Talks"):
             _emit_subgroup_heading(out, "EXTERNAL VISIBILITY")
-            render_invited_talks_section(invited_talks, out)
+            _walk("C.6")
         if _emit("Leadership Roles"):
-            render_leadership_section(leadership_roles, out)
+            _walk("C.7")
         if _emit("Media Appearances"):
-            render_media_appearances_section(media_appearances, out)
+            _walk("C.8")
         if _emit("Conference Presentations"):
-            render_conference_presentations_section(
-                conference_presentations, bib_entries, paper_index, out,
-            )
-        # Subgroup: RESEARCH GRANTS AND CONTRACTS AWARDED frames C.10-C.13
-        # (PI grants, Co-PI grants, gifts, internal grants).
+            _walk("C.9")
+
+        # Subgroup: RESEARCH GRANTS AND CONTRACTS AWARDED frames C.10-C.13.
         if _emit("Grants PI"):
             _emit_subgroup_heading(out, "RESEARCH GRANTS AND CONTRACTS AWARDED")
-            render_grants_section("Grants PI", grants_as_pi, out)
+            _walk("C.10")
         if _emit("Grants Co-PI"):
-            render_grants_section("Grants Co-PI", grants_as_co_pi, out)
+            _walk("C.11")
         if _emit("Gifts"):
-            render_grants_section("Gifts", gifts, out)
+            _walk("C.12")
         if _emit("Internal Grants"):
-            render_grants_section("Internal Grants", internal_grants, out)
-        # Sections C.14 → C.16 — kept in numeric (C.14, C.15, C.16) order
-        # so the bookmark stream emits tuple-monotone. C.16's entire
-        # subtree (C.16.1 / C.16.2 / C.16.2.* / C.16.3 / C.16.3.*) emits
-        # contiguously inside the C.16 block, before C.17.
-        # Subgroup: MENTORING frames C.14-C.16 (graduate students,
-        # postdocs, undergraduate research).
+            _walk("C.13")
+
+        # Subgroup: MENTORING frames C.14-C.16.
         if _emit("Graduate Students"):
             _emit_subgroup_heading(out, "MENTORING")
-            render_students_section(
-                "Graduate Students", graduate_students, bib_entries, paper_index, out,
-                under_review=under_review,
-                under_review_index=under_review_index,
-            )
+            _walk("C.14")
         if _emit("Postdocs and Visiting Scholars"):
-            render_postdocs_section(
-                postdocs_visiting, bib_entries, paper_index, out,
-                under_review=under_review,
-                under_review_index=under_review_index,
-            )
+            _walk("C.15")
         if _emit("Undergraduate Students"):
-            # C.16 base heading ALWAYS emits — the section is the
-            # umbrella for mentoring outline + sub-sections, not a
-            # student-table-only section like C.14. `render_students_section`
-            # below skips its own heading emit when the student list is
-            # empty (its return-early branch), so we emit the C.16
-            # heading explicitly here.
-            _emit_section_heading(
-                out, "C.16", SECTION_HEADINGS["Undergraduate Students"],
-            )
-            render_students_section(
-                "Undergraduate Students", undergraduate_students,
-                bib_entries, paper_index, out,
-                under_review=under_review,
-                under_review_index=under_review_index,
-                suppress_heading=True,
-            )
-            # C.16 outline: placeholders for prose subsections + inline
-            # emit of the auto-derived data sub-sections (C.16.2.3 / C.16.2.4
-            # / C.16.3.3) so the whole mentoring tree reads top-down per
-            # the user-supplied 260603 structure.
-            # Each `_emit_section_heading` call auto-pulls intro prose
-            # from the section_prose dict for the given code. Sections
-            # without an entry in `section-prose.md` render heading-only.
-            _emit_section_heading(out, "C.16.1", "Overview")
-            _emit_section_heading(
-                out, "C.16.2", "Undergraduate Student Mentoring",
-            )
-            _emit_section_heading(
-                out, "C.16.2.1", "Vertically Integrated Projects",
-            )
-            if _emit("Undergraduate Research Pathways"):
-                if undergrad_pathways:
-                    render_undergrad_pathways_section(undergrad_pathways, out)
-                else:
-                    # No YAML data yet → still emit the heading so the
-                    # C.16 outline reads correctly. Intro prose (if any)
-                    # auto-emits from section-prose.md via the heading.
-                    _emit_section_heading(
-                        out, "C.16.2.2",
-                        "Other Undergraduate Research Pathways",
-                    )
-            if _emit("Undergraduate Research Products"):
-                render_undergrad_products_section(undergrad_products, out)
-            if _emit("Undergraduate Student Awards"):
-                render_student_awards_section(
-                    "Undergraduate Student Awards", student_awards, out,
-                )
-            _emit_section_heading(
-                out, "C.16.3", "Graduate Student Mentoring",
-            )
-            _emit_section_heading(
-                out, "C.16.3.1", "Thesis Advising and Research Supervision",
-            )
-            if _emit("Graduate Student Awards"):
-                # Now C.16.3.2 (renumbered from C.16.3.3) — the
-                # "Research Leadership and Publications" sub-section
-                # was dropped per the 260605 outline revision.
-                render_student_awards_section(
-                    "Graduate Student Awards", student_awards, out,
-                )
-        # Subgroup: LEARNING frames C.17-C.18 (courses taught + course
-        # development).
+            _walk("C.16")
+
+        # Subgroup: LEARNING frames C.17-C.18.
         if _emit("Courses Taught"):
             _emit_subgroup_heading(out, "LEARNING")
-            render_courses_taught_section(courses_taught, out)
+            _walk("C.17")
         if _emit("Course Development"):
-            render_course_development_section(course_development, out)
-        # Subgroup: TECHNOLOGY TRANSFER frames C.19-C.22 (patents,
-        # entrepreneurial activities, technology transfer, software
-        # products). The subgroup heading emits regardless of the
-        # Patents migration so the downstream C.20-C.22 sections still
-        # appear under their banner.
-        if "Patents" in _MIGRATED_SECTIONS:
-            # Walker emits C.19 inline so the subgroup banner + C.19
-            # + the legacy-emit C.20-C.22 land in the canonical order.
-            # Phase 2: outline contains only the C.19 stanza so passing
-            # the full text is equivalent to passing a per-section
-            # slice. Phase 3 will add a per-code stanza-extraction
-            # helper when multiple stanzas live in the outline.
-            assert _walker_ctx is not None  # invariant: built above when flag set
+            _walk("C.18")
+
+        # Subgroup: TECHNOLOGY TRANSFER frames C.19-C.22.
+        if _emit("Patents"):
             _emit_subgroup_heading(out, "TECHNOLOGY TRANSFER")
-            walk_section_prose(outline_text, _walker_ctx, out)
-        elif _emit("Patents"):
-            _emit_subgroup_heading(out, "TECHNOLOGY TRANSFER")
-            render_patents_section(patents, out)
+            _walk("C.19")
         if _emit("Entrepreneurial Activities"):
-            render_entrepreneurial_activities_section(entrepreneurial_activities, out)
+            _walk("C.20")
         if _emit("Technology Transfer"):
-            render_technology_transfer_section(
-                technology_transfer, paper_index, out,
-            )
+            _walk("C.21")
         if _emit("Software Products"):
-            render_software_products_section(software_products, out)
-        # Subgroup: SERVICE frames C.23-C.26 (Purdue, profession, state/
-        # nation, other).
+            _walk("C.22")
+
+        # Subgroup: SERVICE frames C.23-C.26.
         if _emit("University Service"):
             _emit_subgroup_heading(out, "SERVICE")
-            render_service_section("University Service", university_service, out)
+            _walk("C.23")
         if _emit("Profession Service"):
-            render_service_section("Profession Service", profession_service, out)
+            _walk("C.24")
         if _emit("National Service"):
-            render_service_section("National Service", national_service, out)
+            _walk("C.25")
         if _emit("Other Service"):
-            render_service_section("Other Service", other_service, out)
-        # Appendix — Section V. Two sub-sections, both emitted at the
-        # very end so the C-section numbering above is intact and the
-        # appendix reads as a contiguous tail block:
-        #   * Section V, A.1 — products under review
-        #   * Section V, A.2 — pending proposals (status: pending grants
-        #                       routed here from C.10 / C.11 at build time)
-        # The Roman-numeral section heading is emitted IF EITHER
-        # sub-section will fire — so the appendix is announced as a
-        # named region rather than appearing as bare A.1 entries.
+            _walk("C.26")
+
+        # Section V appendix (under-review + pending proposals).
         if _emit("Under Review") or _emit("Pending Proposals"):
-            _emit_roman_section_heading(
-                out, "V",
-                "Supporting Documentation for Pending Publications.",
-            )
-        if _emit("Under Review"):
-            render_under_review_section(under_review, out)
-        if _emit("Pending Proposals"):
-            render_pending_proposals_section(pending_proposals or [], out)
+            walk_section_prose("!V_APPENDIX!\n", _walker_ctx, out)
         out.write("}")
     # Finalize: convert ref-link sentinels into RTF HYPERLINK fields, then
     # write to disk.

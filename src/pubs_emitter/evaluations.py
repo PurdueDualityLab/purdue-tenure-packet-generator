@@ -26,7 +26,10 @@ import csv
 import logging
 import re
 from collections import defaultdict
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
+
+if TYPE_CHECKING:
+    from .types import CourseTaught
 
 log = logging.getLogger(__name__)
 

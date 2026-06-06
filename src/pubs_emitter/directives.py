@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import IO, Callable
 
 from .section_walker import RenderContext
+from .types import Section
 
 
 log = logging.getLogger(__name__)
@@ -51,6 +52,339 @@ def _directive_hello(ctx: RenderContext, out: IO[str]) -> None:
     confirm it appears in the rendered RTF, remove).
     """
     out.write("\\pard !HELLO! directive fired\\par\n")
+
+
+def _directive_entrepreneurial_activities(
+    ctx: RenderContext, out: IO[str],
+) -> None:
+    """C.20: dispatch the legacy renderer's body emit."""
+    from .rtf import render_entrepreneurial_activities_section
+    render_entrepreneurial_activities_section(
+        ctx.entrepreneurial_activities or [], out, suppress_heading=True,
+    )
+
+
+def _directive_technology_transfer(ctx: RenderContext, out: IO[str]) -> None:
+    """C.21: dispatch the legacy renderer's body emit."""
+    from .rtf import render_technology_transfer_section
+    render_technology_transfer_section(
+        ctx.technology_transfer or [], ctx.paper_index, out,
+        suppress_heading=True,
+    )
+
+
+def _directive_software_products(ctx: RenderContext, out: IO[str]) -> None:
+    """C.22: dispatch the legacy renderer's body emit."""
+    from .rtf import render_software_products_section
+    render_software_products_section(
+        ctx.software_products or [], out, suppress_heading=True,
+    )
+
+
+def _directive_courses_taught(ctx: RenderContext, out: IO[str]) -> None:
+    """C.17: dispatch the legacy renderer's body emit."""
+    from .rtf import render_courses_taught_section
+    render_courses_taught_section(
+        ctx.courses_taught or [], out, suppress_heading=True,
+    )
+
+
+def _directive_course_development(ctx: RenderContext, out: IO[str]) -> None:
+    """C.18: dispatch the legacy renderer's body emit."""
+    from .rtf import render_course_development_section
+    render_course_development_section(
+        ctx.course_development or [], out, suppress_heading=True,
+    )
+
+
+def _directive_invited_talks(ctx: RenderContext, out: IO[str]) -> None:
+    """C.6: dispatch the legacy renderer's body emit."""
+    from .rtf import render_invited_talks_section
+    render_invited_talks_section(
+        ctx.invited_talks or [], out, suppress_heading=True,
+    )
+
+
+def _directive_leadership_roles(ctx: RenderContext, out: IO[str]) -> None:
+    """C.7: dispatch the legacy renderer's body emit."""
+    from .rtf import render_leadership_section
+    render_leadership_section(
+        ctx.leadership_roles or [], out, suppress_heading=True,
+    )
+
+
+def _directive_media_appearances(ctx: RenderContext, out: IO[str]) -> None:
+    """C.8: dispatch the legacy renderer's body emit."""
+    from .rtf import render_media_appearances_section
+    render_media_appearances_section(
+        ctx.media_appearances or [], out, suppress_heading=True,
+    )
+
+
+def _directive_conference_presentations(
+    ctx: RenderContext, out: IO[str],
+) -> None:
+    """C.9: dispatch the legacy renderer's body emit."""
+    from .rtf import render_conference_presentations_section
+    render_conference_presentations_section(
+        ctx.conference_presentations or [],
+        ctx.extra.get("bib_entries", []),
+        ctx.paper_index, out, suppress_heading=True,
+    )
+
+
+def _directive_grants_pi(ctx: RenderContext, out: IO[str]) -> None:
+    from .rtf import render_grants_section
+    render_grants_section(
+        "Grants PI", ctx.grants_as_pi or [], out, suppress_heading=True,
+    )
+
+
+def _directive_grants_copi(ctx: RenderContext, out: IO[str]) -> None:
+    from .rtf import render_grants_section
+    render_grants_section(
+        "Grants Co-PI", ctx.grants_as_co_pi or [], out, suppress_heading=True,
+    )
+
+
+def _directive_gifts(ctx: RenderContext, out: IO[str]) -> None:
+    from .rtf import render_grants_section
+    render_grants_section(
+        "Gifts", ctx.gifts or [], out, suppress_heading=True,
+    )
+
+
+def _directive_internal_grants(ctx: RenderContext, out: IO[str]) -> None:
+    from .rtf import render_grants_section
+    render_grants_section(
+        "Internal Grants", ctx.internal_grants or [], out, suppress_heading=True,
+    )
+
+
+def _directive_university_service(ctx: RenderContext, out: IO[str]) -> None:
+    from .rtf import render_service_section
+    render_service_section(
+        "University Service", ctx.university_service or [], out,
+        suppress_heading=True,
+    )
+
+
+def _directive_profession_service(ctx: RenderContext, out: IO[str]) -> None:
+    from .rtf import render_service_section
+    render_service_section(
+        "Profession Service", ctx.profession_service or [], out,
+        suppress_heading=True,
+    )
+
+
+def _directive_national_service(ctx: RenderContext, out: IO[str]) -> None:
+    from .rtf import render_service_section
+    render_service_section(
+        "National Service", ctx.national_service or [], out,
+        suppress_heading=True,
+    )
+
+
+def _directive_other_service(ctx: RenderContext, out: IO[str]) -> None:
+    from .rtf import render_service_section
+    render_service_section(
+        "Other Service", ctx.other_service or [], out,
+        suppress_heading=True,
+    )
+
+
+def _directive_graduate_students(ctx: RenderContext, out: IO[str]) -> None:
+    """C.14: dispatch the legacy renderer's body emit."""
+    from .rtf import render_students_section
+    render_students_section(
+        "Graduate Students", ctx.graduate_students or [],
+        ctx.extra.get("bib_entries", []), ctx.paper_index, out,
+        under_review=ctx.under_review,
+        under_review_index=ctx.extra.get("under_review_index"),
+        suppress_heading=True,
+    )
+
+
+def _directive_candidate_info(ctx: RenderContext, out: IO[str]) -> None:
+    """Section III (A.1-A.7) — bundled directive. Skipped when no
+    candidate_info YAML loaded. The III + A. + A.X heading sequence is
+    template-mandated; the directive emits it as one atomic unit so the
+    `suppress_page_break` + `restart_numbering` flags stay encapsulated.
+    """
+    if ctx.candidate_info is None:
+        return
+    from .rtf import render_candidate_information_section
+    render_candidate_information_section(ctx.candidate_info, out)
+
+
+def _directive_self_evaluation(ctx: RenderContext, out: IO[str]) -> None:
+    """Section IV (B.1-B.5) — bundled directive. Skipped when no B.X
+    entries exist in section-prose. The B. group heading + each B.X
+    sub-heading emit together; prose auto-fires from the prose dict
+    via `_emit_section_heading`."""
+    from .rtf import _section_prose, render_self_evaluation_section
+    if not any(c in _section_prose for c in ("B.1", "B.2", "B.3", "B.4", "B.5")):
+        return
+    render_self_evaluation_section(out)
+
+
+def _directive_v_appendix(ctx: RenderContext, out: IO[str]) -> None:
+    """Section V — bundled appendix directive.
+
+    Emits the Roman-numeral V. heading IF either A.1 (under-review) or
+    A.2 (pending proposals) will fire, then emits each sub-section in
+    order. Matches the legacy conditional behavior so an empty appendix
+    silently emits nothing (no orphan Roman heading)."""
+    from .rtf import (
+        _emit_roman_section_heading,
+        render_pending_proposals_section,
+        render_under_review_section,
+    )
+    under_review = ctx.under_review or []
+    pending = ctx.pending_proposals or []
+    if not under_review and not pending:
+        return
+    _emit_roman_section_heading(
+        out, "V", "Supporting Documentation for Pending Publications.",
+    )
+    if under_review:
+        render_under_review_section(under_review, out)
+    if pending:
+        render_pending_proposals_section(pending, out)
+
+
+def _directive_key_works(ctx: RenderContext, out: IO[str]) -> None:
+    """C.1: dispatch the legacy renderer's body emit."""
+    from .rtf import render_key_works_section
+    render_key_works_section(
+        ctx.extra.get("key_works", []), ctx.paper_index, out,
+        suppress_heading=True,
+    )
+
+
+def _directive_other_publications(ctx: RenderContext, out: IO[str]) -> None:
+    """C.5: dispatch the legacy renderer's body emit."""
+    from .rtf import render_other_pubs_section
+    publications = ctx.publications or {}
+    citations = publications.get("Other publications and products", [])
+    render_other_pubs_section(
+        citations, ctx.paper_index, ctx.extra.get("key_work_index", {}), out,
+        suppress_heading=True,
+    )
+
+
+def _emit_generic_publications_body(
+    section_name: Section, ctx: RenderContext, out: IO[str],
+) -> None:
+    """Helper: the generic-loop body for C.2 / C.3 / C.4 — heading is
+    emitted by the walker via the outline markdown line; this just
+    emits the citation list at the section's hanging indent."""
+    from .config import SECTION_CODES
+    from .rtf import (
+        _emit_list_item, _hanging_indent_for_codes, _maybe_emit_career_phase_divider,
+        _section_codes_up_to, render_citation,
+    )
+    publications = ctx.publications or {}
+    citations = publications.get(section_name, [])
+    if not citations:
+        return
+    code = SECTION_CODES[section_name]
+    expansion_done: set[str] = set()
+    indent = _hanging_indent_for_codes(
+        _section_codes_up_to(code, len(citations))
+    )
+    phase = ""
+    for idx, cit in enumerate(citations, 1):
+        phase = _maybe_emit_career_phase_divider(
+            out, cit.year, phase, indent,
+        )
+        body = render_citation(
+            cit, expansion_done, ctx.paper_index,
+            ctx.extra.get("key_work_index", {}),
+        )
+        _emit_list_item(out, f"{code}.{idx}", body, indent=indent)
+
+
+def _directive_journals(ctx: RenderContext, out: IO[str]) -> None:
+    """C.2: generic-loop body."""
+    _emit_generic_publications_body("Journals", ctx, out)
+
+
+def _directive_books_and_chapters(ctx: RenderContext, out: IO[str]) -> None:
+    """C.3: generic-loop body."""
+    _emit_generic_publications_body("Books and Chapters", ctx, out)
+
+
+def _directive_conferences_and_workshops(
+    ctx: RenderContext, out: IO[str],
+) -> None:
+    """C.4: generic-loop body."""
+    _emit_generic_publications_body("Conferences and Workshops", ctx, out)
+
+
+def _directive_undergrad_students_table(
+    ctx: RenderContext, out: IO[str],
+) -> None:
+    """C.16 body: students table for undergraduates."""
+    from .rtf import render_students_section
+    render_students_section(
+        "Undergraduate Students", ctx.undergraduate_students or [],
+        ctx.extra.get("bib_entries", []), ctx.paper_index, out,
+        under_review=ctx.under_review,
+        under_review_index=ctx.extra.get("under_review_index"),
+        suppress_heading=True,
+    )
+
+
+def _directive_undergrad_pathways(ctx: RenderContext, out: IO[str]) -> None:
+    """C.16.2.2 body."""
+    from .rtf import render_undergrad_pathways_section
+    render_undergrad_pathways_section(
+        ctx.undergrad_pathways or [], out, suppress_heading=True,
+    )
+
+
+def _directive_undergrad_products(ctx: RenderContext, out: IO[str]) -> None:
+    """C.16.2.3 body."""
+    from .rtf import render_undergrad_products_section
+    render_undergrad_products_section(
+        ctx.undergrad_products or [], out, suppress_heading=True,
+    )
+
+
+def _directive_undergrad_awards(ctx: RenderContext, out: IO[str]) -> None:
+    """C.16.2.4 body."""
+    from .rtf import render_student_awards_section
+    render_student_awards_section(
+        "Undergraduate Student Awards", ctx.student_awards or [], out,
+        suppress_heading=True,
+    )
+
+
+def _directive_graduate_awards(ctx: RenderContext, out: IO[str]) -> None:
+    """C.16.3.2 body."""
+    from .rtf import render_student_awards_section
+    render_student_awards_section(
+        "Graduate Student Awards", ctx.student_awards or [], out,
+        suppress_heading=True,
+    )
+
+
+def _directive_postdocs(ctx: RenderContext, out: IO[str]) -> None:
+    """C.15: dispatch the legacy renderer's body emit. The legacy
+    renderer needs bib_entries + under_review back-refs; these come
+    from `ctx.extra` since they aren't currently top-level on
+    RenderContext. (Phase 4 may promote them.)"""
+    from .rtf import render_postdocs_section
+    render_postdocs_section(
+        ctx.postdocs_visiting or [],
+        ctx.extra.get("bib_entries", []),
+        ctx.paper_index,
+        out,
+        under_review=ctx.under_review,
+        under_review_index=ctx.extra.get("under_review_index"),
+        suppress_heading=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +496,38 @@ def _make_tabular_directive(name: str, schema: dict) -> Callable[[RenderContext,
 # loader extends it at import time below.
 DIRECTIVES: dict[str, Callable[[RenderContext, IO[str]], None]] = {
     "HELLO": _directive_hello,
+    "CANDIDATE_INFO": _directive_candidate_info,
+    "SELF_EVALUATION": _directive_self_evaluation,
+    "V_APPENDIX": _directive_v_appendix,
+    "KEY_WORKS": _directive_key_works,
+    "JOURNALS": _directive_journals,
+    "BOOKS_AND_CHAPTERS": _directive_books_and_chapters,
+    "CONFERENCES_AND_WORKSHOPS": _directive_conferences_and_workshops,
+    "OTHER_PUBLICATIONS": _directive_other_publications,
+    "INVITED_TALKS": _directive_invited_talks,
+    "LEADERSHIP_ROLES": _directive_leadership_roles,
+    "MEDIA_APPEARANCES": _directive_media_appearances,
+    "CONFERENCE_PRESENTATIONS": _directive_conference_presentations,
+    "GRANTS_PI": _directive_grants_pi,
+    "GRANTS_COPI": _directive_grants_copi,
+    "GIFTS": _directive_gifts,
+    "INTERNAL_GRANTS": _directive_internal_grants,
+    "UNIVERSITY_SERVICE": _directive_university_service,
+    "PROFESSION_SERVICE": _directive_profession_service,
+    "NATIONAL_SERVICE": _directive_national_service,
+    "OTHER_SERVICE": _directive_other_service,
+    "GRADUATE_STUDENTS": _directive_graduate_students,
+    "UNDERGRAD_STUDENTS_TABLE": _directive_undergrad_students_table,
+    "UNDERGRAD_PATHWAYS": _directive_undergrad_pathways,
+    "UNDERGRAD_PRODUCTS": _directive_undergrad_products,
+    "UNDERGRAD_AWARDS": _directive_undergrad_awards,
+    "GRADUATE_AWARDS": _directive_graduate_awards,
+    "POSTDOCS_VISITING": _directive_postdocs,
+    "COURSES_TAUGHT": _directive_courses_taught,
+    "COURSE_DEVELOPMENT": _directive_course_development,
+    "ENTREPRENEURIAL_ACTIVITIES": _directive_entrepreneurial_activities,
+    "TECHNOLOGY_TRANSFER": _directive_technology_transfer,
+    "SOFTWARE_PRODUCTS": _directive_software_products,
 }
 
 

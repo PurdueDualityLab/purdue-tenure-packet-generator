@@ -138,7 +138,6 @@ SECTION_ORDER: list[Section] = [
     "Postdocs and Visiting Scholars",
     "Undergraduate Students",
     "Undergraduate Research Pathways",
-    "Undergraduate Research Pathways",
     "Undergraduate Research Products",
     "Undergraduate Student Awards",
     "Graduate Student Awards",

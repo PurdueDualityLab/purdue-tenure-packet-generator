@@ -288,34 +288,89 @@ None of the existing renderers are touched; no section is migrated.
 runs without effect on the rendered RTF (the walker is engaged but
 nothing's migrated to it). Existing 571-test suite still green.
 
-### Phase 2 — Pilot section migration (C.19 Patents)
+**Status (2026-06-05): LANDED.** 13 walker tests green; existing suite
+unchanged. Live build with the flag is byte-identical to flag-off.
 
-**Scope:** Migrate C.19 Patents — the cleanest single-table section
-with no decomposition needed. Verify the round trip end-to-end.
+### Phase 2 — Pilot section migration (C.19 Patents) + Q6 brought forward
+
+**Scope:** Migrate C.19 Patents AND ship the declarative
+tabular-directive substrate (Q6) so the patents migration uses the
+end-state pattern, not a temporary Python-bodied directive that would
+be re-written in Phase 5/6. Brought forward at the candidate's
+direction so the user-DIY-for-custom-sections story is validated by
+the pilot, not deferred.
 
 **Deliverables:**
 
-- Add `!PATENTS_TABLE!` to `DIRECTIVES`, calling the existing
-  `render_patents_section` body (refactored to take a list of patents
-  and emit just the table, no heading).
-- Add `### C.19 List issued U.S. international patents …` + the
-  `!PATENTS_TABLE!` directive to `section-prose.md`.
-- Remove C.19's emit entry from `write_rtf`'s emit-order block (gated
-  on `--use-markdown-master`).
-- The C.19 emit now flows through the walker.
+- **New: `assets/table-schemas.yaml`** — declarative column-mapping +
+  widths + per-column escape policy + bookmark-column annotation. One
+  top-level entry per `!*_TABLE!` directive. The PATENTS_TABLE entry
+  carries the 5 columns + widths that match the legacy patents emit.
+- **New: `assets/outline.md`** — markdown-master walker source. Phase 2
+  contains only the `### C.19 …` stanza + `!PATENTS_TABLE!` directive.
+  Read by `--outline` (default `assets/outline.md`); future phases
+  append more stanzas.
+- **`builders.load_table_schemas` + `_validate_table_schema_entry`** —
+  loader with explicit validation: rejects non-mapping root, missing
+  required keys (`source`, `code_key`, `columns`, per-column `field` /
+  `header` / `width`), unknown top-level keys, out-of-range
+  `bookmark_column`, non-positive `width`, unsupported `escape`
+  policies. Missing-file is permissive; unknown directive at walker
+  emit time fails loud via the existing path.
+- **`directives._make_tabular_directive(name, schema)`** — factory
+  that returns a `(ctx, out) → None` closure: reads `ctx.<source>`,
+  builds an RtfTable from the column spec, projects per-row attributes
+  onto cells, applies the per-column escape policy, optionally prefixes
+  the configured bookmark column with the bookmarked entry-code anchor
+  (`{bold C.19.N.} ${value}` shape). Renders the table + trailing
+  `\pard\par` exactly like legacy `render_patents_section`.
+- **`directives.register_tabular_directives(path)`** — loads the
+  schema file and registers one entry per top-level key into
+  `DIRECTIVES`. Called at module import (production default) AND from
+  `write_rtf` when `--use-markdown-master` engages (so a non-default
+  `--table-schemas` path takes effect).
+- **`rtf.write_rtf` accepts `outline_text`, `table_schemas_path`,
+  `use_markdown_master`, `ref_index`, `macros`, `section_bibkey_index`
+  kwargs.** Builds a fully-populated `RenderContext` up front when the
+  flag is set; gates the legacy `render_patents_section` call site on
+  a `_MIGRATED_SECTIONS` set; at the legacy Patents site, walker emits
+  inline so the C.19 chunk lands at the correct document position
+  (TECH TRANSFER subgroup banner still emits from the legacy site;
+  walker handles only the C.19 section heading + table).
+- **CLI flags wired** — `--use-markdown-master`, `--outline`,
+  `--table-schemas`.
 
 **Tests (Phase 2):**
 
 | Test | Asserts |
 |---|---|
-| `test_patents_emit_via_walker` | With `--use-markdown-master`, the patent table appears in the same place as before |
-| `test_patents_byte_identical_modulo_whitespace` | Walker output ≈ legacy output for C.19 (whitespace-normalized diff is empty) |
-| `test_patents_bookmark_present` | `\bkmkstart C_19` and per-row `\bkmkstart C_19_N` bookmarks still emit |
-| `test_patents_cross_ref_resolves` | An `@C.19.3` ref elsewhere in the doc still resolves to the C.19.3 patent row |
+| `TestLoadTableSchemas.test_load_missing_path_returns_empty` | Loader is permissive on missing path / missing file |
+| `TestLoadTableSchemas.test_load_valid_schema_returns_normalized` | Round-trip: known PATENTS_TABLE shape loads cleanly |
+| `TestLoadTableSchemas.test_load_rejects_non_mapping_root` | Sys-exit on bad root |
+| `TestLoadTableSchemas.test_load_rejects_missing_required_column_keys` | Sys-exit on column missing `width` |
+| `TestLoadTableSchemas.test_load_rejects_unknown_escape_policy` | Sys-exit on `escape: html_encode` |
+| `TestLoadTableSchemas.test_load_rejects_bookmark_column_out_of_range` | Sys-exit on out-of-range index |
+| `TestLoadTableSchemas.test_load_rejects_non_positive_width` | Sys-exit on `width: 0` |
+| `TestLoadTableSchemas.test_load_rejects_unknown_top_level_key` | Sys-exit on typo'd top-level key |
+| `TestTabularDirectiveFactory.test_empty_source_emits_nothing` | Empty `ctx.<source>` → no output (matches legacy skip-when-empty) |
+| `TestTabularDirectiveFactory.test_emits_header_and_row_with_bookmarked_entry_code` | Header + first-column bookmark anchor `\bkmkstart C_19_1` |
+| `TestTabularDirectiveFactory.test_raw_escape_passes_through_rtf_control_codes` | `escape: raw` preserves pre-formatted `\b ... \b0` |
+| `TestTabularDirectiveFactory.test_unknown_escape_policy_raises` | Runtime defense-in-depth for bad policies |
+| `TestSchemaAutoRegistration.test_register_against_fixture_path_overrides_production` | `register_tabular_directives(path)` swaps the registry |
+| `TestSchemaAutoRegistration.test_production_schema_registers_patents_table` | Production `assets/table-schemas.yaml` is loaded at import |
+| `TestC19WalkerVsLegacyParity.test_c19_emit_byte_identical` | End-to-end: walker C.19 == legacy C.19 byte-for-byte |
 
-**Exit criteria:** Walker-emitted C.19 is functionally identical to
-legacy emit. `--use-markdown-master` becomes the recommended flag for
-candidates piloting the new behavior.
+**Exit criteria:** Walker-emitted C.19 is byte-identical to legacy
+emit (test + live build verified, 2026-06-05). Adding a new
+simple-table section is now (a) one YAML stanza in
+`assets/table-schemas.yaml` + (b) one `!NAME!` line in
+`assets/outline.md` — zero Python.
+
+**Status (2026-06-05): LANDED.** 15 Phase-2 tests pass; full suite at
+608 (was 572 pre-refactor + 13 Phase-1 walker + 7 `@bibkey^C.1`
+override + 2 `NUM_UNDERGRADUATE_COAUTHORS` + 1 conn-default macro +
+15 Phase-2 tabular = 610; minus 2 net from test consolidation = 608).
+Live build with `--use-markdown-master` byte-identical to flag-off.
 
 ### Phase 3 — Bulk section migrations
 
@@ -367,6 +422,36 @@ lives at the top of `directives.py`):
 emit via the walker. `--use-markdown-master` produces byte-identical
 output to legacy modulo whitespace for every non-catchall section.
 
+**Status (2026-06-06): LANDED.** Every C.X section (1-26) plus A.X
+front matter, B.X self-evaluation, and the V appendix migrated. The
+catchall carve-out (C.5 / C.16 / C.26) was NOT honored — those also
+moved to the walker successfully via in-place Python directives,
+demonstrating that the catchall framing was over-cautious for this
+codebase. Per-section migration pattern that emerged in practice:
+
+  1. Add `suppress_heading: bool = False` parameter to the existing
+     `render_X` function (so the legacy heading emit can be bypassed).
+  2. Register a Python directive `_directive_X(ctx, out)` in
+     `directives.py` that calls `render_X(..., suppress_heading=True)`.
+  3. Add `### C.N Heading text.` + `!X_DIRECTIVE!` to
+     `assets/outline.md` at the section's canonical position.
+  4. Section-level subgroup banners (PUBLISHED WORK / EXTERNAL
+     VISIBILITY / etc.) emit from `write_rtf` immediately before the
+     walker invocation for the first section under their frame.
+
+The "bundled directive" variant emerged for non-list-of-sections
+chunks where template-mandated headings carry special flags
+(`suppress_page_break`, `restart_numbering`): one directive bundles
+the entire subtree.
+
+  * `!CANDIDATE_INFO!` — III. + A. group + A.1-A.7 sequence.
+  * `!SELF_EVALUATION!` — B. group + B.1-B.5 sequence.
+  * `!V_APPENDIX!` — V. Roman + V.A.1 + V.A.2.
+
+Live build byte-identical to pre-refactor at every checkpoint along
+the way (one verify per migration); the final Phase-3 verify covered
+the complete document.
+
 ### Phase 4 — Cleanup + flag flip
 
 **Scope:** Make `--use-markdown-master` the default behavior. Delete
@@ -395,6 +480,16 @@ headings; only the keys directives still look up remain). Shrink
 | `test_section_headings_only_has_directive_keys` | Every key in `SECTION_HEADINGS` is referenced by an entry in `DIRECTIVES`; orphan keys flag as dead |
 | `test_no_legacy_flag_in_cli` | `--use-legacy-emit` is no longer in `cli.py`'s argparse |
 | `test_e2e_byte_identical_to_pre_refactor` | Whole-document emit matches a pinned-pre-refactor RTF byte-for-byte modulo whitespace |
+
+**Status (2026-06-06): LANDED.** `write_rtf` body collapsed from the
+~250-line emit-order block to ~70 lines of walker invocations gated
+by `_emit()` for `--sections` filter support. The legacy
+`use_markdown_master=False` path now raises `ValueError` (one-release
+deprecation; the flag itself can be deleted in a follow-up cleanup).
+The CLI passes `use_markdown_master=True` unconditionally. Suite is
+607 passing (608 → 607 because the Phase-2 walker-vs-legacy parity
+test is now obsolete — there's no legacy path to compare against).
+Live build still byte-identical to pre-refactor at every section.
 
 **Exit criteria:** All 4 phases shipped. Walker is the only render
 path. Legacy emit-order block deleted.
@@ -469,13 +564,13 @@ programming errors (directive bug or missing data) and silent
 fallback would mask them. Same fail-loud semantics as the existing
 @-ref / #macro pipeline.
 
-**Q6: Declarative table structure (FUTURE; design space to ponder).**
-The directive model proposed above leaves each table's
+**Q6: Declarative table structure (LANDED in Phase 2, 2026-06-05).**
+The directive model originally proposed left each table's
 **column-mapping** in Python: `add_header([...])` and `add_row([
-escape_rtf(p.dates), escape_rtf(p.activity), ...])` are hard-coded
-inside per-section renderers. That means a candidate who wants a
+escape_rtf(p.dates), escape_rtf(p.activity), ...])` were hard-coded
+inside per-section renderers. That meant a candidate who wanted a
 genuinely new section ("Books with audiobook companions" with custom
-columns) still has to write Python — register a new directive AND
+columns) still had to write Python — register a new directive AND
 implement the renderer.
 
 The natural next step: expose **table structure declaratively** in a
@@ -510,13 +605,38 @@ Scope this carries:
   schema-expressible.
 
 Trade-off: declarative descriptors are more verbose than Python for
-gnarly cases. Lean: **defer to a follow-up phase (Phase 5 or 6),** but
-pin the design space here so the directive registry's API doesn't
-paint into a Python-only corner.
+gnarly cases.
 
-The candidate's framing for this: "the user should be able to DIY
-their own custom sections for the 'custom' parts" — same instinct as
-markdown-mastering the outline, applied to the table layer.
+**Resolution (2026-06-05):** Brought forward into Phase 2 alongside
+the C.19 Patents pilot rather than deferred. The candidate's framing
+— "the user should be able to DIY their own custom sections for the
+'custom' parts" — was the decisive case: shipping a Python-bodied
+`!PATENTS_TABLE!` in Phase 2 would have written off the user-DIY
+story for the duration of the migration, and the substrate cost
+turned out to be ~150 LoC including schema validation. Phase 2
+implementation:
+
+- `assets/table-schemas.yaml` — declarative column-mapping with
+  `field` / `header` / `width` / `escape` per column, plus an
+  optional `bookmark_column` index for the row-leader anchor and a
+  `code_key` naming the SECTION_CODES entry that becomes the row code
+  prefix.
+- `builders.load_table_schemas` — fail-loud at load time on every
+  structural problem (non-mapping root, missing required keys,
+  unknown keys, out-of-range bookmark_column, non-positive widths,
+  unsupported escape policies).
+- `directives._make_tabular_directive(name, schema)` — closure
+  factory returning the `(ctx, out) → None` shape every directive
+  uses. The PATENTS_TABLE directive auto-registers from the schema
+  at module import.
+
+Bespoke tables (grant totals, tier subheadings, condition-driven
+cells) continue to register as Python directives; the registry shape
+accommodates both paths by construction.
+
+Net effect: a new simple-table section is now (a) one YAML stanza in
+`assets/table-schemas.yaml` + (b) one `!NAME!` line in
+`assets/outline.md` — zero Python.
 
 **Q7: Embedded images for supporting documentation (V.A.1 under-review
 papers + general catchall use).** Section V.A.1 lists papers currently

@@ -47,6 +47,8 @@ from pubs_emitter.types import (
     OtherPosition,
     PostdocVisiting,
     ProfessionalMembership,
+    Publications,
+    Section,
     ServiceEntry,
     Student,
     StudentAward,
@@ -143,7 +145,7 @@ class TestRenderLinkField:
 
 def _citation(**overrides) -> Citation:
     """Test helper — build a Citation with sensible defaults + overrides."""
-    base = dict(
+    return Citation(
         section="Conferences and Workshops",
         rank="Rank 1",
         year=2025,
@@ -153,9 +155,7 @@ def _citation(**overrides) -> Citation:
         venue="Proceedings of ICSE",
         details=", 1-12",
         link="https://doi.org/10.x",
-    )
-    base.update(overrides)
-    return Citation(**base)
+    )._replace(**overrides)
 
 
 class TestRenderCitation:
@@ -322,7 +322,7 @@ class TestRenderConferencePresentation:
 
 class TestBuildPaperIndex:
     def test_assigns_section_codes(self) -> None:
-        pubs = {
+        pubs: Publications = {
             "Conferences and Workshops": [
                 _citation(title="Paper A"),
                 _citation(title="Paper B"),
@@ -342,7 +342,7 @@ class TestBuildPaperIndex:
         # computing industry impacts = .3. Preprint → Technical Reports
         # → C.5.2.1 (first entry in that subcategory). CVE → Direct
         # computing industry impacts but excluded from the index.
-        pubs = {
+        pubs: Publications = {
             "Other publications and products": [
                 _citation(title="A CVE Entry", rank="CVE"),
                 _citation(title="A Preprint", rank="Preprint"),
@@ -411,7 +411,7 @@ class TestOrderCitationsForEmission:
             _citation(title="A-preprint", rank="Preprint"),
             _citation(title="B-magazine", rank="Magazine"),
         ]
-        pubs = {"Other publications and products": cits}
+        pubs: Publications = {"Other publications and products": cits}
         idx = build_paper_index(pubs)
         from pubs_emitter.venue import normalize_title
         # Magazine sorts first (subcat 1) → B-magazine = C.5.1.1.
@@ -439,7 +439,7 @@ def _grant(**overrides) -> Grant:
             personnel.append(GrantPerson(name=lead_pi, role="PI"))
         for c in (co_pis or []):
             personnel.append(GrantPerson(name=c, role="Co-PI"))
-    base = dict(
+    return Grant(
         start_year=2025, end_year=2030,
         title="Test Project", agency="National Science Foundation",
         agency_short="NSF", grant_number="2025001",
@@ -450,9 +450,7 @@ def _grant(**overrides) -> Grant:
         total_amount=amount, purdue_amount=amount, my_amount=amount,
         activities="", responsibility="",
         inspired_by=[], publication_outcomes=[],
-    )
-    base.update(overrides)
-    return Grant(**base)
+    )._replace(**overrides)
 
 
 class TestRenderGrantsSection:
@@ -1216,12 +1214,13 @@ class TestRenderServiceSection:
     def test_section_codes_match_section_param(self) -> None:
         # All four service sections route through the same renderer; each
         # must surface its own C.X code.
-        for section, expected_code in (
+        cases: list[tuple[Section, str]] = [
             ("University Service", "C.23"),
             ("Profession Service", "C.24"),
             ("National Service", "C.25"),
             ("Other Service", "C.26"),
-        ):
+        ]
+        for section, expected_code in cases:
             buf = io.StringIO()
             render_service_section(
                 section,
@@ -1261,16 +1260,14 @@ class TestRenderUnderReviewSection:
     """A.1 numbered list — authors. title. /italic venue/, pages.
     Optional 'Due: …' suffix when the due_date isn't the 9999 sentinel."""
 
-    def _ur(self, **overrides):
-        base = dict(
+    def _ur(self, **overrides) -> UnderReview:
+        return UnderReview(
             due_date="9999-99-99",
             title="Some Under-Review Paper",
             authors_rtf="\\b Davis, J.C.\\b0",
             venue="ACM Digital Governance (ACM DGOV)",
             pages="30 pages",
-        )
-        base.update(overrides)
-        return UnderReview(**base)
+        )._replace(**overrides)
 
     def test_emits_section_heading_and_a1_code(self) -> None:
         buf = io.StringIO()
@@ -1342,15 +1339,13 @@ class TestRenderStudentAwardsSection:
     """
 
     def _award(self, **overrides) -> StudentAward:
-        base = dict(
+        return StudentAward(
             year=2025, year_str="2025",
             level="U",
             tier="Institutional Awards",
             recipient="Test Student",
             award="Test Award",
-        )
-        base.update(overrides)
-        return StudentAward(**base)
+        )._replace(**overrides)
 
     def test_undergrad_section_emits_c1624_code(self) -> None:
         buf = io.StringIO()
@@ -1477,7 +1472,7 @@ class TestRenderStudentAwardsSection:
         buf = io.StringIO()
         with pytest.raises(ValueError):
             render_student_awards_section(
-                "Software Products",  # type: ignore[arg-type]
+                "Software Products",
                 [self._award()],
                 buf,
             )
@@ -1736,14 +1731,12 @@ class TestRenderUndergradPathwaysSection:
     silently skips the section (no orphan heading)."""
 
     def _p(self, **overrides) -> UndergradPathway:
-        base = dict(
+        return UndergradPathway(
             dates="Summer 2024",
             activity="Test pathway",
             audience="Test audience",
             participation="~5 students",
-        )
-        base.update(overrides)
-        return UndergradPathway(**base)
+        )._replace(**overrides)
 
     def test_heading_and_table_emitted(self) -> None:
         buf = io.StringIO()
@@ -1821,12 +1814,10 @@ class TestRenderUndergradProductsSection:
     """
 
     def _p(self, **overrides) -> UndergradProduct:
-        base = dict(
+        return UndergradProduct(
             year=2024, product_label="Paper", ref="C.4.7",
             n_coauthors=2, lead_is_undergrad=False,
-        )
-        base.update(overrides)
-        return UndergradProduct(**base)
+        )._replace(**overrides)
 
     def test_heading_and_basic_line(self) -> None:
         buf = io.StringIO()
@@ -2225,12 +2216,10 @@ class TestRenderA6Awards:
         )
 
     def _award(self, **kwargs) -> Award:
-        base = dict(
+        return Award(
             year=2024, year_str="2024", tier="external",
             name="Some Award", significance="Some significance.",
-        )
-        base.update(kwargs)
-        return Award(**base)
+        )._replace(**kwargs)
 
     def test_emits_two_group_headers_when_both_tiers_present(self) -> None:
         buf = io.StringIO()
@@ -2546,7 +2535,7 @@ class TestRenderCoursesTaughtDataNotAvailable:
 
     def _ct(self, **overrides):
         from pubs_emitter.types import CourseTaught
-        base = dict(
+        return CourseTaught(
             year=2020, semester_order=3, semester_str="F20",
             title="Vertically Integrated Projects (VIP)",
             is_new_course=False,
@@ -2554,9 +2543,7 @@ class TestRenderCoursesTaughtDataNotAvailable:
             responsibility="50% responsibility, supervisory",
             responses=None, enrolled=None,
             cie_average=None, cie_min=None, cie_max=None,
-        )
-        base.update(overrides)
-        return CourseTaught(**base)
+        )._replace(**overrides)
 
     def test_all_three_cie_none_renders_data_not_available(self) -> None:
         import io
@@ -2710,7 +2697,7 @@ class TestRenderPendingProposalsSection:
 
     def _pending(self, **overrides):
         from pubs_emitter.types import Grant
-        base = dict(
+        return Grant(
             start_year=2026, end_year=2028,
             title="EAGER: Test Pending Grant",
             agency="US National Science Foundation",
@@ -2726,9 +2713,7 @@ class TestRenderPendingProposalsSection:
             inspired_by=[],
             publication_outcomes=[],
             status="pending",
-        )
-        base.update(overrides)
-        return Grant(**base)
+        )._replace(**overrides)
 
     def test_emits_section_heading_and_bookmark_prefix(self) -> None:
         import io
@@ -2773,7 +2758,7 @@ class TestGrantStatusPartition:
 
     def _grant(self, **overrides):
         from pubs_emitter.types import Grant
-        base = dict(
+        return Grant(
             start_year=2025, end_year=2027,
             title="T", agency="NSF", agency_short="NSF",
             grant_number="123", role="PI",
@@ -2783,9 +2768,7 @@ class TestGrantStatusPartition:
             activities="", responsibility="",
             inspired_by=[], publication_outcomes=[],
             status="awarded",
-        )
-        base.update(overrides)
-        return Grant(**base)
+        )._replace(**overrides)
 
     def test_default_status_is_awarded(self) -> None:
         g = self._grant()
@@ -2813,16 +2796,14 @@ class TestFormatRoleResponsibilityPurdueLead:
 
     def _g(self, **kw):
         from pubs_emitter.types import Grant
-        base = dict(
+        return Grant(
             start_year=2026, end_year=2028, title='T', agency='NSF',
             agency_short='NSF', grant_number='1', role='PI',
             lead_institution='', personnel=[], responsibility_percent=0,
             total_amount=100000, purdue_amount=100000, my_amount=100000,
             activities='', responsibility='', inspired_by=[],
             publication_outcomes=[], status='awarded',
-        )
-        base.update(kw)
-        return Grant(**base)
+        )._replace(**kw)
 
     def test_awarded_grant_no_lead_note(self) -> None:
         from pubs_emitter.rtf import _format_role_responsibility_line

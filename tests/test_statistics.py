@@ -262,7 +262,7 @@ class TestMacroComputations:
         assert compute_all(ctx)["NUM_UNDERGRADUATE_COAUTHORS"] == "0"
 
     def test_num_patents_counts_patent_list(self) -> None:
-        patents = [
+        patents: list[Patent] = [
             MagicMock(spec=Patent), MagicMock(spec=Patent), MagicMock(spec=Patent),
         ]
         ctx = StatsContext(publications={}, patents=patents)

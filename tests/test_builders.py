@@ -1162,7 +1162,7 @@ class TestBuildUndergradProductsUnderReview:
 
     def _ur(self, **overrides):
         from pubs_emitter.types import UnderReview
-        base = dict(
+        return UnderReview(
             due_date="9999-99-99",
             title="A Paper Under Review",
             authors_rtf="Solarin, O. and Davis, J.C.",
@@ -1171,9 +1171,7 @@ class TestBuildUndergradProductsUnderReview:
             raw_authors=("Oreofe Solarin", "James C. Davis"),
             id="",
             submission_year=2026,
-        )
-        base.update(overrides)
-        return UnderReview(**base)
+        )._replace(**overrides)
 
     def test_under_review_with_undergrad_surfaces(self) -> None:
         from pubs_emitter.builders import build_undergrad_products

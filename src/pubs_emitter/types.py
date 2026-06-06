@@ -54,6 +54,7 @@ Section = Literal[
     "Graduate Students",
     "Postdocs and Visiting Scholars",
     "Undergraduate Students",
+    "Undergraduate Research Pathways",
     "Undergraduate Research Products",
     "Undergraduate Student Awards",
     "Graduate Student Awards",
@@ -254,6 +255,12 @@ class UnderReview(NamedTuple):
     # entry surfaces in C.16.2.3 (mixes naturally with published-paper years
     # under the existing `-year` ordering). 0 = unknown (sorts to bottom).
     submission_year: int = 0
+    # Optional supporting documentation (Q7): repo-relative path to a
+    # PNG or JPEG that gets embedded inline below the citation —
+    # typically a screenshot of the submission-confirmation email.
+    # Empty string = no image. The rendered packet hex-encodes the
+    # file inline; see `image_embed.emit_image` for the layout.
+    supporting_image: str = ""
 
 
 class KeyWork(NamedTuple):
