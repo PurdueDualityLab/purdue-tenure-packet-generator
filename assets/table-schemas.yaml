@@ -1,0 +1,46 @@
+# Declarative table-structure schemas for the markdown-master walker.
+#
+# Each top-level key is the directive token (e.g., `PATENTS_TABLE` →
+# the walker dispatches `!PATENTS_TABLE!`). The directive is
+# auto-registered into `pubs_emitter.directives.DIRECTIVES` at module
+# import time via the tabular-directive factory in `directives.py`.
+#
+# Schema shape (one entry per directive):
+#
+#   <DIRECTIVE_TOKEN>:
+#     source:           ctx.<field> on RenderContext — the list of rows
+#     code_key:         SECTION_CODES key whose value is the entry-code
+#                       prefix (rows numbered <prefix>.1, <prefix>.2, …)
+#     bookmark_column:  (optional) 0-based column index whose cell is
+#                       prefixed with the bookmarked entry code
+#                       (`{bold C.19.N.} ${value}` shape). Omit to
+#                       skip per-row bookmarks.
+#     columns:          ordered list, one per column. Per-column keys:
+#       field:          attribute name on each row (NamedTuple field)
+#       header:         text rendered in the table header row
+#       width:          column width in twips (1440 = 1 inch)
+#       escape:         "escape_rtf" (default — RTF-escape the value)
+#                       or "raw"     (pass-through, e.g., for fields
+#                                     that arrive pre-marked with `\b`)
+#
+# Source of truth for column shape: this file. Phase 2 onward, adding
+# a simple-table directive requires only (a) a YAML stanza here and
+# (b) a `!DIRECTIVE!` placement in the outline file — no Python.
+#
+# Bespoke tables with computed cells (grant totals, tier subheadings,
+# condition-driven row formatting) continue to register Python
+# directives directly in `directives.py`. The two registration paths
+# coexist by design.
+#
+# Design: docs/design/markdown-master-outline-refactor.md §Q6.
+
+PATENTS_TABLE:
+  source: patents
+  code_key: Patents
+  bookmark_column: 0
+  columns:
+    - {field: title,        header: "Title",        width: 2400, escape: escape_rtf}
+    - {field: co_inventors, header: "Co-Inventors", width: 2000, escape: raw}
+    - {field: date,         header: "Issue Date",   width: 1600, escape: escape_rtf}
+    - {field: number,       header: "Number",       width: 1500, escape: escape_rtf}
+    - {field: impact,       header: "Impact",       width: 1860, escape: escape_rtf}
