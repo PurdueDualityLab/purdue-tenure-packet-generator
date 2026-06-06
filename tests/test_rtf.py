@@ -2972,12 +2972,19 @@ class TestLevelAwareBodyIndent:
         expected = _body_indent_for_code("C.16.2.1")
         assert f"\\pard\\li{expected}\\par\\par" in out
 
-    def test_b_section_body_inherits_level_base(self) -> None:
-        """B.1-B.5 are level 1 — prose lands at the level-1 body indent (1080)."""
+    def test_b_section_prose_inherits_level_base(self) -> None:
+        """B.1-B.5 prose is now emitted by `_emit_section_heading` via the
+        module-level `_section_prose` dict — at the level-1 body indent
+        (1080) just like the old `_emit_b_section_body` path."""
         import io
-        from pubs_emitter.rtf import _body_indent_for_code, _emit_b_section_body
+        from pubs_emitter import rtf as rtf_mod
+        from pubs_emitter.rtf import _body_indent_for_code, _emit_section_heading
         buf = io.StringIO()
-        _emit_b_section_body(buf, "Some prose.", "B.1")
+        rtf_mod._section_prose = {"B.1": ["Some prose."]}
+        try:
+            _emit_section_heading(buf, "B.1", "Summary")
+        finally:
+            rtf_mod._section_prose = {}
         out = buf.getvalue()
         expected = _body_indent_for_code("B.1")
         assert f"\\pard\\li{expected} Some prose.\\par\\par" in out

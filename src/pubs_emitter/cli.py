@@ -44,8 +44,9 @@ from .builders import (
     build_under_review,
     load_candidate_information,
     load_non_scholar,
-    load_self_evaluation,
+    load_section_prose,
     validate_non_scholar,
+    _warn_section_prose_word_counts,
 )
 from .config import (
     BIB_IGNORE,
@@ -56,7 +57,6 @@ from .config import (
     DEFAULT_EVALUATIONKIT_RAWDATA_FILE,
     DEFAULT_MAX_WORKERS,
     DEFAULT_OUT_FILE,
-    DEFAULT_SELF_EVALUATION_FILE,
     MANUAL_LINKS,
     SECTION_CODES,
     SECTION_ORDER,
@@ -401,15 +401,6 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--self-eval", metavar="PATH",
-        default=DEFAULT_SELF_EVALUATION_FILE,
-        help=(
-            "Path to the Section IV self-evaluation markdown file (B.1-B.5). "
-            "Default: %(default)s. Pass an empty string ('') to skip "
-            "Section IV entirely."
-        ),
-    )
-    parser.add_argument(
         "--pages-cache", metavar="PATH",
         default=DEFAULT_PAGES_CACHE_FILE,
         help=(
@@ -443,6 +434,20 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
             "+ border markers from `pubs_emitter.styles`) and exit. "
             "Diagnostic — shows what RTF open-tag sequence each named "
             "style produces, useful when debugging an unexpected visual."
+        ),
+    )
+    parser.add_argument(
+        "--section-prose", default="assets/section-prose.md",
+        help=(
+            "Path to the section-prose markdown file. Provides "
+            "optional hand-authored introductory prose for any section "
+            "heading (`## A.1`, `## C.5.4`, `## C.16.2.1`, …). At "
+            "render time every section heading is followed by the "
+            "prose body looked up by code; sections with no entry "
+            "render heading-only. Pass an empty string ('') to skip "
+            "the file entirely. Default: assets/section-prose.md. "
+            "Note: B.X self-evaluation prose lives in self-evaluation.md, "
+            "not here."
         ),
     )
     parser.add_argument(
@@ -513,18 +518,24 @@ def main(argv: Optional[list[str]] = None) -> None:
         # Section III front matter (A.1-A.7). Optional — None when no YAML
         # path is supplied or the file is missing.
         candidate_info = load_candidate_information(args.candidate_info or None)
-        # Section IV self-evaluation (B.1-B.5). Optional — None when no
-        # markdown path is supplied or the file is missing.
-        self_eval = load_self_evaluation(args.self_eval or None)
-        if args.word_counts and self_eval is not None:
+        # Optional intro prose for any section heading, keyed by dotted
+        # code (`A.1`, `B.1`, `C.16.2.1`, …). Empty dict when no path /
+        # file missing → all sections render heading-only with no intro
+        # body. B.1-B.5 entries get extra treatment: word-count warnings
+        # against the Purdue template caps, #MACRO_NAME substitution,
+        # and the rendered markdown emphasis. Everything else flows
+        # through the generic `_emit_section_heading` prose pipe.
+        section_prose = load_section_prose(args.section_prose or None)
+        _warn_section_prose_word_counts(section_prose)
+        if args.word_counts:
             from .builders import _count_words, _B_WORD_CAPS
             parts = []
-            for key in ("b1", "b2", "b3"):
-                n = _count_words(getattr(self_eval, key) or "")
+            for code in ("B.1", "B.2", "B.3"):
+                key = f"b{code[2:]}"  # "B.1" → "b1"
+                n = _count_words("\n\n".join(section_prose.get(code, [])))
                 cap = _B_WORD_CAPS.get(key)
-                label = f"B.{key[1:]}"  # "b1" → "B.1"
                 parts.append(
-                    f"{label} word count: {n} (recommended ≤ {cap})"
+                    f"{code} word count: {n} (recommended ≤ {cap})"
                 )
             log.info(", ".join(parts))
 
@@ -958,62 +969,66 @@ def main(argv: Optional[list[str]] = None) -> None:
         postdocs_visiting = _resolve(postdocs_visiting, "PostdocVisiting")
         undergraduate_students = _resolve(undergraduate_students, "Student")
         student_awards = _resolve(student_awards, "StudentAward")
-        # Section IV B.1-B.5 self-evaluation prose: resolve @-refs across
-        # all 5 fields and rebuild the NamedTuple. Skipped when no
-        # self-evaluation file was loaded. Then substitute `#MACRO_NAME`
-        # tokens with the computed Statistics — see `statistics.py`.
-        if self_eval is not None:
-            resolved = _resolve([self_eval], "SelfEvaluation")
-            if resolved:
-                self_eval = resolved[0]
-            from .statistics import StatsContext, compute_all, substitute
-            stats_ctx = StatsContext(
-                publications=publications,
-                bib_entries=entries,
-                paper_index=paper_index,
-                conn=conn,
-                patents=patents,
-                invited_talks=invited_talks,
-                profession_service=profession_service,
-                grants_as_pi=grants_as_pi,
-                grants_as_co_pi=grants_as_co_pi,
-                gifts=gifts,
-            )
-            macros = compute_all(stats_ctx)
-            log.info(
-                "Statistics macros computed: %s",
-                ", ".join(f"{k}={v}" for k, v in sorted(macros.items())),
-            )
-            # `substitute` returns `(text, unresolved_set)`. Unresolved
-            # macros are a build-blocking error — drafts must not ship
-            # with literal `#TYPO_TOKEN` surviving into the rendered
-            # packet. Collect across all 5 fields and fail at the end of
-            # this block (after logging which token + which field).
-            b1, u1 = substitute(self_eval.b1, macros)
-            b2, u2 = substitute(self_eval.b2, macros)
-            b3, u3 = substitute(self_eval.b3, macros)
-            b4, u4 = substitute(self_eval.b4, macros)
-            b5, u5 = substitute(self_eval.b5, macros)
-            self_eval = self_eval._replace(b1=b1, b2=b2, b3=b3, b4=b4, b5=b5)
-            _unresolved_macros: list[tuple[str, str]] = []
-            for field, unr in (("b1", u1), ("b2", u2), ("b3", u3),
-                               ("b4", u4), ("b5", u5)):
-                for name in sorted(unr):
-                    _unresolved_macros.append((field, name))
-            if _unresolved_macros:
-                for field, name in _unresolved_macros:
-                    log.error(
-                        "Unresolved #macro #%s in self-evaluation %s; "
-                        "known macros: %s",
-                        name, field.upper(), sorted(macros.keys()),
-                    )
-                log.error(
-                    "Build aborted — %d unresolved #macro reference(s). "
-                    "Fix the typo or register the macro in statistics.py "
-                    "before re-running.",
-                    len(_unresolved_macros),
+        # Section-prose paragraphs: each prose body can carry @bibkey /
+        # @grant-id / @C.X.Y raw-section-code refs. Resolve them now
+        # (link_format=True so the post-pass converts to RTF hyperlinks)
+        # and surface unresolved refs as build-blocking errors via the
+        # shared `_all_errors` list (same fail-loud semantics as the
+        # NamedTuple resolver). B.X prose ALSO gets #MACRO_NAME
+        # substitution applied first (the macros include Statistics
+        # computed below); unresolved macros are also build-blocking.
+        from .builders import resolve_refs
+        from .statistics import StatsContext, compute_all, substitute
+        stats_ctx = StatsContext(
+            publications=publications,
+            bib_entries=entries,
+            paper_index=paper_index,
+            conn=conn,
+            patents=patents,
+            invited_talks=invited_talks,
+            profession_service=profession_service,
+            grants_as_pi=grants_as_pi,
+            grants_as_co_pi=grants_as_co_pi,
+            gifts=gifts,
+        )
+        macros = compute_all(stats_ctx)
+        log.info(
+            "Statistics macros computed: %s",
+            ", ".join(f"{k}={v}" for k, v in sorted(macros.items())),
+        )
+        _unresolved_macros: list[tuple[str, str]] = []
+        resolved_section_prose: dict[str, list[str]] = {}
+        for code, paragraphs in section_prose.items():
+            new_paragraphs: list[str] = []
+            for p in paragraphs:
+                # #MACRO_NAME substitution: applied to every section's
+                # prose (typo'd macros must not ship), not just B.X.
+                p, unresolved_macros = substitute(p, macros)
+                for name in sorted(unresolved_macros):
+                    _unresolved_macros.append((code, name))
+                # @-ref resolution: bibkey / grant-id / raw section code.
+                new_p, unresolved = resolve_refs(
+                    p, ref_index, link_format=True,
                 )
-                sys.exit(1)
+                for u in unresolved:
+                    _all_errors.append(("SectionProse", code, u))
+                new_paragraphs.append(new_p)
+            resolved_section_prose[code] = new_paragraphs
+        section_prose = resolved_section_prose
+        if _unresolved_macros:
+            for code, name in _unresolved_macros:
+                log.error(
+                    "Unresolved #macro #%s in section-prose %s; "
+                    "known macros: %s",
+                    name, code, sorted(macros.keys()),
+                )
+            log.error(
+                "Build aborted — %d unresolved #macro reference(s). "
+                "Fix the typo or register the macro in statistics.py "
+                "before re-running.",
+                len(_unresolved_macros),
+            )
+            sys.exit(1)
         # A.6 awards: live INSIDE candidate_info, so rebuild the NamedTuple
         # with the resolved list. Skip when no candidate_info was loaded.
         if candidate_info is not None and candidate_info.awards:
@@ -1096,7 +1111,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             course_development=course_development,
             courses_taught=courses_taught,
             candidate_info=candidate_info,
-            self_eval=self_eval,
+            section_prose=section_prose,
             pending_proposals=pending_proposals,
             sections_filter=_parse_sections_filter(args.sections),
         )

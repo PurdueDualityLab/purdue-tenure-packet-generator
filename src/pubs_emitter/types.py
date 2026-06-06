@@ -573,32 +573,6 @@ class Award(NamedTuple):
     id: str = ""                             # optional cross-ref id → A.6.N
 
 
-class SelfEvaluation(NamedTuple):
-    """Section IV — the B.X self-evaluation statements.
-
-    Loaded once from `assets/self-evaluation.md`. Each field is the raw
-    prose (one string per section, paragraphs separated by '\\n\\n') for
-    a single B.X sub-section. `@bibkey` / `@id` / `@C.X.Y` refs in any
-    field are resolved at build time via the standard PROSE_FIELDS_BY_TYPE
-    pipeline, same as YAML prose fields.
-
-    Word-count discipline (Purdue template caps):
-      * B.1 ≤ 1,000 words
-      * B.2 ≤   250 words
-      * B.3 ≤   500 words
-      * B.4 no cap
-      * B.5 no cap (optional section)
-
-    Over-cap is a build warning, not an error — draft passes routinely
-    run over before the polish round trims them down.
-    """
-    b1: str   # Summary of achievements
-    b2: str   # Impact of accomplishments
-    b3: str   # Vision
-    b4: str   # Candidate comments on external events
-    b5: str   # Professional COVID-19 Impact Statement
-
-
 class CandidateInformation(NamedTuple):
     """Section III aggregate — the full front-matter payload (A.1-A.7).
 

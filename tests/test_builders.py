@@ -874,106 +874,99 @@ class TestLoadCandidateInformation:
         assert ci.positions_at_purdue == ["Asst Prof"]
 
 
-class TestLoadSelfEvaluation:
-    """Markdown parser for `assets/self-evaluation.md`. Splits on
-    `^## B.X …` headings and harvests the prose between consecutive
-    headings into the corresponding NamedTuple field."""
+class TestLoadSectionProse:
+    """Markdown parser for `assets/section-prose.md` — a generic
+    `## <CODE> …` heading delimits each section's prose body. Replaces
+    the old self-evaluation.md / load_self_evaluation path; B.X codes
+    flow through this same dict alongside C.X.Y entries."""
 
-    def test_none_path_returns_none(self) -> None:
-        from pubs_emitter.builders import load_self_evaluation
-        assert load_self_evaluation(None) is None
+    def test_none_path_returns_empty(self) -> None:
+        from pubs_emitter.builders import load_section_prose
+        assert load_section_prose(None) == {}
 
-    def test_missing_file_returns_none(self) -> None:
-        from pubs_emitter.builders import load_self_evaluation
-        assert load_self_evaluation("/tmp/does-not-exist-XXXX.md") is None
+    def test_missing_file_returns_empty(self) -> None:
+        from pubs_emitter.builders import load_section_prose
+        assert load_section_prose("/tmp/does-not-exist-XXXX.md") == {}
 
-    def test_parses_all_five_sections(self, tmp_path) -> None:
-        from pubs_emitter.builders import load_self_evaluation
-        path = tmp_path / "self-eval.md"
+    def test_parses_b_and_c_sections(self, tmp_path) -> None:
+        from pubs_emitter.builders import load_section_prose
+        path = tmp_path / "section-prose.md"
         path.write_text(
             "intro junk that the parser ignores\n\n"
             "## B.1 Summary\n\n"
             "Body of B.1.\n\n"
             "## B.2 Impact\n\n"
             "Body of B.2.\n\n"
-            "## B.3 Vision\n\n"
-            "Body of B.3.\n\n"
-            "## B.4 External\n\n"
-            "Body of B.4.\n\n"
-            "## B.5 COVID\n\n"
-            "Body of B.5.\n",
+            "## C.16.1 Overview\n\n"
+            "Body of C.16.1.\n",
             encoding="utf-8",
         )
-        sev = load_self_evaluation(str(path))
-        assert sev is not None
-        assert sev.b1 == "Body of B.1."
-        assert sev.b2 == "Body of B.2."
-        assert sev.b3 == "Body of B.3."
-        assert sev.b4 == "Body of B.4."
-        assert sev.b5 == "Body of B.5."
+        prose = load_section_prose(str(path))
+        assert prose["B.1"] == ["Body of B.1."]
+        assert prose["B.2"] == ["Body of B.2."]
+        assert prose["C.16.1"] == ["Body of C.16.1."]
 
-    def test_missing_sections_default_empty(self, tmp_path) -> None:
-        """A file that has only some of the B.X sections fills the rest
-        with empty strings — the renderer's placeholder fires instead."""
-        from pubs_emitter.builders import load_self_evaluation
-        path = tmp_path / "self-eval.md"
+    def test_missing_sections_absent_from_dict(self, tmp_path) -> None:
+        """Sections without an entry don't appear in the returned dict
+        — callers use `.get(code, [])` for the placeholder fallback."""
+        from pubs_emitter.builders import load_section_prose
+        path = tmp_path / "section-prose.md"
         path.write_text(
+            "## B.1 Summary\n\nBody.\n",
+            encoding="utf-8",
+        )
+        prose = load_section_prose(str(path))
+        assert prose == {"B.1": ["Body."]}
+
+    def test_strips_c_style_comment_blocks(self, tmp_path) -> None:
+        """`/* … */` editor-only comment blocks are stripped before
+        parsing so prose authors can keep template prompts + reminders
+        in source without leaking into the rendered packet."""
+        from pubs_emitter.builders import load_section_prose
+        path = tmp_path / "section-prose.md"
+        path.write_text(
+            "/* file-level reminder */\n\n"
             "## B.1 Summary\n\n"
-            "Body.\n",
+            "Real body.\n\n"
+            "/* a section-level comment */\n\n"
+            "More real body.\n",
             encoding="utf-8",
         )
-        sev = load_self_evaluation(str(path))
-        assert sev is not None
-        assert sev.b1 == "Body."
-        assert sev.b2 == ""
-        assert sev.b5 == ""
-
-    def test_no_b_heading_exits(self, tmp_path) -> None:
-        """A file with no `## B.X` heading is a structural error — the
-        candidate likely renamed or deleted the headings; bail loudly."""
-        from pubs_emitter.builders import load_self_evaluation
-        path = tmp_path / "self-eval.md"
-        path.write_text("just plain text, no headings\n", encoding="utf-8")
-        with pytest.raises(SystemExit):
-            load_self_evaluation(str(path))
-
-    def test_duplicate_section_exits(self, tmp_path) -> None:
-        from pubs_emitter.builders import load_self_evaluation
-        path = tmp_path / "self-eval.md"
-        path.write_text(
-            "## B.1 Summary\n\nfirst\n\n## B.1 Summary again\n\nsecond\n",
-            encoding="utf-8",
-        )
-        with pytest.raises(SystemExit):
-            load_self_evaluation(str(path))
+        prose = load_section_prose(str(path))
+        assert prose["B.1"] == ["Real body.", "More real body."]
 
     def test_word_count_warning_over_cap(self, tmp_path, caplog) -> None:
-        """B.1 has a 1000-word soft cap. Over-cap → warning at build."""
+        """B.1 has a 1000-word soft cap. Over-cap → warning when
+        `_warn_section_prose_word_counts` is invoked."""
         import logging
-        from pubs_emitter.builders import load_self_evaluation
-        path = tmp_path / "self-eval.md"
+        from pubs_emitter.builders import (
+            load_section_prose, _warn_section_prose_word_counts,
+        )
+        path = tmp_path / "section-prose.md"
         path.write_text(
             "## B.1 Summary\n\n" + (" word" * 1500) + "\n",
             encoding="utf-8",
         )
+        prose = load_section_prose(str(path))
         with caplog.at_level(logging.WARNING):
-            load_self_evaluation(str(path))
-        # The over-cap message identifies the section + word count.
+            _warn_section_prose_word_counts(prose)
         assert "1500 words" in caplog.text
         assert "cap: 1000" in caplog.text
 
     def test_no_warning_under_cap(self, tmp_path, caplog) -> None:
         import logging
-        from pubs_emitter.builders import load_self_evaluation
-        path = tmp_path / "self-eval.md"
+        from pubs_emitter.builders import (
+            load_section_prose, _warn_section_prose_word_counts,
+        )
+        path = tmp_path / "section-prose.md"
         path.write_text(
             "## B.1 Summary\n\n" + ("word " * 50) + "\n",
             encoding="utf-8",
         )
+        prose = load_section_prose(str(path))
         with caplog.at_level(logging.WARNING):
-            load_self_evaluation(str(path))
-        # No warning fired for the b1 section (other sections may have).
-        assert "b1.upper()" not in caplog.text
+            _warn_section_prose_word_counts(prose)
+        assert "B.1:" not in caplog.text
 
 
 class TestFormatPages:

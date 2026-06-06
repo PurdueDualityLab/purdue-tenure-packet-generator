@@ -31,7 +31,7 @@ from .types import (
     ConferencePresentation, CourseDevelopment, CourseTaught, Degree,
     EntrepreneurialActivity, Grant, GrantPerson, Identifiers, InvitedTalk,
     LeadershipRole, MediaAppearance, OtherPosition, Patent,
-    ProfessionalMembership, Publications, Rank, Section, SelfEvaluation,
+    ProfessionalMembership, Publications, Rank, Section,
     ServiceEntry, SoftwareProduct, Student, StudentAward,
     TechnologyTransfer, UndergradPathway, UndergradProduct, UnderReview,
 )
@@ -307,7 +307,6 @@ PROSE_FIELDS_BY_TYPE: dict[str, tuple[str, ...]] = {
     "UnderReview": ("title", "venue"),
     "Award": ("name", "significance"),
     "ServiceEntry": ("description",),
-    "SelfEvaluation": ("b1", "b2", "b3", "b4", "b5"),
     "PostdocVisiting": ("position_title_dates", "current_position"),
     "Student": ("position",),
 }
@@ -1227,14 +1226,11 @@ def build_candidate_information(raw: dict) -> CandidateInformation:
     )
 
 
-# ----- B.1-B.5 self-evaluation parsing ------------------------------------
+# ----- B.1-B.5 word-count caps (Purdue template soft limits) --------------
 
 
-# Section header form: "## B.X …optional trailing title text…"
-_B_SECTION_RE = re.compile(r"^##\s+B\.(\d+)\b[^\n]*$", re.MULTILINE)
-
-# Purdue template's soft word caps for the rendered self-evaluation
-# sections. None means "no cap." Over-cap is a build-time warning, not
+# Purdue template's soft word caps for the B-section self-evaluation
+# prose. None means "no cap." Over-cap is a build-time warning, not
 # an error — drafts routinely run over before the polish round.
 _B_WORD_CAPS: dict[str, Optional[int]] = {
     "b1": 1000,   # Summary of achievements
@@ -1251,87 +1247,90 @@ def _count_words(text: str) -> int:
     return len(text.split())
 
 
-def load_self_evaluation(path: Optional[str]) -> Optional[SelfEvaluation]:
-    """Parse `assets/self-evaluation.md` into a typed SelfEvaluation.
+# Match `## <CODE> …` where CODE is any dotted section code: a leading
+# capital letter then one or more `.N` segments. Captures the dotted
+# code so the loader returns one dict entry per section. Examples that
+# match: `## A.1`, `## A.7`, `## C.5.4`, `## C.16.2.1`, `## D.7.4.2`.
+_SECTION_PROSE_RE = re.compile(
+    r"^##\s+([A-Z]\.\d+(?:\.\d+)*)\b[^\n]*$", re.MULTILINE,
+)
 
-    Markdown structure: each `## B.X …` heading delimits a section; the
-    body is the prose between this heading and the next. The intro
-    block above the first `## B.1` heading is ignored (used for
-    authoring guidance, not rendered).
+# C-style `/* … */` editor-only comment blocks. Stripped from prose files
+# (section-prose.md, self-evaluation.md) before parsing so the author can
+# keep template prompts, authoring guidance, and reminders alongside the
+# real prose without those notes leaking into the rendered packet.
+# Multi-line via DOTALL; non-greedy so adjacent blocks don't merge.
+_PROSE_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 
-    A missing path / missing file is NOT an error — the B section is
-    silently skipped in the rendered packet. A malformed file (no
-    `## B.1` heading at all, or duplicate section numbers) IS an error.
 
-    Word counts are checked against the Purdue template caps; over-cap
-    sections log a warning so the candidate sees the gap during build.
+def _strip_prose_comments(text: str) -> str:
+    """Strip `/* … */` editor-only comment blocks from a prose markdown
+    source. Applied at load time so neither the section parser nor the
+    rendered packet sees the commented content."""
+    return _PROSE_COMMENT_RE.sub("", text)
+
+
+def load_section_prose(path: Optional[str]) -> dict[str, list[str]]:
+    """Parse `assets/section-prose.md` into a `{code: [paragraph, …]}` dict.
+
+    Imitates `load_self_evaluation`'s shape: each `## <CODE> …` heading
+    delimits a section; the body is the prose between this heading and
+    the next. The intro block above the first `## <CODE>` heading is
+    ignored (authoring guidance, not rendered).
+
+    Within each section body, paragraphs are blank-line separated AND
+    single internal newlines collapse to spaces (markdown soft-wrap
+    convention — matches the B-section loader). Returns one list of
+    paragraph strings per code.
+
+    A missing path / missing file is NOT an error — every section
+    without an entry just renders heading-only at emit time. The
+    loader is permissive: codes not (yet) wired into the renderer are
+    returned as-is so the file can carry prose for sections that haven't
+    been hooked up.
+
+    By convention, B.X self-evaluation prose lives in self-evaluation.md
+    (separate loader with word-count caps + #macro substitution) — don't
+    put B.X entries here.
     """
-    if not path:
-        return None
-    if not os.path.exists(path):
-        log.warning(
-            "Self-evaluation file not found at %s — skipping B section "
-            "(B.1-B.5).", path,
-        )
-        return None
-    log.info("Loading self-evaluation from %s", path)
+    if not path or not os.path.exists(path):
+        return {}
+    log.info("Loading section prose from %s", path)
     with open(path, "r", encoding="utf-8") as f:
         text = f.read()
-
-    sections: dict[str, str] = {}
-    matches = list(_B_SECTION_RE.finditer(text))
-    if not matches:
-        log.error(
-            "Self-evaluation %s contains no `## B.X` section headings.",
-            path,
-        )
-        sys.exit(1)
+    text = _strip_prose_comments(text)
+    result: dict[str, list[str]] = {}
+    matches = list(_SECTION_PROSE_RE.finditer(text))
     for i, m in enumerate(matches):
-        num = int(m.group(1))
-        if num < 1 or num > 5:
-            log.error(
-                "Self-evaluation %s: unknown section `## B.%d` "
-                "(only B.1-B.5 are supported).", path, num,
-            )
-            sys.exit(1)
-        key = f"b{num}"
-        if key in sections:
-            log.error(
-                "Self-evaluation %s: duplicate `## B.%d` heading.",
-                path, num,
-            )
-            sys.exit(1)
-        # Body runs from end-of-heading to start-of-next-heading (or EOF).
+        code = m.group(1)
         body_start = m.end()
         body_end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        sections[key] = text[body_start:body_end].strip()
-
-    sev = SelfEvaluation(
-        b1=sections.get("b1", ""),
-        b2=sections.get("b2", ""),
-        b3=sections.get("b3", ""),
-        b4=sections.get("b4", ""),
-        b5=sections.get("b5", ""),
-    )
-    _warn_self_evaluation_word_counts(sev)
-    return sev
+        body = text[body_start:body_end].strip()
+        # Split on blank-line gaps, then collapse internal soft-wrap.
+        paragraphs = [p.strip() for p in re.split(r"\n{2,}", body) if p.strip()]
+        flat = [re.sub(r"\s*\n\s*", " ", p) for p in paragraphs]
+        result[code] = flat
+    return result
 
 
-def _warn_self_evaluation_word_counts(sev: SelfEvaluation) -> None:
-    """Log a warning for each B.X section that exceeds the Purdue
-    template's soft word cap. Over-cap is a warning, not an error —
-    polish passes routinely trim drafts back."""
+def _warn_section_prose_word_counts(section_prose: dict[str, list[str]]) -> None:
+    """Log a warning for each B.X section-prose entry that exceeds the
+    Purdue template's soft word cap. Over-cap is a warning, not an
+    error — polish passes routinely trim drafts back. Only B.1-B.5 have
+    caps today; sections without an entry are skipped silently."""
     for key in ("b1", "b2", "b3", "b4", "b5"):
         cap = _B_WORD_CAPS.get(key)
         if cap is None:
             continue
-        text = getattr(sev, key) or ""
+        code = f"B.{key[1:]}"
+        paragraphs = section_prose.get(code, [])
+        text = "\n\n".join(paragraphs)
         n = _count_words(text)
         if n > cap:
             log.warning(
-                "self-evaluation %s.upper(): %d words (cap: %d). "
+                "section-prose %s: %d words (cap: %d). "
                 "Trim before final submission.",
-                key, n, cap,
+                code, n, cap,
             )
 
 

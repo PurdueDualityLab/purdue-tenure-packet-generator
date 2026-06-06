@@ -76,7 +76,7 @@ def e2e_outputs(
             # exercise A.X rendering live in test_rtf.py with hand-built
             # CandidateInformation fixtures.
             "--candidate-info", "",
-            "--self-eval", "",
+            "--section-prose", "",
         ]
     )
     return out.read_text(encoding="utf-8"), out
@@ -344,7 +344,7 @@ class TestE2eGrantTotalsExtended:
                 "--out", str(out),
                 "--cache", str(cache),
                 "--candidate-info", "",
-                "--self-eval", "",
+                "--section-prose", "",
             ]
         )
         rtf = out.read_text(encoding="utf-8")
@@ -393,7 +393,7 @@ class TestE2eUnresolvedAtIdRef:
                     "--out", str(out),
                     "--cache", str(cache),
                     "--candidate-info", "",
-                    "--self-eval", "",
+                    "--section-prose", "",
                 ]
             )
         # The cli exits 1 (failure) when refs don't resolve.
@@ -437,7 +437,7 @@ class TestE2eUnresolvedAtIdRef:
                     "--out", str(out),
                     "--cache", str(cache),
                     "--candidate-info", "",
-                    "--self-eval", "",
+                    "--section-prose", "",
                 ]
             )
         assert exc.value.code == 1
@@ -475,7 +475,7 @@ class TestE2eUnresolvedAtIdRef:
                 "--out", str(out),
                 "--cache", str(cache),
                 "--candidate-info", "",
-                "--self-eval", "",
+                "--section-prose", "",
             ]
         )
         rtf = out.read_text(encoding="utf-8")
@@ -532,7 +532,7 @@ class TestE2eSectionsFilter:
                 "--cache", str(cache),
                 "--sections", "C.4",
                 "--candidate-info", "",
-                "--self-eval", "",
+                "--section-prose", "",
             ]
         )
         rtf = out.read_text(encoding="utf-8")
@@ -578,7 +578,7 @@ class TestE2eSectionsFilter:
                 "--cache", str(cache),
                 "--sections", "C.16",
                 "--candidate-info", "",
-                "--self-eval", "",
+                "--section-prose", "",
             ]
         )
         rtf = out.read_text(encoding="utf-8")
@@ -606,7 +606,7 @@ class TestE2eSectionsFilter:
                 "--cache", str(cache),
                 "--sections", "C.4,C.6",
                 "--candidate-info", "",
-                "--self-eval", "",
+                "--section-prose", "",
             ]
         )
         rtf = out.read_text(encoding="utf-8")
@@ -635,7 +635,7 @@ class TestE2eSectionsFilter:
                 "--out", str(full_out),
                 "--cache", str(tmp_path / "full-cache.sqlite"),
                 "--candidate-info", "",
-                "--self-eval", "",
+                "--section-prose", "",
             ]
         )
         full_rtf = full_out.read_text(encoding="utf-8")
@@ -652,7 +652,7 @@ class TestE2eSectionsFilter:
                 "--cache", str(tmp_path / "c4-cache.sqlite"),
                 "--sections", "C.4",
                 "--candidate-info", "",
-                "--self-eval", "",
+                "--section-prose", "",
             ]
         )
         c4_rtf = c4_out.read_text(encoding="utf-8")
@@ -1182,7 +1182,7 @@ def e2e_full_outputs(
     """
     bib = fixtures_dir / "sample.bib"
     candidate_info = fixtures_dir / "candidate-information.yaml"
-    self_eval = fixtures_dir / "self-evaluation.md"
+    section_prose = fixtures_dir / "section-prose.md"
     out = tmp_path / "publications.rtf"
     cache = tmp_path / "lookup_cache.sqlite"
 
@@ -1234,7 +1234,7 @@ def e2e_full_outputs(
             "--bib", str(bib),
             "--non-scholar", str(custom_yaml),
             "--candidate-info", str(candidate_info),
-            "--self-eval", str(self_eval),
+            "--section-prose", str(section_prose),
             "--evaluationkit-rawdata", "",  # no CSV fixture
             "--out", str(out),
             "--cache", str(cache),

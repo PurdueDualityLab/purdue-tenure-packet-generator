@@ -22,7 +22,7 @@ from .types import (
     CourseDevelopment, CourseTaught, Degree, EntrepreneurialActivity, Grant,
     GrantPerson, Identifiers, InvitedTalk, KeyWork, LeadershipRole,
     MediaAppearance, OtherPosition, Patent, PostdocVisiting,
-    ProfessionalMembership, Publications, Section, SelfEvaluation,
+    ProfessionalMembership, Publications, Section,
     ServiceEntry, SoftwareProduct, Student, StudentAward,
     TechnologyTransfer, UndergradPathway, UndergradProduct, UnderReview,
 )
@@ -33,6 +33,16 @@ from .venue import normalize_title
 
 
 log = logging.getLogger(__name__)
+
+
+# Module-level dict carrying optional hand-authored intro prose, keyed
+# by section code (`A.1`, `C.5.4`, `C.16.2.1`, …). Set at the top of
+# `write_rtf` from the `section_prose` argument; consulted by
+# `_emit_section_heading` after each heading emit. Module-level (not
+# threaded through every helper) because section headings emit from
+# ~20 sites and threading would noisy every signature. Single-threaded
+# render is the only supported mode — no thread-safety concern.
+_section_prose: dict[str, list[str]] = {}
 
 
 # Per-cell 4-side single-line border block, shared across every table in
@@ -939,56 +949,21 @@ def _markdown_inline_to_rtf(text: str) -> str:
     return "".join(out_parts)
 
 
-def _emit_b_section_body(out: IO[str], body: str, code: str) -> None:
-    """Render the prose under a B.X heading. Paragraphs are split on
-    blank-line gaps; each paragraph becomes one indented RTF `\\par`
-    block. Empty body → indented "(not yet populated)" placeholder so
-    the section heading isn't visually orphaned.
-
-    Body indent is routed through `_body_indent_for_code(code)` so the
-    prose lines up with where content under a heading at this level
-    SHOULD land — B.1-B.5 are level-1 so the indent is 720 today, but
-    if a sub-section gets added the body nests automatically.
-
-    Inline markdown emphasis (`**bold**`, `*italic*`) is translated to
-    RTF via `_markdown_inline_to_rtf`. Sentinel-wrapped `\\x01…\\x02`
-    cross-refs that were planted by `resolve_refs_in_list` survive both
-    the markdown pass and `escape_rtf` untouched and become clickable
-    hyperlinks in the final post-pass.
-    """
-    indent = _body_indent_for_code(code)
-    body = (body or "").strip()
-    if not body:
-        out.write(
-            f"\\pard\\li{indent}\\i (not yet populated)\\i0\\par\\par\n"
-        )
-        return
-    paragraphs = [p.strip() for p in re.split(r"\n{2,}", body) if p.strip()]
-    for p in paragraphs:
-        # Collapse single internal newlines to spaces — markdown paragraphs
-        # routinely soft-wrap mid-sentence and we don't want those breaks
-        # surfaced as forced line breaks in the rendered packet.
-        flat = re.sub(r"\s*\n\s*", " ", p)
-        out.write(f"\\pard\\li{indent} {_markdown_inline_to_rtf(flat)}\\par\\par\n")
-
-
-def render_self_evaluation_section(
-    self_eval: SelfEvaluation, out: IO[str],
-) -> None:
+def render_self_evaluation_section(out: IO[str]) -> None:
     """Emit Section IV — B.1 through B.5 statements.
 
-    Group-level "B. SELF-EVALUATION" heading at fs32, then each B.X
-    sub-section with the Purdue-template heading text and the
-    candidate's prose underneath. Cross-references (`@bibkey`, `@id`,
-    `@C.X.Y`) are pre-resolved upstream in `resolve_refs_in_list` so the
-    sentinel markers in each body string render as clickable hyperlinks
-    via the post-pass.
+    Group-level "B. SELF-EVALUATION" heading, then each B.X sub-section
+    heading. Prose for each B.X auto-emits from the module-level
+    `_section_prose` dict via `_emit_section_heading` — no per-section
+    plumbing here. Cross-references (`@bibkey`, `@id`, `@C.X.Y`) and
+    `#MACRO_NAME` substitutions are pre-applied upstream in cli.py so
+    the sentinel-wrapped refs in the prose render as clickable
+    hyperlinks via the post-pass.
     """
     _emit_group_heading(out, "B.", "SELF-EVALUATION")
-    for section, field in _B_SECTIONS:
+    for section, _field in _B_SECTIONS:
         code = SECTION_CODES[section]
         _emit_section_heading(out, code, SECTION_HEADINGS[section])
-        _emit_b_section_body(out, getattr(self_eval, field), code)
 
 
 def render_candidate_information_section(
@@ -2133,7 +2108,6 @@ def render_student_awards_section(
     section_key: Section,
     awards: list[StudentAward],
     out: IO[str],
-    *, intro_paragraphs: Sequence[str] = (),
 ) -> None:
     """C.16.2.4 (undergrad) / C.16.3.3 (grad) student awards / fellowships.
 
@@ -2159,10 +2133,6 @@ def render_student_awards_section(
     code = SECTION_CODES[section_key]
     heading = SECTION_HEADINGS[section_key]
     _emit_section_heading(out, code, heading)
-    if intro_paragraphs:
-        body_indent = _body_indent_for_code(code)
-        for p in intro_paragraphs:
-            out.write(f"\\pard\\li{body_indent} {escape_rtf(p)}\\par\\par\n")
     indent = _hanging_indent_for_codes([ref for ref, _ in indexed])
     # Emit tier subheadings as we walk the indexed list — tier changes are
     # detected by previous-tier comparison so we don't re-sort here.
@@ -2190,7 +2160,6 @@ _UNDERGRAD_PATHWAY_TABLE_WIDTHS: list[int] = [1900, 2900, 3200, 1360]
 
 def render_undergrad_pathways_section(
     pathways: list[UndergradPathway], out: IO[str],
-    *, intro_paragraphs: Sequence[str] = (),
 ) -> None:
     """C.16.2.2: Other Undergraduate Research Pathways — 4-column table.
 
@@ -2200,18 +2169,14 @@ def render_undergrad_pathways_section(
     Empty list → emit nothing (no orphan heading) per the C.16.2.X
     skip-when-empty pattern.
 
-    `intro_paragraphs` (optional): prose to emit between the section
-    heading and the table. Indented to match the table's left edge.
+    Intro prose for this section is auto-emitted by `_emit_section_heading`
+    if `section-prose.md` carries a `## C.16.2.2 …` block.
     """
     if not pathways:
         return
     code = SECTION_CODES["Undergraduate Research Pathways"]
     heading = SECTION_HEADINGS["Undergraduate Research Pathways"]
     _emit_section_heading(out, code, heading)
-    if intro_paragraphs:
-        body_indent = _body_indent_for_code(code)
-        for p in intro_paragraphs:
-            out.write(f"\\pard\\li{body_indent} {escape_rtf(p)}\\par\\par\n")
     table = RtfTable(_UNDERGRAD_PATHWAY_TABLE_WIDTHS)
     table.add_header(["Dates", "Pathway / activity", "Audience", "Participation"])
     for p in pathways:
@@ -2941,6 +2906,22 @@ def _emit_section_heading(out: IO[str], code: str, heading: str) -> None:
     else:
         heading_block = f"{_ref_anchor(code)} {heading}"
     emit_styled(out, f"section_h{level}", heading_block, indent=indent)
+    # Auto-emit any hand-authored intro prose registered for this code
+    # in `section_prose.md`. Sections without an entry are no-op'd. The
+    # body indent comes from `_body_indent_for_code` so prose nests at
+    # the same column where YAML-driven content under this heading would
+    # land — keeps the visual hierarchy uniform whether the body is
+    # prose or data. Markdown `**bold**` / `*italic*` inline emphasis
+    # is translated to RTF via `_markdown_inline_to_rtf`, available for
+    # every section's prose (not just B.X).
+    prose = _section_prose.get(code)
+    if prose:
+        body_indent = _body_indent_for_code(code)
+        for p in prose:
+            out.write(
+                f"\\pard\\li{body_indent} {_markdown_inline_to_rtf(p)}"
+                f"\\par\\par\n"
+            )
 
 
 def _emit_placeholder_subsection(
@@ -2960,110 +2941,12 @@ def _emit_placeholder_subsection(
     out.write(f"\\pard\\li{_body_indent_for_code(code)}\\par\\par\n")
 
 
-def _emit_subsection_with_prose(
-    out: IO[str], code: str, title: str, paragraphs: list[str],
-) -> None:
-    """Emit a sub-section heading followed by indented prose paragraphs.
-
-    Used for C.16 outline subsections (C.16.1 Overview, C.16.2.1 VIP,
-    C.16.3.1 Thesis Advising) whose prose lives in the Purdue Word
-    template body text — emitting it here keeps "full copy-paste-in"
-    safe (no missing prose to hand-author after the paste).
-
-    Each `paragraphs` entry is one `\\par` block at the same body
-    indent as the heading's child content. Markdown emphasis is NOT
-    processed — the prose is hand-curated and uses literal text only.
-    """
-    _emit_section_heading(out, code, title)
-    indent = _body_indent_for_code(code)
-    for p in paragraphs:
-        out.write(f"\\pard\\li{indent} {escape_rtf(p)}\\par\\par\n")
-
-
-# ---- C.16 outline prose constants ----------------------------------------
-#
-# Hand-authored prose for the C.16 mentoring subsections that don't have
-# YAML data of their own (Overview, VIP, Thesis Advising). Edit in place
-# when the candidate's mentoring story evolves — these are the
-# single source of truth for the rendered packet's mentoring narrative.
-
-_C_16_1_OVERVIEW_PROSE = [
-    "Davis's mentoring activities form a structured development "
-    "pipeline that moves students from project participation to "
-    "research independence, authorship, professional recognition, "
-    "and leadership. At the undergraduate level, this pipeline "
-    "includes Vertically Integrated Projects, senior design, "
-    "independent study, SURF, NSF REU projects, OUR Scholars, "
-    "visiting research programs, and paid or volunteer research "
-    "assistantships. At the graduate level, it includes thesis "
-    "advising, student-led publications, fellowship and internship "
-    "mentoring, peer mentoring, and professional formation through "
-    "research-group leadership. Across these activities, Davis "
-    "emphasizes scaffolded entry into research followed by "
-    "increasing independence: students learn to identify technical "
-    "gaps, formulate research questions, build and evaluate "
-    "artifacts, communicate results, respond to peer review, and "
-    "mentor junior collaborators.",
-    "The subsections below summarize his mentoring in two parts. "
-    "Section C.16.2 describes undergraduate mentoring, including "
-    "VIP and senior design, other undergraduate research pathways, "
-    "undergraduate research products and authorship, and "
-    "undergraduate awards and career development. Section C.16.3 "
-    "describes graduate mentoring, including thesis advising and "
-    "research supervision, and graduate student awards and "
-    "fellowships.",
-]
-
-_C_16_2_1_VIP_PROSE = [
-    "Davis has sponsored a Vertically Integrated Projects (VIP) "
-    "team in every semester since joining Purdue. The team enrolls "
-    "undergraduate students from ECE, Computer Science, and related "
-    "computing programs. It provides a sustained, multi-year "
-    "mentoring structure in which first-year through senior "
-    "undergraduate students work on open-ended software engineering "
-    "research and development problems. The team has enrolled over "
-    "170 students (enrollment of 10-20 students per semester), and "
-    "twelve students completed senior design projects under Davis's "
-    "supervision through the team.",
-    "The VIP structure supports both broad participation and "
-    "progressive responsibility. Newer students enter through "
-    "onboarding activities and subteam participation; continuing "
-    "students take on technical leadership, project coordination, "
-    "and near-peer mentoring roles. Senior design students use the "
-    "same structure to pursue more substantial engineering "
-    "deliverables under Davis's supervision. This model lets "
-    "students participate at different levels of preparation while "
-    "contributing to a shared, continuing research program rather "
-    "than isolated one-semester projects.",
-]
-
-_C_16_2_2_PATHWAYS_INTRO = [
-    "Beyond VIP and senior design, Davis has mentored undergraduate "
-    "students through several additional research and engagement "
-    "pathways, summarized in the following Table. These mechanisms "
-    "provide multiple entry points into research: summer programs, "
-    "course-credit independent study, visiting-student programs, "
-    "living-learning-community outreach, and discipline-level "
-    "student mentoring.",
-]
-
-_C_16_2_4_AWARDS_INTRO = [
-    "Davis has written over 60 recommendation letters for "
-    "undergraduates pursuing advanced degrees in computing and law. "
-    "His mentees have gone on to top graduate programs, e.g., "
-    "Stanford, Carnegie Mellon, UIUC, Michigan, Georgia Tech, and "
-    "UPenn.",
-    "Many of these mentees have received notable awards.",
-]
-
-_C_16_3_1_THESIS_PROSE = [
-    "Under Davis's supervision, two PhD students have defended "
-    "their dissertations, and seven MSc students have defended "
-    "their theses.",
-    "He currently sole-advises seven PhD students, and co-advises "
-    "two PhD students.",
-    "See table in C.14 for details.",
-]
+# Optional intro prose for any section heading now lives in the
+# author-editable `assets/section-prose.md` (loader: `load_section_prose`
+# in builders.py). `_emit_section_heading` auto-emits the body for the
+# code it just rendered — no caller code needed. To populate a section
+# with prose, add a `## <CODE> …` block to that file; to remove prose,
+# delete the block.
 
 
 def write_rtf(
@@ -3099,12 +2982,19 @@ def write_rtf(
     course_development: Optional[list[CourseDevelopment]] = None,
     courses_taught: Optional[list[CourseTaught]] = None,
     candidate_info: Optional[CandidateInformation] = None,
-    self_eval: Optional[SelfEvaluation] = None,
+    section_prose: Optional[dict[str, list[str]]] = None,
     pending_proposals: Optional[list[Grant]] = None,
     sections_filter: Optional[set[str]] = None,
 ) -> None:
     log.info("Generating RTF file: %s", path)
     paper_index = paper_index or {}
+    # Stash on the module-level so `_emit_section_heading` (called from
+    # ~20 sites) can pick up intro prose for the code it just emitted
+    # without every caller threading the dict through. Cleared at the
+    # end of write_rtf in a try/finally to keep state from leaking
+    # across calls in long-running processes.
+    global _section_prose
+    _section_prose = section_prose or {}
     key_works = key_works or []
     key_work_index = key_work_index or {}
     invited_talks = invited_talks or []
@@ -3229,15 +3119,16 @@ def write_rtf(
 
         # Section IV — B.1-B.5 self-evaluation. Emitted between Section
         # III front matter and the C.X scholarly contributions block.
-        # Skipped silently when no self-evaluation file was loaded
-        # (CLI `--self-eval` flag).
-        if self_eval is not None:
+        # Prose for each B.X auto-emits from `_section_prose` (loaded
+        # from `assets/section-prose.md`); B-section is skipped silently
+        # when no B.X entries are present in the prose dict.
+        if any(c in _section_prose for c in ("B.1", "B.2", "B.3", "B.4", "B.5")):
             b_sections = {
                 "B1 Summary", "B2 Impact", "B3 Vision",
                 "B4 External Events", "B5 COVID Impact",
             }
             if any(_emit(s) for s in b_sections):  # type: ignore[arg-type]
-                render_self_evaluation_section(self_eval, out)
+                render_self_evaluation_section(out)
 
         # C.1 highlight section first (it's a curated promotion list);
         # then the rest of SECTION_ORDER; then Section V, A.1 (Appendix:
@@ -3367,27 +3258,24 @@ def write_rtf(
             # emit of the auto-derived data sub-sections (C.16.2.3 / C.16.2.4
             # / C.16.3.3) so the whole mentoring tree reads top-down per
             # the user-supplied 260603 structure.
-            _emit_subsection_with_prose(
-                out, "C.16.1", "Overview", _C_16_1_OVERVIEW_PROSE,
-            )
-            _emit_placeholder_subsection(
+            # Each `_emit_section_heading` call auto-pulls intro prose
+            # from the section_prose dict for the given code. Sections
+            # without an entry in `section-prose.md` render heading-only.
+            _emit_section_heading(out, "C.16.1", "Overview")
+            _emit_section_heading(
                 out, "C.16.2", "Undergraduate Student Mentoring",
             )
-            _emit_subsection_with_prose(
+            _emit_section_heading(
                 out, "C.16.2.1", "Vertically Integrated Projects",
-                _C_16_2_1_VIP_PROSE,
             )
             if _emit("Undergraduate Research Pathways"):
                 if undergrad_pathways:
-                    render_undergrad_pathways_section(
-                        undergrad_pathways, out,
-                        intro_paragraphs=_C_16_2_2_PATHWAYS_INTRO,
-                    )
+                    render_undergrad_pathways_section(undergrad_pathways, out)
                 else:
-                    # No YAML data yet → fall back to the placeholder
-                    # so the C.16 outline reads correctly while the
-                    # candidate is populating their data.
-                    _emit_placeholder_subsection(
+                    # No YAML data yet → still emit the heading so the
+                    # C.16 outline reads correctly. Intro prose (if any)
+                    # auto-emits from section-prose.md via the heading.
+                    _emit_section_heading(
                         out, "C.16.2.2",
                         "Other Undergraduate Research Pathways",
                     )
@@ -3396,14 +3284,12 @@ def write_rtf(
             if _emit("Undergraduate Student Awards"):
                 render_student_awards_section(
                     "Undergraduate Student Awards", student_awards, out,
-                    intro_paragraphs=_C_16_2_4_AWARDS_INTRO,
                 )
-            _emit_placeholder_subsection(
+            _emit_section_heading(
                 out, "C.16.3", "Graduate Student Mentoring",
             )
-            _emit_subsection_with_prose(
+            _emit_section_heading(
                 out, "C.16.3.1", "Thesis Advising and Research Supervision",
-                _C_16_3_1_THESIS_PROSE,
             )
             if _emit("Graduate Student Awards"):
                 # Now C.16.3.2 (renumbered from C.16.3.3) — the
