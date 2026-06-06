@@ -500,7 +500,27 @@ that need to translate to RTF; without `StyleAttrs`, the writer
 would have to import raw RTF strings from `STYLES`, defeating the
 disentangling goal.
 
-### Phase 1 — IR vocabulary + RawRtfBlock escape hatch
+### Status (updated 2026-06-06)
+
+* **Phase 1 — LANDED.** `src/pubs_emitter/ir.py` ships with the full
+  Block + Run vocabulary, plus `_runs()` helper. 38 tests in
+  `tests/test_ir.py`.
+* **Phase 2 — LANDED.** `src/pubs_emitter/writer.py` (Writer Protocol)
+  + `src/pubs_emitter/writer_rtf.py` (RtfWriter skeleton with
+  `RawRtfBlock` / `RawRun` / `Text` support). Other block / run types
+  raise `NotImplementedError` until their migration arms land. 11
+  tests in `tests/test_writer_rtf.py`.
+* **Phase 3 — LANDED.** `walk_to_blocks` in
+  `src/pubs_emitter/section_walker.py` produces `list[Block]` by
+  wrapping each node's legacy RTF output in a single `RawRtfBlock`.
+  `walk_to_blocks(text, ctx)` + `RtfWriter().render(blocks)` is
+  byte-identical to `walk_section_prose(text, ctx, out)`. 6 tests in
+  `tests/test_ir_walker_bridge.py`.
+* **Phase 4-7 — PENDING.** Pilot migration (C.19 Patents) + bulk
+  renderer migration + RefLink direct rendering + cleanup. Each phase
+  is independently revertible.
+
+### Phase 1 — IR vocabulary + RawRtfBlock escape hatch (LANDED 2026-06-06)
 
 **Scope:** Author `ir.py` with all Block + Run types listed above.
 Add `RawRtfBlock` and `RawRun` as escape hatches that let the writer

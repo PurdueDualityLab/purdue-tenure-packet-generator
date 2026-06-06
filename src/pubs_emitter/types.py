@@ -255,12 +255,19 @@ class UnderReview(NamedTuple):
     # entry surfaces in C.16.2.3 (mixes naturally with published-paper years
     # under the existing `-year` ordering). 0 = unknown (sorts to bottom).
     submission_year: int = 0
-    # Optional supporting documentation (Q7): repo-relative path to a
-    # PNG or JPEG that gets embedded inline below the citation —
-    # typically a screenshot of the submission-confirmation email.
-    # Empty string = no image. The rendered packet hex-encodes the
-    # file inline; see `image_embed.emit_image` for the layout.
-    supporting_image: str = ""
+    # Evidence image (PNG/JPEG, repo-relative path) for the Section V
+    # A.1.2 Evidence sub-section — typically a screenshot of the
+    # submission-confirmation email from the venue's HotCRP /
+    # editorial-manager / OpenReview system. Empty string = no image.
+    # The renderer collects every entry's evidence_image into the A.1.2
+    # numbered list (entry N's image lands at A.1.2.N); see
+    # `render_under_review_evidence_section` in `rtf.py`.
+    #
+    # Legacy field: `supporting_image` is an alias accepted at YAML
+    # load time. Prefer `evidence_image` in new YAML; the legacy alias
+    # is preserved so existing data (the 2026 SAGE stub) doesn't
+    # break.
+    evidence_image: str = ""
 
 
 class KeyWork(NamedTuple):

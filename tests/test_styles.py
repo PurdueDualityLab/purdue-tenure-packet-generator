@@ -258,3 +258,140 @@ class TestOpenCloseBalance:
                     f"STYLES[{style!r}] opens {open_tag!r} {opens}x "
                     f"but never closes with {close_tag!r}",
                 )
+
+
+# ----- StyleAttrs typed-registry → RTF translator pin tests --------------
+
+
+from pubs_emitter import styles_rtf
+from pubs_emitter.styles import _STYLES_ATTRS, StyleAttrs
+
+
+class TestStyleAttrsTranslator:
+    """`styles_rtf.to_rtf_open(_STYLES_ATTRS[name])` must produce the
+    same RTF as the legacy hand-written `STYLES[name]` string —
+    byte-identical for every registered style. This is the structural
+    defense behind the 2026-06-06 styles refactor: the translator IS
+    the source of truth post-refactor, so a pin on every name guards
+    against silent regression on later edits."""
+
+    # Hand-pinned legacy RTF strings — frozen from the pre-refactor
+    # state. If a future edit changes a style's RTF, update this dict
+    # in the same commit so the test still pins what shipped.
+    _LEGACY_OPENS: dict[str, str] = {
+        "body":                 r"\fs22",
+        "roman_section":        r"\s1\b",
+        "group_heading":        r"\s2\b",
+        "subgroup_heading":     r"\s4\qc\b\ul\fs28\i0",
+        "section_h1":           r"\s3\b\fs22",
+        "section_h2":           r"\s4\i\fs22",
+        "section_h3":           r"\s4\i\fs22",
+        "section_h4":           r"\s4\i\fs22",
+        "inline_subheading":    r"\i\fs22",
+        "career_phase_divider": r"\i\fs22",
+        "intro_note":           r"\i\fs22",
+        "na_placeholder":       r"\fs22",
+        "field_label":          r"\i",
+        "grant_total_label":    r"\i",
+        "table_header":         r"\b",
+        "venue_italic":         r"\i",
+        "underline_marker":     r"\ul",
+        "entry_summary":        r"\b",
+        "entry_name":           r"\b",
+    }
+
+    _LEGACY_CLOSES: dict[str, str] = {
+        "body":                 "",
+        "roman_section":        r"\b0",
+        "group_heading":        r"\b0",
+        # `\i0\ulnone\b0` — legacy `_close_for` matched `\i` inside
+        # `\i0` at open and paired it with `\i0`, so the close emits
+        # the doubled `\i0`. Preserved here for byte-identity.
+        "subgroup_heading":     r"\i0\ulnone\b0",
+        "section_h1":           r"\b0",
+        "section_h2":           r"\i0",
+        "section_h3":           r"\i0",
+        "section_h4":           r"\i0",
+        "inline_subheading":    r"\i0",
+        "career_phase_divider": r"\i0",
+        "intro_note":           r"\i0",
+        "na_placeholder":       "",
+        "field_label":          r"\i0",
+        "grant_total_label":    r"\i0",
+        "table_header":         r"\b0",
+        "venue_italic":         r"\i0",
+        "underline_marker":     r"\ulnone",
+        "entry_summary":        r"\b0",
+        "entry_name":           r"\b0",
+    }
+
+    def test_every_style_has_a_pin(self) -> None:
+        """Pin coverage matches registry: a new style added without a
+        pin would slip through silent regression."""
+        assert set(self._LEGACY_OPENS.keys()) == set(_STYLES_ATTRS.keys())
+        assert set(self._LEGACY_CLOSES.keys()) == set(_STYLES_ATTRS.keys())
+
+    @pytest.mark.parametrize("name", sorted(_STYLES_ATTRS))
+    def test_open_byte_identical_to_legacy(self, name: str) -> None:
+        attrs = _STYLES_ATTRS[name]
+        produced = styles_rtf.to_rtf_open(attrs)
+        assert produced == self._LEGACY_OPENS[name], (
+            f"to_rtf_open(_STYLES_ATTRS[{name!r}]) = {produced!r} "
+            f"but legacy STYLES[{name!r}] = {self._LEGACY_OPENS[name]!r}"
+        )
+
+    @pytest.mark.parametrize("name", sorted(_STYLES_ATTRS))
+    def test_close_byte_identical_to_legacy(self, name: str) -> None:
+        attrs = _STYLES_ATTRS[name]
+        produced = styles_rtf.to_rtf_close(attrs)
+        assert produced == self._LEGACY_CLOSES[name], (
+            f"to_rtf_close(_STYLES_ATTRS[{name!r}]) = {produced!r} "
+            f"but legacy close = {self._LEGACY_CLOSES[name]!r}"
+        )
+
+    def test_styles_dict_derived_from_attrs(self) -> None:
+        """The public `STYLES: dict[str, str]` is derived from
+        `_STYLES_ATTRS` via the translator — no hand-written drift."""
+        for name, attrs in _STYLES_ATTRS.items():
+            assert STYLES[name] == styles_rtf.to_rtf_open(attrs)
+
+
+class TestStyleAttrsDataclass:
+    """`StyleAttrs` is the typed, frozen substrate. Pin its construction
+    semantics so the dataclass shape doesn't drift silently."""
+
+    def test_default_construction_is_no_op(self) -> None:
+        """An all-defaults StyleAttrs emits an empty RTF run — the
+        baseline "do nothing" style."""
+        attrs = StyleAttrs()
+        assert styles_rtf.to_rtf_open(attrs) == ""
+        assert styles_rtf.to_rtf_close(attrs) == ""
+
+    def test_italic_tristate_none_emits_nothing(self) -> None:
+        attrs = StyleAttrs(italic=None)
+        assert "\\i" not in styles_rtf.to_rtf_open(attrs)
+        assert "\\i0" not in styles_rtf.to_rtf_open(attrs)
+
+    def test_italic_true_emits_open_and_close(self) -> None:
+        attrs = StyleAttrs(italic=True)
+        assert styles_rtf.to_rtf_open(attrs) == r"\i"
+        assert styles_rtf.to_rtf_close(attrs) == r"\i0"
+
+    def test_italic_false_emits_i0_open_and_legacy_doubled_i0_close(self) -> None:
+        """The `italic=False` tristate emits explicit `\\i0` at OPEN
+        time (overrides a heading-style italic default) AND emits a
+        second `\\i0` at close for legacy `_close_for` parity (the
+        legacy regex matched `\\i` inside `\\i0` and paired it with
+        `\\i0`). Word's parser treats italic-off idempotently — the
+        doubled emit is harmless and lives in shipped output, so we
+        preserve it under the byte-identity invariant."""
+        attrs = StyleAttrs(italic=False, bold=True)
+        # Open: `\b\i0` — italic-off trailing.
+        assert styles_rtf.to_rtf_open(attrs) == r"\b\i0"
+        # Close: `\i0\b0` — doubled \i0 for legacy parity.
+        assert styles_rtf.to_rtf_close(attrs) == r"\i0\b0"
+
+    def test_frozen_dataclass_rejects_mutation(self) -> None:
+        attrs = StyleAttrs(bold=True)
+        with pytest.raises((AttributeError, Exception)):
+            attrs.bold = False  # type: ignore[misc]

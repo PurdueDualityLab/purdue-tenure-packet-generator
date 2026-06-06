@@ -1283,13 +1283,17 @@ class TestRenderUnderReviewSection:
         assert "\\*\\bkmkstart A_1_1}" not in out  # no bare collision
 
     def test_multiple_entries_increment_index(self) -> None:
+        """A.1.1.N renumbering: pending publications live under the
+        A.1.1 Pending Publications sub-heading, with per-entry codes
+        A.1.1.1, A.1.1.2, ... (one extra level of nesting vs the
+        pre-2026-06-06 A.1.N scheme)."""
         buf = io.StringIO()
         render_under_review_section(
             [self._ur(title="One"), self._ur(title="Two"), self._ur(title="Three")],
             buf,
         )
         out = buf.getvalue()
-        assert "A.1.1" in out and "A.1.2" in out and "A.1.3" in out
+        assert "A.1.1.1" in out and "A.1.1.2" in out and "A.1.1.3" in out
 
     def test_body_shape(self) -> None:
         buf = io.StringIO()

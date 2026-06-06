@@ -939,16 +939,17 @@ def main(argv: Optional[list[str]] = None) -> None:
             ref_index[bib_key] = resolved_code
             _record_section_bibkey(bib_key, resolved_code)
 
-        # Under-review entries live under Section V; the bare code "A.1.N"
-        # collides with Section III's A.1 Identifiers entries (now also
-        # numbered A.1.1 / A.1.2 / A.1.3), so we namespace Section V's
-        # bookmark target with a `V.` prefix → bookmark name `V_A_1_N`.
-        # The ref_index value is the pipe-form "Section V, A.1.N|V.A.1.N"
-        # honored by `_finalize_ref_hyperlinks` (display=LHS, bookmark
-        # target=RHS). Mirrors the V.A.2 Pending Proposals namespace.
-        ur_code = SECTION_CODES["Under Review"]
+        # Under-review entries live under Section V, A.1.1 (Pending
+        # Publications). Codes A.1.1.N; bookmark namespace V_A_1_1_N
+        # (the `V.` namespace prevents collision with Section III's
+        # A.1.1 Identifiers entries). The ref_index value is the
+        # pipe-form "Section V, A.1.1.N|V.A.1.1.N" honored by
+        # `_finalize_ref_hyperlinks` (display=LHS, bookmark target=RHS).
+        # A.1.2 (Evidence) entries are not @-refable from prose — they're
+        # internal pointers from A.1.1.N to their evidence screenshot.
+        ur_code = SECTION_CODES["Under Review"]  # "A.1"
         for idx, ur in enumerate(under_review, 1):
-            bare = f"{ur_code}.{idx}"
+            bare = f"{ur_code}.1.{idx}"  # A.1.1.N
             _register(ur, f"Section V, {bare}|V.{bare}")
         _register_simple(key_works, "Key Works")
         # Key Works are re-emits of papers also present in C.4 / C.5 /

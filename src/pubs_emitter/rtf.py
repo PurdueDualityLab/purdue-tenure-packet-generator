@@ -1067,9 +1067,11 @@ def render_pending_proposals_section(
 def render_under_review_section(
     under_review: list[UnderReview], out: IO[str],
 ) -> None:
-    """Section V, A.1: numbered list of in-flight submissions.
+    """Section V, A.1: emits the A.1 parent heading + A.1.1 Pending
+    Publications sub-section (numbered list of in-flight submissions) +
+    A.1.2 Evidence sub-section (one screenshot per A.1.1.N entry).
 
-    Body shape per entry: `Authors. Title. Under review: /italic Venue/,
+    A.1.1 entry body shape: `Authors. Title. Under review: /italic Venue/,
     NN pages. [Due: YYYY-MM-DD]`. The italic venue cell is prefixed with
     "Under review: " so the in-flight status is explicit on every entry
     (helpful when reviewers scan the appendix). The "Due" suffix only
@@ -1077,21 +1079,26 @@ def render_under_review_section(
     without one render without a deadline marker. Sorted by `due_date`
     ascending so near-deadline submissions surface first.
 
-    Bookmark namespace: entries use the `V_` prefix (V_A_1_1, V_A_1_2,
-    ...) so they don't collide with Section III's A.1.N Identifiers
-    bookmarks (A_1_1, A_1_2, A_1_3). Section V is the appendix; the
-    namespace pattern mirrors Section V A.2 Pending Proposals
-    (V_A_2_N). Cross-references to these entries carry the pipe-form
-    "Section V, A.1.N|V.A.1.N" so the display reads "Section V, A.1.N"
-    while the hyperlink targets `V_A_1_N`.
+    Bookmark namespace: A.1.1.N entries bookmark to `V_A_1_1_N` (the
+    `V_` prefix prevents collision with Section III's A.1.1 entries);
+    A.1.2.N evidence images bookmark to `V_A_1_2_N`. Cross-references
+    to A.1.1 entries carry the pipe-form
+    "Section V, A.1.1.N|V.A.1.1.N" so the display reads
+    "Section V, A.1.1.N" while the hyperlink targets `V_A_1_1_N`.
+
+    Empty list → nothing emits (no orphan A.1 / A.1.1 / A.1.2
+    headings). A.1.2 also suppresses if no entry has an
+    `evidence_image` set (no orphan empty-list heading).
     """
     if not under_review:
         return
-    code = SECTION_CODES["Under Review"]
+    code = SECTION_CODES["Under Review"]  # "A.1"
     heading = SECTION_HEADINGS["Under Review"]
     _emit_section_heading(out, code, heading)
+    # A.1.1 — pending publications sub-heading (one level deeper).
+    _emit_subsection_heading(out, f"{code}.1", "Pending publications.")
     indent = _hanging_indent_for_codes(
-        _section_codes_up_to(code, len(under_review))
+        _section_codes_up_to(f"{code}.1", len(under_review))
     )
     for idx, ur in enumerate(under_review, 1):
         body = (
@@ -1105,15 +1112,66 @@ def render_under_review_section(
         if ur.due_date and ur.due_date != "9999-99-99":
             body += f" {styled_inline('underline_marker', f'Due: {escape_rtf(ur.due_date)}')}."
         _emit_list_item(
-            out, f"{code}.{idx}", body, indent=indent, bookmark_prefix="V.",
+            out, f"{code}.1.{idx}", body, indent=indent, bookmark_prefix="V.",
         )
-        # Q7 — optional supporting documentation. When the YAML entry
-        # sets `supporting_image`, hex-encode the PNG/JPEG inline at
-        # the same indent the entry body wraps at. Missing file is
-        # build-fatal; see image_embed.emit_image.
-        if ur.supporting_image:
-            from .image_embed import emit_image
-            emit_image(out, ur.supporting_image, indent_twips=indent)
+    # A.1.2 — Evidence sub-section. Only emits if at least one entry has
+    # `evidence_image` set. Each evidence image lands at A.1.2.N
+    # (matching its A.1.1.N pending-pub entry) with a `\bkmkstart
+    # V_A_1_2_N` anchor for cross-ref.
+    _render_under_review_evidence(under_review, out, code)
+
+
+def _render_under_review_evidence(
+    under_review: list[UnderReview], out: IO[str], parent_code: str,
+) -> None:
+    """A.1.2 Evidence sub-section — emits one numbered image per
+    pending-publication entry that has an `evidence_image` set.
+
+    Caption shape: "Evidence for {hyperlink to A.1.1.N}" where the
+    hyperlink targets the matching pending-pub entry's bookmark
+    (`V_A_1_1_N`). Reviewers clicking the link jump back to the
+    pending-pub entry; clicking from the pending-pub entry can lead
+    here via the corresponding A.1.2.N bookmark.
+
+    Skips silently if no entry has evidence — the orphan heading is
+    a worse UX than no heading at all.
+    """
+    if not any(ur.evidence_image for ur in under_review):
+        return
+    from .image_embed import emit_image
+    _emit_subsection_heading(out, f"{parent_code}.2", "Evidence.")
+    indent = _hanging_indent_for_codes(
+        _section_codes_up_to(f"{parent_code}.2", len(under_review))
+    )
+    for idx, ur in enumerate(under_review, 1):
+        if not ur.evidence_image:
+            continue
+        # Pipe-form ref so the hyperlink displays "A.1.1.N" but
+        # targets the `V_A_1_1_N` bookmark on the matching pending-pub
+        # entry. `_finalize_ref_hyperlinks` handles the conversion.
+        pending_pub_ref = f"{parent_code}.1.{idx}|V.{parent_code}.1.{idx}"
+        caption = f"Evidence for {_code_link(pending_pub_ref)}."
+        _emit_list_item(
+            out, f"{parent_code}.2.{idx}", caption,
+            indent=indent, bookmark_prefix="V.",
+        )
+        emit_image(out, ur.evidence_image, indent_twips=indent)
+
+
+def _emit_subsection_heading(out: IO[str], code: str, heading: str) -> None:
+    """Emit an A.1.1 / A.1.2 -style subsection heading.
+
+    Uses `section_h2` (italic, body-size, Word heading-4 mapping) so the
+    Table of Contents picks it up at the same level as C.5.1 / C.16.2
+    sub-section headings. Code is bookmarked with the `V_` prefix
+    namespace so cross-refs into A.1.1 / A.1.2 land cleanly.
+    """
+    # The bookmark name swaps "." → "_" and prepends the V_ namespace.
+    # E.g., "A.1.1" → "V_A_1_1"; "A.1.2" → "V_A_1_2".
+    bookmark = "V_" + code.replace(".", "_")
+    out.write(f"{{\\*\\bkmkstart {bookmark}}}")
+    emit_styled(out, "section_h2", f"{code} {escape_rtf(heading)}")
+    out.write(f"{{\\*\\bkmkend {bookmark}}}")
 
 
 # C.5 "Other publications and products" subcategory map. Each Citation's

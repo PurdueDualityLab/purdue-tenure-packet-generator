@@ -635,8 +635,8 @@ the success and failure paths.
 
 ```bash
 .venv/bin/pylint src/pubs_emitter   # 9.95/10 baseline
-.venv/bin/mypy                      # 0 errors baseline
-.venv/bin/pytest                    # 341 tests baseline
+.venv/bin/mypy                      # 0 errors across src + tests + launcher
+.venv/bin/pytest                    # 622 tests baseline (includes mypy gate)
 .venv/bin/python pubs-emitter.py \
     --bib assets/my_papers_full.bib \
     --non-scholar assets/non-scholar-work.yaml \
@@ -654,6 +654,96 @@ The only persistent pylint warning is R0801 (duplicate-code) — a
 similarity-heuristic flag on the `_bib_entry_by_title` helper in `builders.py`
 vs `rtf.py`. Pre-existing and intentional (keeps imports local to each
 caller's module).
+
+## Typed Python — compiler-assisted correctness
+
+The mypy gate runs as part of `pytest` (`tests/test_mypy_gate.py` invokes
+`python -m mypy`). **All new code lands typed; refactors are an
+opportunity to tighten existing types.** Type discipline is load-bearing
+in this codebase because the markdown-master walker, IR refactor, and
+styles refactor all rely on types as the cross-module contract.
+
+**Substrate.** `[tool.mypy].files = ["src/pubs_emitter", "tests",
+"pubs-emitter.py"]` in `pyproject.toml`. The gate currently runs with
+`disallow_untyped_defs = false` (gradual mode) — the goal is to flip it
+to `true` per-module as refactors land. New code in
+`src/pubs_emitter/` is held to the strict bar regardless.
+
+**Discipline (the rules):**
+
+1. **Prefer specific types over `Any`, `object`, `dict[str, object]`,
+   or `Optional[X]`-with-sentinel-None.** When the value set is closed,
+   reach for `Literal[...]` (canonical examples in `types.py`: `Section`,
+   `StudentType`, `Category`). When you have a record, reach for
+   `NamedTuple` or `@dataclass(frozen=True, kw_only=True)` — the styles
+   refactor introduces `StyleAttrs` as a frozen dataclass; the IR
+   refactor introduces `Block` / `Run` ADTs the same way.
+
+2. **Use `TYPE_CHECKING` for forward-only annotations.** When you
+   annotate a function with a return type that would otherwise require
+   a runtime import (deferred to avoid cycles), do:
+   ```python
+   from typing import TYPE_CHECKING
+   if TYPE_CHECKING:
+       from .types import CourseTaught
+   def f() -> "CourseTaught": ...
+   ```
+   Canonical example: `evaluations.py` ↔ `types.py`.
+
+3. **Tests: replace `**dict[str, object]` unpacking with `._replace`.**
+   The legacy test-helper pattern
+   ```python
+   base = dict(year=2024, ...)
+   base.update(overrides)
+   return T(**base)
+   ```
+   fails type-checking because `base` is inferred as `dict[str, object]`.
+   Rewrite as:
+   ```python
+   return T(year=2024, ...)._replace(**overrides)
+   ```
+   `_replace` preserves the typed signature; the test code is also one
+   line shorter.
+
+4. **`Literal` parameters propagate up the call graph.** When a function
+   accepts `section: Section`, the callers must pass a `Section` value,
+   not a bare `str`. Annotate intermediate variables with `Section` so
+   the type narrows correctly:
+   ```python
+   cases: list[tuple[Section, str]] = [
+       ("University Service", "C.23"),
+       ...,
+   ]
+   for section, expected_code in cases:
+       render_service_section(section, ..., buf)
+   ```
+
+5. **`int | str`-union dispatch is fine when the type genuinely is a
+   union.** Example: `_all_errors: list[tuple[str, int | str, str]]`
+   in `cli.py` — `idx` is `int` for list-item sites, `str` for
+   section-prose sites; the `%s` log format accommodates both. Don't
+   force a sham unification (e.g., stringifying the int at every site)
+   when the union is the truthful type.
+
+6. **`type: ignore` is a *focused* escape hatch, not a blanket.** Use
+   the narrow form `# type: ignore[error-code]` (e.g., `[assignment]`,
+   `[arg-type]`) so mypy will complain if the underlying issue is fixed
+   later (the `warn_unused_ignores = true` setting bites — and that's
+   the design).
+
+7. **`object` is rarely what you want.** If a function genuinely takes
+   "anything", consider whether the call sites actually pass varied
+   types — usually they don't, and a `Union[...]` or `Protocol` is the
+   honest type. `_maybe_int(v: object)` is acceptable because the
+   function dispatches on `isinstance(v, …)` explicitly; the alternative
+   would be a less-honest `Any`.
+
+**When to flip `disallow_untyped_defs = true` per-module:** as soon as
+a module is touched substantially (refactor, decomposition, new
+feature), annotate every def in that module and add a per-module
+override in `pyproject.toml`. The styles refactor (`styles_rtf.py`,
+`styles.py` post-StyleAttrs) and the IR refactor (`ir.py`,
+`rtf_writer.py`) will both land with strict-mode overrides per phase.
 
 ## Test suite (`tests/`)
 

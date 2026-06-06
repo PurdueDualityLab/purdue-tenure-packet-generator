@@ -1184,12 +1184,12 @@ class TestBuildUndergradProductsUnderReview:
         )
         assert len(products) == 1
         p = products[0]
-        # Pipe-form ref: display "A.1.1" but the hyperlink targets the
-        # `V_A_1_1` bookmark (Section V's namespaced under-review entry).
-        # Section III also has A.1.N entries (Identifiers), so the V.
-        # prefix on the bookmark side disambiguates without changing
-        # the visible code.
-        assert p.ref == "A.1.1|V.A.1.1"
+        # Pipe-form ref: display "A.1.1.1" but the hyperlink targets the
+        # `V_A_1_1_1` bookmark. A.1.1 is the Pending Publications
+        # sub-section; A.1.1.N is the per-entry code under it. The `V.`
+        # prefix on the bookmark side disambiguates from Section III's
+        # A.1 entries.
+        assert p.ref == "A.1.1.1|V.A.1.1.1"
         assert p.n_coauthors == 1
         assert p.lead_is_undergrad is True  # Solarin is first author
         assert p.is_under_review is True

@@ -576,3 +576,75 @@ def register_tabular_directives(schemas_path: str | None = None) -> None:
 # import, or call `register_tabular_directives(<path>)` after import
 # to overwrite the entries.
 register_tabular_directives()
+
+
+# ----- IR-shaped directives (Phase 4+ of the IR refactor) ---------------
+#
+# Each migrated directive ships as a `(ctx) -> list[Block]` pure
+# function (in `pubs_emitter.renderers.*`) plus a legacy-API adapter
+# `(ctx, out) -> None` that drives the blocks through `RtfWriter`. The
+# adapter overwrites the auto-tabular entry in `DIRECTIVES` so the
+# walker dispatches the IR path; byte-identity is preserved because
+# the writer produces the same RTF.
+
+
+def _directive_patents_table_ir(ctx: RenderContext, out: IO[str]) -> None:
+    """C.19 Patents — IR adapter. Builds `list[Block]` via
+    `renderers.patents.render_patents_section_blocks`, then renders
+    via `RtfWriter`. Byte-identical to the legacy tabular-schema
+    auto-generated directive."""
+    from .renderers.patents import render_patents_section_blocks
+    from .writer_rtf import RtfWriter
+    patents = ctx.patents or []
+    blocks = render_patents_section_blocks(patents)
+    out.write(RtfWriter().render(blocks))
+
+
+def _directive_invited_talks_ir(ctx: RenderContext, out: IO[str]) -> None:
+    """C.6 Invited Talks — IR adapter."""
+    from .renderers.simple_lists import render_invited_talks_blocks
+    from .writer_rtf import RtfWriter
+    blocks = render_invited_talks_blocks(ctx.invited_talks or [])
+    out.write(RtfWriter().render(blocks))
+
+
+def _directive_leadership_roles_ir(ctx: RenderContext, out: IO[str]) -> None:
+    """C.7 Leadership Roles — IR adapter."""
+    from .renderers.simple_lists import render_leadership_roles_blocks
+    from .writer_rtf import RtfWriter
+    blocks = render_leadership_roles_blocks(ctx.leadership_roles or [])
+    out.write(RtfWriter().render(blocks))
+
+
+def _directive_media_appearances_ir(ctx: RenderContext, out: IO[str]) -> None:
+    """C.8 Media Appearances — IR adapter."""
+    from .renderers.simple_lists import render_media_appearances_blocks
+    from .writer_rtf import RtfWriter
+    blocks = render_media_appearances_blocks(ctx.media_appearances or [])
+    out.write(RtfWriter().render(blocks))
+
+
+def _directive_conference_presentations_ir(
+    ctx: RenderContext, out: IO[str],
+) -> None:
+    """C.9 Conference Presentations — IR adapter. Pulls bib_entries +
+    paper_index out of the ctx.extra bag for cross-ref resolution."""
+    from .renderers.simple_lists import render_conference_presentations_blocks
+    from .writer_rtf import RtfWriter
+    bib_entries = ctx.extra.get("bib_entries", []) or []
+    paper_index = ctx.paper_index or {}
+    blocks = render_conference_presentations_blocks(
+        ctx.conference_presentations or [], bib_entries, paper_index,
+    )
+    out.write(RtfWriter().render(blocks))
+
+
+# Replace the auto-generated tabular entry for PATENTS_TABLE with the
+# IR-based adapter; replace the bespoke list directives with their IR
+# variants. The walker dispatch is unchanged; byte-identity holds
+# because the writer emits the same RTF as the legacy emitters.
+DIRECTIVES["PATENTS_TABLE"] = _directive_patents_table_ir
+DIRECTIVES["INVITED_TALKS"] = _directive_invited_talks_ir
+DIRECTIVES["LEADERSHIP_ROLES"] = _directive_leadership_roles_ir
+DIRECTIVES["MEDIA_APPEARANCES"] = _directive_media_appearances_ir
+DIRECTIVES["CONFERENCE_PRESENTATIONS"] = _directive_conference_presentations_ir

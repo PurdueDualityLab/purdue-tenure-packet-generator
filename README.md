@@ -1,27 +1,128 @@
 # purdue-tenure-packet-generator
 
-Generate the publications + self-evaluation + supporting-documentation
-portions of a **Purdue tenure packet** from a small set of editable
-input files. Output is an RTF document ready to paste into the host
-Word template, with formatting preserved: bold for you, superscripts
-for student / advisor / corresponding-author roles, italic venues +
-underlined tier markers, clickable hyperlinks (DOI / NVD / USPTO /
-LinkedIn / NSF awards page / arbitrary URLs), hanging-indent layout,
-RTF tables for patents / students / postdocs / grants / courses, and
-cross-references that resolve to in-doc bookmarks.
+Generate the **scholarly contributions, self-evaluation, and general-
+information** portions of a Purdue tenure packet from a small set of
+editable text files.
+
+You bring: a BibTeX export of your publications, a CV, and a roster of
+your students + advisors + grants. The tool builds the formatted tables,
+links every paper to its DOI + page numbers (auto-fetched from
+Crossref), annotates every author with their role (your student? a
+senior advisor? you?), and emits a single RTF file you can use directly
+as your packet or copy into the official Purdue Word template.
+
+## Who this is for
+
+You're an Assistant Professor at Purdue going up for tenure. Your CV is
+in shape. You're now staring at the Purdue P&T template and realizing
+you have to:
+
+* Number every paper as `C.X.Y` and reference it by that number in your
+  self-evaluation prose.
+* Build tables for grants, students, courses-taught, patents, software
+  products, technology transfer, …
+* Mark every author of every paper to indicate whether they were your
+  student (with superscript `G` for graduate, `U` for undergraduate),
+  your advisor (`#`), the corresponding author (`*`), or you (bold).
+* Look up the DOI for every paper that has one — and the page numbers,
+  if the bib entry is missing them.
+* Embed clickable hyperlinks so the reviewer can follow each paper
+  citation, NSF award number, USPTO patent number, LinkedIn profile,
+  etc.
+* Re-do all of the above **every time you add a new paper, win a new
+  grant, or graduate a student** — because the cross-refs cascade.
+
+Doing this by hand in Word is the **40–80 hour soul-crushing** part of
+preparing a tenure packet. This tool collapses it to **~5 hours of
+data entry** (mostly automated by a chat-based AI working from
+screenshots of your CV), and then the rebuild on every subsequent
+change is **~3 seconds**.
+
+The Purdue P&T template ships the *structure* of a tenure packet. This
+tool ships **everything else** — the data substrate, the cross-ref
+machinery, the table generation, the author-annotation lookup tables,
+the venue-rank database — so all you have to write by hand is the
+prose (B.1–B.5 self-evaluation).
+
+## Two ways to use the output
+
+The build emits one RTF file. You have a choice in how to use it:
+
+### Option 1: Use the RTF directly as your packet (recommended)
+
+The RTF is fully formatted — title styles, heading levels (so Word's
+TOC scanner picks up the structure), tables with borders, hanging
+indents, hyperlinks, bookmarks. **Open it in Word and submit it as your
+packet.** The tool produces output that matches the Purdue template's
+visual conventions out of the box.
+
+### Option 2: Use it as a "table + reference builder" inside the Purdue Word template
+
+Some candidates prefer to **own the master document in Microsoft
+Word** — typing prose directly into the official template, dragging in
+formatted blocks from elsewhere. If that's you:
+
+1. Run this tool to produce the RTF.
+2. Open the RTF in Word.
+3. **Copy the formatted blocks you want** (the C.10 grants table,
+   the C.19 patents table, the C.14 graduate-students table, the
+   numbered C.4 conferences list, etc.) and **paste them into your
+   master Word document**.
+4. Write your self-evaluation (B.1–B.5) prose directly in the master
+   Word document.
+5. **Cross-references become your problem** in this mode — Word's
+   hyperlinks copy across cleanly, but adding a new paper means
+   re-running the tool, re-copying the regenerated section, and
+   updating any prose that references it. The build still validates
+   that every `@id` reference in your YAML resolves, and surfaces
+   missing-page-number / unknown-author-role warnings — so even in
+   this mode you get the data hygiene wins.
+
+Both modes work. Option 1 is faster end-to-end; option 2 keeps you in
+the Word ecosystem if that's where you're most comfortable.
+
+## What the tool does for you, beyond formatting
+
+The **time-consuming** parts of preparing a packet aren't the headings
+or fonts — Word handles those. The time-consuming parts are:
+
+* **Building tables.** Grants, students, courses, patents — these are
+  multi-column tables with consistent formatting requirements.
+  Generating them from a YAML list takes ~10 ms; doing them by hand
+  takes hours and they're brittle to every later edit.
+* **Annotating students + advisors + corresponding authors.** Every
+  citation needs superscript markers showing who was whom. Doing this
+  by hand means cross-referencing your student roster against every
+  author list, every time you add a paper. The tool does the lookup
+  automatically from `assets/config.yaml`'s `students:` and `advisors:`
+  blocks.
+* **Looking up DOIs and page numbers.** Most candidates have papers
+  whose bib entries are missing page numbers or DOIs — and the
+  Purdue template wants them. The tool **auto-fetches missing DOIs +
+  page numbers from Crossref** at build time (cached in SQLite so
+  re-runs are instant), and embeds them as clickable hyperlinks.
+  Patent issue dates come from USPTO via PatentsView; CVE descriptions
+  from NVD.
+* **Numbering cross-refs.** When you add a new C.4 paper, every
+  reference to a later C.4 paper in your prose shifts by one. The
+  tool re-numbers the whole document automatically and updates every
+  `@id` reference in your self-evaluation prose to match.
+
+This is the time-consuming part of a tenure packet, and this is what
+the tool eliminates.
 
 > **Tested on macOS only** (Davis's dev box). Should be portable to
-> Linux out of the box — `setup.sh` uses standard `python3 -m venv`
-> + `pip install`. Windows is untested; the path-handling and the
-> shell-driven `setup.sh` would likely need a small port.
+> Linux — `setup.sh` uses standard `python3 -m venv` + `pip install`.
+> Windows is untested.
 >
 > **Tested against the Purdue tenure-doc format as of May 2026** —
 > Section III General Information (A.1–A.7), Section IV Self-Evaluation
 > (B.1–B.5), Section V Scholarly Contributions (C.1–C.26 + appendix
 > with under-review and pending proposals). When the Purdue template
 > updates (it has revised wording a few times), check that
-> `SECTION_HEADINGS` in [`src/pubs_emitter/config.py`](src/pubs_emitter/config.py)
-> still matches the live template heading text before submitting.
+> `SECTION_HEADINGS` in
+> [`src/pubs_emitter/config.py`](src/pubs_emitter/config.py) still
+> matches the live template heading text before submitting.
 
 The system covers:
 
@@ -31,37 +132,36 @@ The system covers:
 | **IV** Self-Evaluation (B.1–B.5) | summary, impact, vision, external-events note, COVID statement | `self-evaluation.md` |
 | **V** Scholarly Contributions (C.1–C.26 + appendix) | publications, talks, grants, students, courses, services + appendix (V.A.1 under-review, V.A.2 pending proposals) | `my_papers.bib` + `non-scholar-work.yaml` + EvaluationKit CSVs |
 
-## Why use this
+## What's automatic, what's yours
 
-Prepping your source materials (CV, awards list, grant records,
-student roster, service log, etc.) to follow Davis's templates takes
-**~3 hours with AI support**, and the result will make them better
-for the rest of your scholarly career — you'll have one canonical
-structured copy of every fact you'd ever cite about yourself.
+| You do this | The tool does this |
+|---|---|
+| Export BibTeX from Google Scholar (one-time + delta on each new paper) | Parse the bib, classify each entry, pull missing DOIs + page numbers from Crossref, build the C.1–C.5 sections |
+| Tag each Scholar entry with its venue acronym (`[ICSE'25]`) | Look up the venue's tier from `assets/config.yaml`, annotate Tier 1 entries with the underlined marker |
+| List your students + advisors in `assets/config.yaml` | Annotate every author of every paper with the right superscript (`G` / `U` / `#` / `*` / bold-for-you) automatically |
+| Write your self-evaluation prose (B.1–B.5) | Resolve every `@bibkey` reference in your prose to its rendered section code (e.g., `C.4.7`), emit a clickable hyperlink |
+| Fill out YAML for grants, students, courses, patents, … | Build the multi-column tables; compute section-total funding amounts; number entries; cross-link to the source documents |
+| Hand-curate the Section V appendix entries (`under_review:`, `status: pending`) | Route them to V.A.1 / V.A.2 with the appropriate Roman-numeral cross-ref form ("Section V, A.1.3") |
 
-Once your materials are in the expected style, AI can help you
-populate the **database** in **another ~2 hours**: feed each section
-of your CV to a chat-based assistant pointed at this repo (it sees
-the schemas) and let it write the YAML entries directly into the
-data files for you, then re-run the build. You're not editing YAML
-by hand or pasting it around — the assistant does that. Your job is
-the human-judgment prose (B.1–B.5 self-evaluation) and the final
-copy-paste of the rendered RTF into Purdue's official Word template.
+## Why this beats "just type into the template"
 
-The alternative is **40–80 hours of soul-crushing work in Word**,
-hand-formatting every citation and table, re-numbering cross-refs by
-hand every time you add an entry — and you'll have to redo most of
-it the next time Purdue updates the packet format. Note: **the
-packet has been updated 5+ times since Davis joined Purdue in
-2020.** With this tool, the format changes are absorbed in the
-renderer code (a few hours of edits to `SECTION_HEADINGS` +
-`rtf.py`); your data stays untouched.
+The Purdue P&T template gives you the **skeleton** of a tenure packet
+— the headings, the heading levels, the front-matter layout. So does
+this tool. The difference is in what happens between the headings:
 
-This tool keeps the data in editable text / YAML / CSV substrates,
-and the renderer re-emits the entire packet on every change in ~3
-seconds. Numbers stay consistent across cross-refs; tier markers +
-author markers + section codes are computed; you focus on writing
-prose, not formatting.
+* **The Purdue template is a static document.** Adding a paper means
+  hand-formatting a citation, renumbering every later cross-ref,
+  rebuilding the C.10 grants table to insert a new row, … and
+  re-checking that your B.2 Impact statement still references the
+  right paper number.
+* **This tool is a build pipeline.** Adding a paper means editing one
+  bib entry. The renumbering, the table rebuild, the cross-ref
+  resolution, the auto-lookup of the new paper's DOI + page numbers
+  from Crossref — all of that runs in ~3 seconds.
+
+If you're going to maintain your tenure packet across the **2-3 years
+of preparation + on-the-job updates**, "edit a structured database +
+rebuild" wins over "edit a Word document" by orders of magnitude.
 
 ---
 

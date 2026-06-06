@@ -583,9 +583,15 @@ def build_under_review(conn: sqlite3.Connection, entry: dict) -> UnderReview:
         raw_authors=tuple(a.strip() for a in author_list),
         id=str(entry.get("id", "") or ""),
         submission_year=int(entry.get("submission_year", 0) or 0),
-        # Q7 — repo-relative path to a PNG/JPEG screenshot of the
-        # submission confirmation. Empty when no supporting doc.
-        supporting_image=str(entry.get("supporting_image", "") or ""),
+        # A.1.2 Evidence — repo-relative path to a PNG/JPEG screenshot
+        # of the submission confirmation. Accepts both `evidence_image`
+        # (canonical) and `supporting_image` (legacy alias from the Q7
+        # roll-out). Empty when no evidence doc available.
+        evidence_image=str(
+            entry.get("evidence_image", "")
+            or entry.get("supporting_image", "")
+            or ""
+        ),
     )
 
 
@@ -667,14 +673,14 @@ def build_undergrad_products(
                 lead_is_undergrad=lead_is_under,
             ))
 
-    # Section V A.1 (under-review) — pipe-form "A.1.N|V.A.1.N" keeps the
-    # visible code compact ("Paper A.1.7 ...") while the hyperlink targets
-    # the namespaced bookmark `V_A_1_N` placed by render_under_review_
-    # section. The `V.` namespace prevents collision with Section III's
-    # A.1 Identifiers entries (also numbered A.1.N). The "(Under review.)"
-    # disambiguator appended by the renderer keeps the visible code
-    # legible without spelling out "Section V, " on every C.16.2.3 row.
-    ur_code = SECTION_CODES["Under Review"]
+    # Section V A.1.1 (pending publications under review) — pipe-form
+    # "A.1.1.N|V.A.1.1.N" keeps the visible code compact while the
+    # hyperlink targets the namespaced bookmark `V_A_1_1_N` placed by
+    # `render_under_review_pending_publications_section`. The `V.`
+    # namespace prevents collision with Section III's A.1.1 entries.
+    # A.1.1 routes pending publications; A.1.2 hosts the evidence
+    # screenshots (one per A.1.1.N entry).
+    ur_code = SECTION_CODES["Under Review"]  # "A.1"
     for idx, ur in enumerate(under_review, 1):
         n_under = 0
         lead_is_under = False
@@ -685,7 +691,7 @@ def build_undergrad_products(
                     lead_is_under = True
         if n_under == 0:
             continue
-        bare = f"{ur_code}.{idx}"
+        bare = f"{ur_code}.1.{idx}"  # A.1.1.N
         products.append(UndergradProduct(
             year=ur.submission_year,
             product_label="Paper",

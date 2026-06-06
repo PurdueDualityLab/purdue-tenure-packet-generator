@@ -72,9 +72,25 @@ max-args = 8
 max-locals = 20
 
 # ----- Mypy ---------------------------------------------------------------
+# Enforced via `tests/test_mypy_gate.py` — `pytest -k mypy_gate` runs the
+# full mypy pass and fails on any error. Covers src + tests + launcher.
+#
+# Discipline (see CLAUDE.md §"Typed Python — compiler-assisted correctness"):
+#   * `disallow_untyped_defs = false` is the current floor; goal is to
+#     flip it to `true` per-module as code lands. New code in
+#     `src/pubs_emitter/` is expected to be fully annotated.
+#   * Prefer specific types over `Any`, `dict[str, object]`, or
+#     `Optional[X]` with a sentinel-`None`. `Literal[...]` for closed
+#     value sets (`Section`, `StudentType`). `NamedTuple` or
+#     `@dataclass(frozen=True, kw_only=True)` for record types.
+#   * Use `TYPE_CHECKING` imports for forward-only annotations
+#     (`evaluations.py` ↔ `types.py` is the canonical example).
+#   * In tests, replace `base = dict(...); base.update(kw); T(**base)`
+#     with `T(defaults...)._replace(**kw)` — `_replace` preserves the
+#     typed signature; `**dict[str, object]` does not.
 [tool.mypy]
 python_version = "3.10"
-files = ["src/pubs_emitter", "pubs-emitter.py"]
+files = ["src/pubs_emitter", "tests", "pubs-emitter.py"]
 strict_optional = true
 warn_unused_ignores = true
 warn_redundant_casts = true

@@ -5,28 +5,39 @@ Every paragraph-level emitter in `rtf.py` routes through `emit_styled`;
 every mid-paragraph emphasis routes through `styled_inline`. A style
 change touches ONE registry entry instead of N call sites.
 
-See `docs/design/style-registry-refactor.md` for the design + migration
-plan.
+**Registry shape (2026-06-06 refactor):** each style is described by
+its typographic properties (`StyleAttrs` — bold, italic, font-size-pt,
+heading-level, etc.). The RTF encoding lives in
+[`styles_rtf.py`](styles_rtf.py); the legacy `STYLES: dict[str, str]`
+is now derived. An editor adding a new style writes
+`StyleAttrs(font_size_pt=14, bold=True, heading_level=3)`, not raw
+RTF control words.
+
+See `docs/design/generic-stylesheet-abstraction-260606.md` for the
+design + migration plan. A future `styles_html.py` would parallel
+`styles_rtf.py` for HTML output.
 """
 from __future__ import annotations
 
-import re
-from typing import IO
+from dataclasses import dataclass
+from typing import IO, Literal, Optional
+
+from . import styles_rtf
 
 # ----- Named constants (single source of truth for magic numbers) ----------
 #
-# RTF font sizes are in half-points (22 = 11pt). Spacing values are in
-# twips (1440 twips = 1 inch). Extract every magic value here so a
-# global "shrink everything by 1pt" or "tighten heading spacing" is a
-# one-line edit in this section.
+# RTF font sizes are exposed here in POINTS (the format-agnostic unit).
+# `styles_rtf.to_rtf_open` converts to RTF half-points on the wire.
+# Spacing values stay in twips (1440 twips = 1 inch) because both
+# RTF and Word's UI surface twip-shaped values directly.
 
-BODY_FONT_SIZE = 22         # 11pt — canonical body size
-GROUP_HEADING_FS = 32       # 16pt — Roman + supergroup (V. / A. / C.)
-SUBGROUP_HEADING_FS = 28    # 14pt — PUBLISHED WORK / etc.
-SECTION_H1_FS = 22          # 11pt — C.1, A.1, B.1 (Word template themes the color)
-SECTION_H2_FS = 22          # 11pt — C.5.1, C.16.1 (Purdue P&T uses body size at all heading levels)
-SECTION_H3_FS = 22          # 11pt — C.16.2.3
-INLINE_SUBHEADING_FS = 22   # 11pt — italic C.5 fallback labels
+BODY_FONT_PT = 11           # Canonical body size
+GROUP_HEADING_PT = 16       # Roman + supergroup (V. / A. / C.)
+SUBGROUP_HEADING_PT = 14    # PUBLISHED WORK / etc.
+SECTION_H1_PT = 11          # C.1, A.1, B.1
+SECTION_H2_PT = 11          # C.5.1, C.16.1
+SECTION_H3_PT = 11          # C.16.2.3
+INLINE_SUBHEADING_PT = 11   # italic C.5 fallback labels
 
 # Stylesheet declaration spacing (sb/sa) per heading level. Carried into
 # both the `\s{N}` stylesheet declaration AND the runtime paragraph
@@ -49,27 +60,67 @@ INLINE_SUBHEADING_SA = 60
 CAREER_PHASE_SB = 120
 CAREER_PHASE_SA = 240
 
-# Backwards-compat private alias (used by `\fs{_BODY_FONT_SIZE}`
-# f-string in legacy callsites + tests). Prefer `BODY_FONT_SIZE` in
-# new code.
+# Backwards-compat: half-points exposure. Some callsites and tests still
+# reference fs-shaped magic numbers; keep the public names so we don't
+# churn unrelated call sites in this refactor.
+BODY_FONT_SIZE = BODY_FONT_PT * 2          # \fs22
+GROUP_HEADING_FS = GROUP_HEADING_PT * 2    # \fs32
+SUBGROUP_HEADING_FS = SUBGROUP_HEADING_PT * 2  # \fs28
+SECTION_H1_FS = SECTION_H1_PT * 2          # \fs22
+SECTION_H2_FS = SECTION_H2_PT * 2          # \fs22
+SECTION_H3_FS = SECTION_H3_PT * 2          # \fs22
+INLINE_SUBHEADING_FS = INLINE_SUBHEADING_PT * 2  # \fs22
 _BODY_FONT_SIZE = BODY_FONT_SIZE
+
+
+# ----- StyleAttrs — typed, format-agnostic style attributes ---------------
+
+
+Alignment = Literal["left", "center", "right", "justify"]
+
+
+@dataclass(frozen=True)
+class StyleAttrs:
+    """Format-agnostic description of one named style.
+
+    Each field is a typographic property; `styles_rtf.py` translates
+    these into RTF. A future HTML translator would map the same fields
+    to inline-CSS or `<span class="...">`.
+
+    Tristate `italic`:
+      * `None`  — don't emit any italic control (inherit).
+      * `True`  — emit `\\i` (italic ON).
+      * `False` — emit `\\i0` (explicit italic OFF). Used when the
+        parent heading style is italic-by-default and the variant
+        forces it off (see `subgroup_heading`).
+    """
+    font_size_pt: Optional[int] = None
+    bold: bool = False
+    italic: Optional[bool] = None
+    underline: bool = False
+    alignment: Alignment = "left"
+    indent_twips: int = 0
+    space_before_twips: int = 0
+    space_after_twips: int = 0
+    page_break_before: bool = False
+    heading_level: Optional[int] = None
+    border_block: str = ""
+    is_character_style: bool = False
 
 
 # ----- Style registry ----------------------------------------------------
 
 
-# Open-tag RTF sequence for each style. Style names are documentation:
-# pick the most semantic name so callsites read as policy intent.
-#
-# Font selection (`\f0` Times New Roman) is applied by `emit_styled`
-# itself, not duplicated here, so a callsite can't accidentally drop
-# back to Word's UI default font after `\plain` resets.
-STYLES: dict[str, str] = {
+# The authoritative registry — typed `StyleAttrs` per name. Paragraph
+# vs character distinction lives in `is_character_style`. The legacy
+# `STYLES: dict[str, str]` below is now derived from this registry by
+# applying the RTF translator.
+_STYLES_ATTRS: dict[str, StyleAttrs] = {
     # --- Paragraph-level styles ---
     # Default body — used by the leading "fs reset" paragraph that
     # opens the document and the trailing re-baseline emitted after
     # every styled paragraph.
-    "body":                 rf"\fs{BODY_FONT_SIZE}",
+    "body": StyleAttrs(font_size_pt=BODY_FONT_PT),
     # Roman section heading ("MATERIAL PREPARED BY THE CANDIDATE",
     # "Supporting Documentation for Pending Publications.") — Word
     # "heading 1" (P&T template's top-level style); the template's
@@ -77,8 +128,8 @@ STYLES: dict[str, str] = {
     # MUST NOT include the Roman numeral in the rendered text (would
     # produce "I. III. MATERIAL..." doubled). Font size + color come
     # from the template's heading-1 theme (orange in the Purdue P&T
-    # template) — no explicit \fs override so the theme wins.
-    "roman_section":        r"\s1\b",
+    # template) — no explicit font size override so the theme wins.
+    "roman_section": StyleAttrs(bold=True, heading_level=1),
     # Letter group heading ("GENERAL INFORMATION", "SELF-EVALUATION",
     # "SUPPORTING INFORMATION") — Word "heading 2" (P&T template's
     # A./B./C. level). The template's heading-2 style is link to a
@@ -86,75 +137,103 @@ STYLES: dict[str, str] = {
     # literal letter prefix so Word's list provides it (otherwise
     # doubled, e.g. "B. A. GENERAL…" when Word's list lands on B and
     # we emitted A). Theme drives size + color.
-    "group_heading":        r"\s2\b",
+    "group_heading": StyleAttrs(bold=True, heading_level=2),
     # Subgroup heading (PUBLISHED WORK, EXTERNAL VISIBILITY, ...) —
     # P&T template's "Heading 4 + Bold, Not Italic, Underline, Centered"
     # variant: `\s4` (Word heading 4) PLUS direct overrides for the
-    # template's variant. Heading 4's default is italic, so `\i0`
+    # template's variant. Heading 4's default is italic, so `italic=False`
     # explicitly forces italic OFF (matches the "Not Italic" annotation
     # in Word's style panel). Heading 4 is shared with `section_h2` for
     # the stylesheet declaration — both reference the same `\s4` style,
     # which is fine since RTF style IDs are global per document.
-    "subgroup_heading":     rf"\s4\qc\b\ul\fs{SUBGROUP_HEADING_FS}\i0",
+    "subgroup_heading": StyleAttrs(
+        bold=True, italic=False, underline=True,
+        alignment="center",
+        font_size_pt=SUBGROUP_HEADING_PT,
+        heading_level=4,
+    ),
     # Level-1 section heading (C.1, A.1, B.1, ...) — Word "heading 3"
     # so the auto-TOC picks it up at the section level. Bold + body-size
-    # font (`\fs{SECTION_H1_FS}` = fs22 = 11pt) gives visual weight
-    # without competing with the heading-1/heading-2 P&T template theme.
-    # The template doesn't auto-number this level, so emitters DO
-    # include the "A.1" / "C.1" prefix as literal text.
-    "section_h1":           rf"\s3\b\fs{SECTION_H1_FS}",
+    # font gives visual weight without competing with the heading-1 /
+    # heading-2 P&T template theme. The template doesn't auto-number
+    # this level, so emitters DO include the "A.1" / "C.1" prefix as
+    # literal text.
+    "section_h1": StyleAttrs(
+        bold=True, font_size_pt=SECTION_H1_PT, heading_level=3,
+    ),
     # Level-2 section heading (C.5.1, C.16.1, ...). Word "heading 4".
-    "section_h2":           rf"\s4\i\fs{SECTION_H2_FS}",
+    "section_h2": StyleAttrs(
+        italic=True, font_size_pt=SECTION_H2_PT, heading_level=4,
+    ),
     # Level-3 section heading (C.16.2.3, ...). Word "heading 4" still
     # so the TOC doesn't explode; visual differentiation comes from
     # the smaller font + indent.
-    "section_h3":           rf"\s4\i\fs{SECTION_H3_FS}",
+    "section_h3": StyleAttrs(
+        italic=True, font_size_pt=SECTION_H3_PT, heading_level=4,
+    ),
     # Level-4 section heading (rare; reserved). Word "heading 4".
-    "section_h4":           rf"\s4\i\fs{BODY_FONT_SIZE}",
-    # Inline subheading — italic + fs26, NO heading style (does not
+    "section_h4": StyleAttrs(
+        italic=True, font_size_pt=BODY_FONT_PT, heading_level=4,
+    ),
+    # Inline subheading — italic + body-size, NO heading style (does not
     # appear in TOC). Used for C.5 subcategory fallback labels.
-    "inline_subheading":    rf"\i\fs{INLINE_SUBHEADING_FS}",
+    "inline_subheading": StyleAttrs(
+        italic=True, font_size_pt=INLINE_SUBHEADING_PT,
+    ),
     # Career-phase divider — italic body-font text inside top + bottom
     # borders. No heading style; the borders communicate structure.
-    "career_phase_divider": rf"\i\fs{BODY_FONT_SIZE}",
+    "career_phase_divider": StyleAttrs(
+        italic=True, font_size_pt=BODY_FONT_PT,
+        border_block=r"\brdrt\brdrs\brdrw15\brsp40\brdrb\brdrs\brdrw15",
+    ),
     # Introductory note — italic body-font paragraph orienting the
     # reader at the top of a section (grant totals, C.22 cross-refs,
     # C.24 service intro, etc.).
-    "intro_note":           rf"\i\fs{BODY_FONT_SIZE}",
+    "intro_note": StyleAttrs(italic=True, font_size_pt=BODY_FONT_PT),
     # N/A placeholder — plain body-font (no emphasis), used when a
     # section has no YAML data but the heading still emits. Preserves
     # the longstanding "N/A" visual — readers scan for the cue and
     # italic would change its weight too much.
-    "na_placeholder":       rf"\fs{BODY_FONT_SIZE}",
+    "na_placeholder": StyleAttrs(font_size_pt=BODY_FONT_PT),
     # --- Inline (mid-paragraph) styles for styled_inline() ---
     # Field label inside an entry body (A.1 "Name", "ORCID",
     # "Google Scholar").
-    "field_label":          r"\i",
+    "field_label": StyleAttrs(italic=True, is_character_style=True),
     # Grant total label inside the intro-note ("Total amount of
     # external funding as PI:"). Italic to match the surrounding
     # intro-note style.
-    "grant_total_label":    r"\i",
+    "grant_total_label": StyleAttrs(italic=True, is_character_style=True),
     # Bold header cell content inside an `RtfTable` row. Routed via
     # `styled_inline` from `RtfTable._render_row` so the bold-wrap
     # decision lives in the registry, not inline at every renderer
     # that builds a header row.
-    "table_header":         r"\b",
+    "table_header": StyleAttrs(bold=True, is_character_style=True),
     # Italic venue / title inside a citation body — used by
     # `format_journal_citation`, `render_under_review_section`,
     # `render_invited_talk`, `render_media_appearance`, A.2 thesis
     # title, etc.
-    "venue_italic":         r"\i",
+    "venue_italic": StyleAttrs(italic=True, is_character_style=True),
     # Underlined tier label / due-date / society — used by C.2/C.4
     # tier marker, A.1 under-review due-date, C.7 leadership-role
     # society field.
-    "underline_marker":     r"\ul",
+    "underline_marker": StyleAttrs(underline=True, is_character_style=True),
     # Bold summary leader in a hanging-indent entry body — used by
     # C.20 entrepreneurial activities + C.21 technology transfer
     # ("Summary: description.").
-    "entry_summary":        r"\b",
+    "entry_summary": StyleAttrs(bold=True, is_character_style=True),
     # Bold name in a header-style entry (C.22 software product name,
     # C.19 patent row code).
-    "entry_name":           r"\b",
+    "entry_name": StyleAttrs(bold=True, is_character_style=True),
+}
+
+
+# Legacy public name — derived from `_STYLES_ATTRS` via the RTF
+# translator. Kept so existing tests and the raw-control-code lint
+# (which reads `STYLES` to allowlist registry-supplied codes) keep
+# working without churn. Editors should add new entries to
+# `_STYLES_ATTRS` (typed), not `STYLES` (raw RTF).
+STYLES: dict[str, str] = {
+    name: styles_rtf.to_rtf_open(attrs) for name, attrs in _STYLES_ATTRS.items()
 }
 
 
@@ -179,36 +258,37 @@ PAGE_BREAK_BEFORE: set[str] = {"subgroup_heading", "roman_section"}
 
 
 # Styles whose paragraph carries top + bottom borders (career-phase
-# divider). Captured here so the verbose border-control RTF lives in
-# one place.
+# divider). Derived from `_STYLES_ATTRS.border_block` — kept as a
+# public dict so existing call sites and tests continue to work.
 BORDER_BLOCKS: dict[str, str] = {
-    "career_phase_divider":
-        r"\brdrt\brdrs\brdrw15\brsp40\brdrb\brdrs\brdrw15",
-}
-
-
-# Close-tag pairings. `\fs{N}` resets via the trailing body-paragraph
-# re-baseline, not via a closing token, so font-size doesn't need a
-# close. Likewise `\qc` (alignment) resets via the paragraph reset.
-# `\sN` (paragraph style) and `\f0` (font face) similarly reset across
-# paragraphs.
-_CLOSE_TAGS: dict[str, str] = {
-    r"\b":  r"\b0",
-    r"\i":  r"\i0",
-    r"\ul": r"\ulnone",
+    name: attrs.border_block
+    for name, attrs in _STYLES_ATTRS.items()
+    if attrs.border_block
 }
 
 
 def _close_for(open_codes: str) -> str:
     """Derive the close-tag sequence for an open-tag string.
 
-    Walks the open-tag tokens (e.g. `\\b\\fs28` → ['\\b', '\\fs28'])
-    and pairs each with its close where one exists. Font-size resets
-    are handled by the body-paragraph re-baseline after the styled
-    paragraph, not by a closing token, so `\\fs{N}` doesn't contribute
-    to close. Closes emit in REVERSE order of opens so nested formatting
-    (e.g. `\\b\\ul` → `\\ulnone\\b0`) unnests correctly.
+    Back-compat wrapper around the typed `styles_rtf.to_rtf_close` —
+    look up the style by its open string and return the registered
+    close. Kept so existing tests and any legacy callers continue to
+    work; prefer `styles_rtf.to_rtf_close(attrs)` for new code.
+
+    Walks the legacy `STYLES` dict in reverse lookup, since not every
+    caller of `_close_for` has a `StyleAttrs` handle. For a literal
+    RTF string that doesn't match any registered open, the close is
+    derived per the legacy walk-tokens-pair-with-closes algorithm.
     """
+    # Fast path: open_codes is a known registered style → use typed close.
+    for name, opens in STYLES.items():
+        if opens == open_codes:
+            return styles_rtf.to_rtf_close(_STYLES_ATTRS[name])
+    # Fallback for ad-hoc strings (tests, edge cases). Walk the tokens
+    # in lookup order, pair each with its known close, emit closes in
+    # reverse open-order.
+    import re
+    _CLOSE_TAGS = {r"\b": r"\b0", r"\i": r"\i0", r"\ul": r"\ulnone"}
     tokens = re.findall(r"\\[a-z]+", open_codes)
     closes = [_CLOSE_TAGS[t] for t in tokens if t in _CLOSE_TAGS]
     return "".join(reversed(closes))
@@ -217,11 +297,11 @@ def _close_for(open_codes: str) -> str:
 # ----- Stylesheet declarations (derived from STYLES) ---------------------
 
 
-# Map each STYLES entry that targets a Word heading level (via `\sN`)
-# to (Word style-name, sb, sa). Word's "Insert Table of Contents"
-# scans for paragraphs styled with these named styles — so the
-# stylesheet declaration MUST list them exactly. Derived from the
-# registry so a registry edit (e.g., bumping `SECTION_H1_FS` to 30)
+# Map each StyleAttrs entry that targets a Word heading level (via
+# `heading_level`) to (Word style-name, sb, sa). Word's "Insert Table
+# of Contents" scans for paragraphs styled with these named styles —
+# so the stylesheet declaration MUST list them exactly. Derived from
+# the registry so a registry edit (e.g., bumping `SECTION_H1_PT`)
 # automatically updates the stylesheet declaration too.
 _HEADING_STYLE_NAMES: list[tuple[str, str, int, int]] = [
     # (style_key, Word-style-name, sb, sa). Maps each registry style key
@@ -229,7 +309,7 @@ _HEADING_STYLE_NAMES: list[tuple[str, str, int, int]] = [
     # template's TOC pulls heading 1 (III. Roman), heading 2 (A./B./C.),
     # heading 3 (A.1/C.1). Subgroup bands (PUBLISHED WORK) and deeper
     # nested headings (C.5.1, C.16.2.3) are intentionally absent — they
-    # carry only direct visual formatting, no `\sN` style ID.
+    # carry only direct visual formatting, no heading_level.
     ("roman_section",    "heading 1", SECTION_H1_SB, SECTION_H1_SA),
     ("group_heading",    "heading 2", SECTION_H2_SB, SECTION_H2_SA),
     ("section_h1",       "heading 3", SECTION_H3_SB, SECTION_H3_SA),
@@ -284,7 +364,7 @@ def emit_styled(
     indent: int = 0,
     suppress_page_break: bool = False,
 ) -> None:
-    """Emit a fully-styled paragraph applying `STYLES[style]`.
+    """Emit a fully-styled paragraph applying `_STYLES_ATTRS[style]`.
 
     The single paragraph-level emit primitive — every styled paragraph
     in the doc routes through here. The function:
@@ -295,19 +375,22 @@ def emit_styled(
         fall back to its UI default after `\\plain` resets.
       * Applies the indent + spacing (`\\li{N}\\sb{N}\\sa{N}`).
       * Applies any border block (career-phase divider only today).
-      * Applies the style's open RTF control sequence (`STYLES[style]`).
+      * Applies the style's open RTF control sequence (via
+        `styles_rtf.to_rtf_open`).
       * Writes the (already-escaped) text.
-      * Applies the matching close sequence.
+      * Applies the matching close sequence (via
+        `styles_rtf.to_rtf_close`).
       * Re-baselines the body paragraph that follows.
 
     `text` is assumed to already be RTF-safe (escaped via `escape_rtf`
     or built from sentinel-bearing RTF fragments). This primitive
     does NOT escape — that's the caller's job.
     """
-    prefix = STYLES[style]
+    attrs = _STYLES_ATTRS[style]
+    prefix = styles_rtf.to_rtf_open(attrs)
+    close = styles_rtf.to_rtf_close(attrs)
     sb, sa = SPACING.get(style, (0, 0))
-    border = BORDER_BLOCKS.get(style, "")
-    close = _close_for(prefix)
+    border = attrs.border_block
     if style in PAGE_BREAK_BEFORE and not suppress_page_break:
         out.write("\\pard\\page\\par\n")
     spacing = ""
@@ -323,7 +406,7 @@ def emit_styled(
 
 
 def styled_inline(style: str, text: str) -> str:
-    """Return an inline RTF fragment with `STYLES[style]` applied.
+    """Return an inline RTF fragment with `_STYLES_ATTRS[style]` applied.
 
     For mid-paragraph emphasis where the surrounding paragraph context
     is owned by another emitter — e.g., A.1 field labels embedded
@@ -333,6 +416,7 @@ def styled_inline(style: str, text: str) -> str:
     `text` is assumed to already be RTF-safe; this primitive does NOT
     escape.
     """
-    prefix = STYLES[style]
-    close = _close_for(prefix)
+    attrs = _STYLES_ATTRS[style]
+    prefix = styles_rtf.to_rtf_open(attrs)
+    close = styles_rtf.to_rtf_close(attrs)
     return f"{prefix} {text}{close}"

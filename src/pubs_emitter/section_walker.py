@@ -463,3 +463,50 @@ def walk_section_prose(
             _dispatch_directive(out, ctx, node.name)
         else:
             raise TypeError(f"unknown node type: {type(node).__name__}")
+
+
+def walk_to_blocks(text: str, ctx: RenderContext) -> "list":
+    """IR-bridge — Phase 3 of the IR refactor.
+
+    Same parse + dispatch as `walk_section_prose`, but returns
+    `list[Block]` instead of writing RTF to a buffer. Each node's
+    legacy RTF output is captured into a temporary buffer and wrapped
+    in a single `RawRtfBlock`. The resulting block list, when fed to
+    `writer_rtf.RtfWriter().render(...)`, produces byte-identical
+    output to the legacy `walk_section_prose(text, ctx, out)` path.
+
+    This is the substrate that lets Phase 4+ migrations replace
+    individual `RawRtfBlock`s with real IR (Table / Heading / etc.)
+    one renderer at a time. Until every directive migrates, the IR
+    path keeps working — just with the RawRtfBlock fallback for
+    unmigrated sections.
+
+    Returns: `list[Block]`. The return type is annotated as `list` to
+    avoid an import cycle with `ir.py` at module-load time; the
+    docstring carries the precise type.
+    """
+    # Import locally to avoid cycle at module-load time (`ir.py` is
+    # cheap; safe to import here). Phase 7 cleanup may invert the
+    # dependency once the legacy walk function is deleted.
+    import io
+    from .ir import Block, RawRtfBlock
+
+    nodes = parse_section_prose(text)
+    _augment_ref_index(ctx, _collect_declared_codes(nodes))
+    blocks: list[Block] = []
+    current_code: Optional[str] = None
+    for node in nodes:
+        buf = io.StringIO()
+        if isinstance(node, HeadingNode):
+            current_code = node.code
+            _emit_heading_via_legacy(buf, node.depth, node.code, node.title)
+        elif isinstance(node, ParagraphNode):
+            _emit_paragraph(buf, ctx, node.text, current_code)
+        elif isinstance(node, DirectiveNode):
+            _dispatch_directive(buf, ctx, node.name)
+        else:
+            raise TypeError(f"unknown node type: {type(node).__name__}")
+        rtf = buf.getvalue()
+        if rtf:
+            blocks.append(RawRtfBlock(rtf=rtf))
+    return blocks
