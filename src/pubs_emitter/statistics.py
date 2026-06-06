@@ -204,19 +204,24 @@ def _num_tier_2(ctx: StatsContext) -> int:
     return sum(1 for c in _all_publications(ctx) if c.rank == "Rank 2")
 
 
-@register("NUM_STUDENT_LED")
-def _num_student_led(ctx: StatsContext) -> int:
+@register("NUM_LED_BY_ADVISEES")
+def _num_led_by_advisees(ctx: StatsContext) -> int:
     """Peer-reviewed publications where the first author is one of
-    Davis's students (G or U type)."""
+    Davis's advisees — graduate students for whom Davis is the Chair
+    or Co-Chair of the Plan-of-Study committee, or undergraduates in
+    Davis's research group. Committee-only graduate students are
+    explicitly excluded (per user direction 2026-06-06): the filter
+    lives in `cli.main`'s student-roster merge."""
     return sum(
         1 for c in _all_publications(ctx)
         if _is_peer_reviewed(c) and _is_student_led(c, ctx)
     )
 
 
-@register("NUM_STUDENT_LED_TIER_1")
-def _num_student_led_tier_1(ctx: StatsContext) -> int:
-    """Student-led Tier-1 papers."""
+@register("NUM_LED_BY_ADVISEES_TIER_1")
+def _num_led_by_advisees_tier_1(ctx: StatsContext) -> int:
+    """Tier-1 papers led by Davis's advisees (same Chair/Co-Chair +
+    undergrad filter as `NUM_LED_BY_ADVISEES`)."""
     return sum(
         1 for c in _all_publications(ctx)
         if c.rank == "Rank 1" and _is_student_led(c, ctx)

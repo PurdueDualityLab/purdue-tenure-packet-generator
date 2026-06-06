@@ -563,15 +563,32 @@ def main(argv: Optional[list[str]] = None) -> None:
             log.info(", ".join(parts))
 
         # Populate students AFTER loading non-scholar YAML so we can union the
-        # rich C.14 graduate_students names into STUDENTS["G"] for marker matching.
-        # Static config.yaml STUDENTS["G"] stays as a baseline; YAML graduate_students
-        # extends it. Undergrads stay in STUDENTS["U"] (config.yaml) for now.
-        merged_students = {k: list(v) for k, v in STUDENTS.items()}
-        grad_yaml_names = [
-            s.get("name", "") for s in (non_scholar.get("graduate_students") or [])
+        # C.14 graduate_students names into STUDENTS["G"] for marker matching.
+        # **Chair / Co-Chair filter (user direction 2026-06-06):** only students
+        # whose role is `Chair` or `Co-Chair` get the `G` superscript marker on
+        # citations and contribute to `NUM_STUDENT_LED*`. Committee members are
+        # NOT Davis's students by this convention — they shouldn't surface as
+        # "led by his students" in the rendered packet. Names appearing in the
+        # YAML with role `Committee member` are also removed from the static
+        # config.yaml STUDENTS["G"] baseline so stale-baseline entries don't
+        # leak through.
+        grad_entries = non_scholar.get("graduate_students") or []
+        committee_only_names = {
+            s.get("name", "").strip()
+            for s in grad_entries
+            if s.get("role") == "Committee member"
+        }
+        chair_cochair_yaml = [
+            s.get("name", "") for s in grad_entries
             if s.get("name")
+            and s.get("role") in ("Chair", "Co-Chair")
         ]
-        merged_students["G"] = list({*merged_students.get("G", []), *grad_yaml_names})
+        baseline_g = [
+            n for n in STUDENTS.get("G", [])
+            if n.strip() not in committee_only_names
+        ]
+        merged_students = {k: list(v) for k, v in STUDENTS.items()}
+        merged_students["G"] = list({*baseline_g, *chair_cochair_yaml})
         populate_students(conn, merged_students)
 
         log_phase("lookups")

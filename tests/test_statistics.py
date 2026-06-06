@@ -148,7 +148,7 @@ class TestMacroComputations:
         assert result["NUM_TIER_1"] == "2"
         assert result["NUM_TIER_2"] == "1"
 
-    def test_num_student_led_uses_first_author_lookup(self) -> None:
+    def test_num_led_by_advisees_uses_first_author_lookup(self) -> None:
         conn = _conn_with_students({"Grad Student": "G", "Undergrad Person": "U"})
         cits = [
             _cit(rank="Rank 1", title="grad-led-tier1"),
@@ -168,25 +168,25 @@ class TestMacroComputations:
             conn=conn,
         )
         result = compute_all(ctx)
-        # 3 student-led: 2 grad-led (Rank 1 + Rank 2) + 1 undergrad-led
-        # (Rank 1). The "non-student-led" entry has the student in
-        # second position so it doesn't count.
-        assert result["NUM_STUDENT_LED"] == "3"
+        # 3 led by advisees: 2 grad-led (Rank 1 + Rank 2) + 1
+        # undergrad-led (Rank 1). The "non-student-led" entry has the
+        # student in second position so it doesn't count.
+        assert result["NUM_LED_BY_ADVISEES"] == "3"
         # Of those, Rank 1 only: grad-led-tier1 + undergrad-led-tier1 = 2.
-        assert result["NUM_STUDENT_LED_TIER_1"] == "2"
+        assert result["NUM_LED_BY_ADVISEES_TIER_1"] == "2"
 
-    def test_num_student_led_returns_zero_without_conn(self) -> None:
+    def test_num_led_by_advisees_returns_zero_without_conn(self) -> None:
         cit = _cit(rank="Rank 1", title="paper")
         ctx = StatsContext(
             publications={"Journals": [cit]},
             bib_entries=[_bib("paper", "Student Name")],
-            # No conn passed — student-led detection should return 0.
+            # No conn passed — advisee-led detection should return 0.
         )
-        assert compute_all(ctx)["NUM_STUDENT_LED"] == "0"
+        assert compute_all(ctx)["NUM_LED_BY_ADVISEES"] == "0"
 
     def test_num_papers_with_undergraduate_coauthors(self) -> None:
         """Any U-student anywhere in the author list counts the paper.
-        Distinct from NUM_STUDENT_LED (which requires the U/G student
+        Distinct from NUM_LED_BY_ADVISEES (which requires the U/G student
         be FIRST). Non-peer-reviewed (e.g. CVE) papers excluded even if
         they have a U co-author."""
         conn = _conn_with_students({
