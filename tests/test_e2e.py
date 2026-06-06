@@ -276,7 +276,7 @@ class TestE2eGrantMath:
         rtf, _ = e2e_outputs
         expected = self._section_total_usd(yaml_data, "grants_as_pi")
         # The fixture has one PI grant — assert both the label and the figure.
-        assert "Total amount of external funding as PI" in rtf
+        assert "Total candidate share of external funding as PI" in rtf
         assert expected in rtf
 
     def test_co_pi_section_skipped_when_empty(
@@ -286,7 +286,7 @@ class TestE2eGrantMath:
         # (write_rtf skips empty lists), so the Co-PI total label must NOT appear.
         rtf, _ = e2e_outputs
         if not yaml_data.get("grants_as_co_pi"):
-            assert "Total amount of external funding as Co-PI" not in rtf
+            assert "Total candidate share of external funding as Co-PI" not in rtf
 
     def test_total_label_count_matches_nonempty_grant_sections(
         self, e2e_outputs: tuple[str, pathlib.Path], yaml_data: dict
@@ -296,8 +296,11 @@ class TestE2eGrantMath:
             1 for key in ("grants_as_pi", "grants_as_co_pi", "gifts", "internal_grants")
             if yaml_data.get(key)
         )
-        # Each nonempty grant section emits exactly one "Total amount" line.
-        assert rtf.count("Total amount") == nonempty
+        # Each nonempty grant section emits exactly one "Total candidate
+        # share" line (the GRANT_TOTAL_LABELS phrasing — disambiguates
+        # the section-credited total from a sum of displayed gross
+        # amounts; see config.py for the rationale).
+        assert rtf.count("Total candidate share") == nonempty
 
 
 class TestE2eGrantTotalsExtended:

@@ -469,6 +469,152 @@ programming errors (directive bug or missing data) and silent
 fallback would mask them. Same fail-loud semantics as the existing
 @-ref / #macro pipeline.
 
+**Q6: Declarative table structure (FUTURE; design space to ponder).**
+The directive model proposed above leaves each table's
+**column-mapping** in Python: `add_header([...])` and `add_row([
+escape_rtf(p.dates), escape_rtf(p.activity), ...])` are hard-coded
+inside per-section renderers. That means a candidate who wants a
+genuinely new section ("Books with audiobook companions" with custom
+columns) still has to write Python — register a new directive AND
+implement the renderer.
+
+The natural next step: expose **table structure declaratively** in a
+sidecar config file. Sketch:
+
+```yaml
+# assets/table-schemas.yaml — example
+undergrad_pathways:
+  yaml_field: undergrad_pathways          # → list[UndergradPathway]
+  columns:
+    - {field: dates,        header: Dates,         width: 1900}
+    - {field: activity,     header: Pathway,       width: 2900}
+    - {field: audience,     header: Audience,      width: 3200}
+    - {field: participation, header: Participation, width: 1360}
+  sort: dates                              # or a tuple/expression
+```
+
+A new "tabular" directive class reads the schema, walks the YAML data,
+and emits a generic `RtfTable`. The user adds rows to the YAML +
+columns to the schema file + a `!UNDERGRAD_PATHWAYS_TABLE!` directive
+to `section-prose.md` — zero Python.
+
+Scope this carries:
+- Simple tables (column-mapping + maybe a sort key) go declarative.
+- Bespoke tables with computed cells (grant totals, tier subheadings,
+  per-row cross-refs, condition-driven row formatting) stay in Python.
+  The directive registry already accommodates both shapes.
+- Schema format is YAML-or-markdown-frontmatter; either fine.
+- Migration: pilot on one or two simple tables (undergrad_pathways,
+  service entries) in a later phase; the bulk of renderers stay in
+  Python through Phase 4 because their per-section logic isn't
+  schema-expressible.
+
+Trade-off: declarative descriptors are more verbose than Python for
+gnarly cases. Lean: **defer to a follow-up phase (Phase 5 or 6),** but
+pin the design space here so the directive registry's API doesn't
+paint into a Python-only corner.
+
+The candidate's framing for this: "the user should be able to DIY
+their own custom sections for the 'custom' parts" — same instinct as
+markdown-mastering the outline, applied to the table layer.
+
+**Q7: Embedded images for supporting documentation (V.A.1 under-review
+papers + general catchall use).** Section V.A.1 lists papers currently
+under review; the Purdue template expects "supporting documentation" —
+typically a screenshot of the submission-confirmation email — embedded
+directly beneath each paper entry, sub-indented under the paper's
+citation. The current renderer has no image-emit path.
+
+Two notations are natural under the directive/walker model:
+
+1. **YAML-attached image (preferred for the V.A.1 case).** Each
+   under-review `Publication` gains an optional `supporting_image`
+   field; the under-review renderer emits the image after the citation
+   at the paper's body-indent. This is the cleanest fit because the
+   supporting evidence is semantically tied to the paper, not to a
+   free-floating markdown position.
+
+   ```yaml
+   # bibtex sidecar or YAML db entry
+   - cite_key: lugo2026dgov
+     status: under_review
+     supporting_image: assets/supporting-docs/dgov-2026-0087.png
+     supporting_image_caption: "Submission confirmation, 2026-04-20"
+   ```
+
+2. **Markdown image directive (general-purpose).** A directive of the
+   form `!IMAGE:path/to/file.png!` (or, with options, `!IMAGE
+   path=... width=... indent=A.1.1!`) emits a free-standing image at
+   the walker's current indent. Useful for catchall sections where the
+   image isn't tied to a YAML row — e.g., a screenshot inside C.16
+   prose, or a figure inside C.26 blog evidence.
+
+   The directive resolver reads the file at emit time, hex-encodes per
+   the PNG/JPG kind, and emits an RTF `{\pict\pngblip\picwgoal<w>\
+   pichgoal<h> <hex>}` block inside a `\pard\li<indent>` paragraph. The
+   indent comes from the current section code (same `_body_indent_for_
+   code` machinery the walker already uses for paragraphs).
+
+Both should land — they're complementary, not alternatives. The YAML
+form handles the structured cases (every under-review paper, every
+patent that wants a filed-stamp screenshot, etc.) without forcing the
+candidate to keep a parallel notation in markdown. The directive form
+handles the bespoke cases the YAML can't reach.
+
+RTF mechanics worth pinning now so the directive registry's image
+contract is right the first time:
+
+- **Encoding:** `{\pict\<blip>\picwgoal<w_twips>\pichgoal<h_twips> <hex>}`.
+  `\pngblip` for PNG, `\jpegblip` for JPEG. Width + height in twips
+  (1 twip = 1/20 point). Read the image's intrinsic px dims at emit
+  time, convert via DPI (default 96 DPI → twips = px × 15).
+- **Sizing policy:** clamp the embedded width to a sane max
+  (e.g., 5 inches = 7200 twips) so a tall screenshot doesn't blow past
+  the page width. Preserve aspect ratio.
+- **Indent:** wrap the `\pict` in `\pard\li<indent>\par <pict> \par`
+  so the picture flows at the same left-edge as the paper body. For
+  V.A.1, that's the body-indent for the `A.1.1` heading code.
+- **File-not-found:** fail loud (same policy as `@-ref` / `#macro`
+  unresolved). Builds with missing supporting docs should not ship.
+- **Path resolution:** image paths are repo-relative (treated as
+  resolved against the project root, same as `assets/`-prefixed paths
+  elsewhere).
+- **Caption (optional):** if `supporting_image_caption` (YAML) or
+  `caption=...` (directive) is set, emit a `\fs18\i Caption\i0` line
+  below the image at the same indent. Out of scope for v1 if not
+  needed.
+
+Scope this carries:
+- One new helper module (`src/pubs_emitter/image_embed.py`) that loads
+  the file, decodes dims, hex-encodes, builds the `\pict` block. ~80
+  LoC + tests.
+- The `Publication` data model gains an optional `supporting_image`
+  field (renderer-side change, no schema break).
+- The directive registry gains an `IMAGE` entry that parses
+  `!IMAGE:path!` (or the verbose form) and dispatches to
+  `image_embed.emit_image_at_indent`.
+- Two tests, minimum: (a) round-trip emit of a known small PNG produces
+  a `\pict\pngblip ...` block with the expected dims; (b) V.A.1
+  papers with `supporting_image` set emit the image at the right
+  indent below the citation.
+
+Trade-off: hex-encoding large screenshots bloats the RTF dramatically
+(2× the source PNG bytes, since each byte becomes two hex chars).
+Mitigation: downsample / convert to JPEG for screenshots before
+committing them under `assets/supporting-docs/`. Document this in the
+authoring guidance at the top of `section-prose.md`. (`pillow` is
+already a project dep; a future tool could auto-downsample on build.)
+
+Lean: **build in Phase 3 alongside the V.A.1 / V appendix migrations.**
+The YAML field is small enough to land without ceremony; the
+`!IMAGE!` directive is straightforward registry work. Pin the design
+here so the directive contract accommodates both forms from day one.
+
+The candidate's framing: "we should have a notation that says 'insert
+this image here'" — both notations described above honor that, with
+the YAML form being the more ergonomic of the two for the routine
+under-review case.
+
 ## Risks
 
 **R1: Whitespace divergence between walker and legacy emit.** Likely

@@ -670,7 +670,7 @@ class TestGrantTablePersonnelRow:
     def test_sole_pi_omits_personnel_row(self) -> None:
         """No lead_pi, no co_pis → no other personnel → personnel row
         emits 'Sole PI' instead of a named personnel listing. The grant
-        section total ("Total amount of external funding as PI: $X") is
+        section total ("Total candidate share of external funding as PI: $X") is
         an unrelated string that may also contain "PI:" — assert
         against the cell-content shape, not a bare substring."""
         buf = io.StringIO()
@@ -981,7 +981,7 @@ class TestGrantTotalsMath:
 
     def test_single_grant_total(self) -> None:
         out = self._render("Grants PI", [_grant(amount=687140)])
-        assert "Total amount of external funding as PI" in out
+        assert "Total candidate share of external funding as PI" in out
         assert "$687,140" in out
 
     def test_multi_grant_total_sums_amounts(self) -> None:
@@ -1013,10 +1013,10 @@ class TestGrantTotalsMath:
         copi = self._render("Grants Co-PI", [_grant(amount=100)])
         gifts = self._render("Gifts", [_grant(amount=100)])
         internal = self._render("Internal Grants", [_grant(amount=100)])
-        assert "Total amount of external funding as PI" in pi
-        assert "Total amount of external funding as Co-PI or Co-I" in copi
-        assert "Total amount of external gifts and voluntary support" in gifts
-        assert "Total amount of internal funding" in internal
+        assert "Total candidate share of external funding as PI" in pi
+        assert "Total candidate share of external funding as Co-PI or Co-I" in copi
+        assert "Total candidate share of external gifts and voluntary support" in gifts
+        assert "Total candidate share of internal funding" in internal
 
     def test_no_total_line_when_section_label_unset(self) -> None:
         # Sections not in GRANT_TOTAL_LABELS shouldn't emit a total line. All
@@ -1051,9 +1051,9 @@ class TestGrantTotalsMath:
         assert "external funding as PI: $160,000" in out
         # Italic intro-note style (registry-routed via `emit_styled`).
         # Emit shape: `\i\fs22 Total amount ... PI: $160,000\i0`.
-        assert "\\i\\fs22 Total amount of external funding as PI:" in out
+        assert "\\i\\fs22 Total candidate share of external funding as PI:" in out
         # MUST NOT be the legacy bold form.
-        assert "{\\b Total amount of external funding as PI:" not in out
+        assert "{\\b Total candidate share of external funding as PI:" not in out
 
 
 # ----- Student helpers ----------------------------------------------------

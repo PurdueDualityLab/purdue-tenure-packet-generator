@@ -666,6 +666,105 @@ class TestResolveRefs:
         )
         assert text == "C.18.1 is fall-2021."
 
+    def test_section_override_resolves_to_alt_location(self) -> None:
+        """`@bibkey^C.1` looks up the C.1 alternate via the structured
+        section_bibkey_index — bare `@bibkey` still resolves via the
+        flat ref_index."""
+        from pubs_emitter.builders import resolve_refs
+        ref_index = {"davis2024impact": "C.4.7"}
+        section_bibkey_index = {
+            "davis2024impact": {"C.4": "C.4.7", "C.1": "C.1.3"},
+        }
+        # Bare bibkey → default (C.4.7).
+        text, unresolved = resolve_refs(
+            "See @davis2024impact",
+            ref_index, section_bibkey_index=section_bibkey_index,
+        )
+        assert text == "See C.4.7"
+        assert unresolved == []
+        # With override → C.1 alternate.
+        text, unresolved = resolve_refs(
+            "See @davis2024impact^C.1",
+            ref_index, section_bibkey_index=section_bibkey_index,
+        )
+        assert text == "See C.1.3"
+        assert unresolved == []
+
+    def test_section_override_unknown_section_reports_unresolved(self) -> None:
+        """An override that names a section the bibkey doesn't appear in
+        is reported as unresolved with the full `^SECTION` qualifier so
+        the user sees what they typed."""
+        from pubs_emitter.builders import resolve_refs
+        ref_index = {"davis2024impact": "C.4.7"}
+        section_bibkey_index = {
+            "davis2024impact": {"C.4": "C.4.7"},  # not a Key Work
+        }
+        text, unresolved = resolve_refs(
+            "See @davis2024impact^C.1",
+            ref_index, section_bibkey_index=section_bibkey_index,
+        )
+        assert unresolved == ["davis2024impact^C.1"]
+        # Token left in place for diagnostic visibility.
+        assert "@davis2024impact^C.1" in text
+
+    def test_section_override_unknown_bibkey_reports_unresolved(self) -> None:
+        """Override on a bibkey absent from section_bibkey_index entirely
+        is unresolved — does NOT silently fall back to the flat
+        ref_index lookup (the user asked for a specific section)."""
+        from pubs_emitter.builders import resolve_refs
+        ref_index = {"missing": "C.4.7"}
+        text, unresolved = resolve_refs(
+            "See @missing^C.1",
+            ref_index, section_bibkey_index={},
+        )
+        assert unresolved == ["missing^C.1"]
+        assert "@missing^C.1" in text
+
+    def test_section_override_with_link_format_wraps_sentinels(self) -> None:
+        """`link_format=True` wraps the override-resolved code with the
+        sentinel pair, same as bare-ref resolution — keeps the hyperlink
+        finalization pass uniform across resolution paths."""
+        from pubs_emitter.builders import (
+            REF_LINK_CLOSE, REF_LINK_OPEN, resolve_refs,
+        )
+        section_bibkey_index = {
+            "davis2024impact": {"C.1": "C.1.3"},
+        }
+        text, unresolved = resolve_refs(
+            "See @davis2024impact^C.1",
+            {}, link_format=True,
+            section_bibkey_index=section_bibkey_index,
+        )
+        assert unresolved == []
+        assert f"{REF_LINK_OPEN}C.1.3{REF_LINK_CLOSE}" in text
+
+    def test_section_override_mixed_with_bare_in_same_text(self) -> None:
+        """A bare bibkey and an override-qualified bibkey can coexist in
+        one paragraph; each resolves through its own path."""
+        from pubs_emitter.builders import resolve_refs
+        ref_index = {"foo": "C.4.7", "bar": "C.4.8"}
+        section_bibkey_index = {
+            "foo": {"C.4": "C.4.7", "C.1": "C.1.3"},
+            "bar": {"C.4": "C.4.8"},
+        }
+        text, unresolved = resolve_refs(
+            "See @foo, also @foo^C.1, and @bar.",
+            ref_index, section_bibkey_index=section_bibkey_index,
+        )
+        assert text == "See C.4.7, also C.1.3, and C.4.8."
+        assert unresolved == []
+
+    def test_double_at_with_section_form_is_literal(self) -> None:
+        """`@@bibkey^C.1` is literal `@bibkey^C.1` (no resolution).
+        Backward-compat: existing `@@` escape behavior unchanged."""
+        from pubs_emitter.builders import resolve_refs
+        text, _ = resolve_refs(
+            "literal @@foo^C.1 here",
+            {"foo": "C.4.7"},
+            section_bibkey_index={"foo": {"C.1": "C.1.3"}},
+        )
+        assert text == "literal @foo^C.1 here"
+
     def test_resolve_in_list_replaces_only_prose_fields(self) -> None:
         from pubs_emitter.builders import resolve_refs_in_list
         from pubs_emitter.types import EntrepreneurialActivity

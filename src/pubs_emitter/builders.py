@@ -269,7 +269,17 @@ def build_citation(conn: sqlite3.Connection, entry: BibEntry) -> Citation:
 # Email-safe: the regex requires `@` to NOT be preceded by a word char, so
 # `email@example.com` is left untouched.
 
-_REF_PATTERN = re.compile(r"(?<![\w])@([a-zA-Z][a-zA-Z0-9_-]*)")
+# `@id` with an optional `^SECTION` suffix that disambiguates papers that
+# appear in MULTIPLE sections. Examples:
+#   @davis2024impact          → default resolution (paper's main section, C.4)
+#   @davis2024impact^C.1      → force resolution to the C.1 (Key Works) entry
+# Section override grammar: a capital letter optionally followed by `.N`
+# (so `C`, `C.1`, `C.5`, `V.A` all match). Group 2 is None when no override.
+# Caret separator chosen so the suffix can never collide with the
+# bibkey-allowed `[a-zA-Z0-9_-]` alphabet.
+_REF_PATTERN = re.compile(
+    r"(?<![\w])@([a-zA-Z][a-zA-Z0-9_-]*)(?:\^([A-Z](?:\.\d+)?))?"
+)
 # Raw section-code syntax: `@C.16.2.1`, `@A.1`, `@C.10`, etc. — matches a
 # capital letter, dot, then one-or-more numeric segments. Disjoint from
 # `_REF_PATTERN` (which disallows dots) and from `@@` escape (different
@@ -313,26 +323,46 @@ PROSE_FIELDS_BY_TYPE: dict[str, tuple[str, ...]] = {
 
 
 def resolve_refs(
-    text: str, ref_index: dict[str, str], *, link_format: bool = False,
+    text: str, ref_index: dict[str, str], *,
+    link_format: bool = False,
+    section_bibkey_index: Optional[dict[str, dict[str, str]]] = None,
 ) -> tuple[str, list[str]]:
     """Substitute `@id` tokens in `text` with the resolved C.X.Y code.
 
     Returns `(substituted_text, unresolved_ids)`. Caller checks for non-empty
     unresolved list and decides whether to error.
 
-    `@@` → literal `@`. Word-char lookbehind keeps emails (`x@y.com`) safe.
+    Two ref syntaxes:
+
+      * `@id` — default resolution via `ref_index`. For papers, this
+        targets the main bucket (C.4 conferences, C.5 other pubs, etc.).
+      * `@id^SECTION` — override resolution. Looks `id` up in
+        `section_bibkey_index[id][SECTION]` to target a non-default
+        location. The canonical case: a paper that appears in BOTH
+        C.1 Key Works AND C.4 Conferences — `@bibkey^C.1` reaches the
+        C.1 entry; bare `@bibkey` continues to mean the C.4 entry.
+        SECTION matches `C`, `C.1`, `C.5`, `V.A`, etc.
+
+      * `@@` → literal `@`. Word-char lookbehind keeps emails
+        (`x@y.com`) safe.
 
     `link_format=True` wraps each substituted code with the sentinel pair
     `\\x01CODE\\x02` so the downstream RTF writer can convert it into a
     clickable hyperlink. Sentinels are <0x80 and survive `escape_rtf` and
     `rtf_escape_unicode` unchanged. Default `False` keeps the bare-text
     substitution useful for testing and any non-RTF consumer.
+
+    `section_bibkey_index` is optional — when None (or empty), every
+    `^SECTION` override is treated as unresolved. Callers that want
+    override support build the structured map alongside `ref_index`
+    in their prep phase (see cli.py).
     """
     if not text or "@" not in text:
         return text, []
     # Protect literal `@@` sequences.
     protected = text.replace("@@", _REF_ESCAPE_SENTINEL)
     unresolved: list[str] = []
+    section_idx = section_bibkey_index or {}
 
     def _sub_raw_code(match: "re.Match[str]") -> str:
         # Raw section code — no lookup needed; bookmark may not exist.
@@ -343,6 +373,21 @@ def resolve_refs(
 
     def _sub(match: "re.Match[str]") -> str:
         ref_id = match.group(1)
+        section_override = match.group(2)  # None when no `^SECTION` tail
+        # Section-override resolution: must land in the structured index.
+        # Falling back to the flat ref_index would silently mask a typo
+        # in either the bibkey or the section name; the user asked for
+        # a specific section, so honor that or report unresolved.
+        if section_override is not None:
+            per_section = section_idx.get(ref_id) or {}
+            code = per_section.get(section_override)
+            if code is not None:
+                if link_format:
+                    return f"{REF_LINK_OPEN}{code}{REF_LINK_CLOSE}"
+                return code
+            unresolved.append(f"{ref_id}^{section_override}")
+            return match.group(0)
+        # Default resolution path (no override).
         if ref_id in ref_index:
             code = ref_index[ref_id]
             if link_format:
@@ -363,10 +408,15 @@ def resolve_refs(
 def resolve_refs_in_list(
     items: list, type_name: str, ref_index: dict[str, str],
     *, link_format: bool = False,
+    section_bibkey_index: Optional[dict[str, dict[str, str]]] = None,
 ) -> tuple[list, list[tuple[int, str]]]:
     """Apply `resolve_refs` to each item's prose fields per
     `PROSE_FIELDS_BY_TYPE[type_name]`. Returns `(new_items, errors)` where
     `errors` is `[(item_index, unresolved_id), ...]`.
+
+    `section_bibkey_index` is passed through to `resolve_refs` to
+    support `@bibkey^SECTION` overrides; see that function's docstring
+    for the resolution rules.
 
     NamedTuple `_replace()` is used so the originals aren't mutated and
     the substitution is purely a transformation step.
@@ -384,6 +434,7 @@ def resolve_refs_in_list(
                 continue
             new_text, unresolved = resolve_refs(
                 current, ref_index, link_format=link_format,
+                section_bibkey_index=section_bibkey_index,
             )
             for u in unresolved:
                 errors.append((i, u))
@@ -1332,6 +1383,147 @@ def _warn_section_prose_word_counts(section_prose: dict[str, list[str]]) -> None
                 "Trim before final submission.",
                 code, n, cap,
             )
+
+
+# Per-column required + optional keys for a tabular-directive schema
+# entry. Validated at load time so a malformed schema file fails fast
+# during build, not at directive-emit time. See assets/table-schemas.yaml
+# for the canonical shape + the design context in
+# docs/design/markdown-master-outline-refactor.md §Q6.
+_TABLE_SCHEMA_REQUIRED_TOP: tuple[str, ...] = ("source", "code_key", "columns")
+_TABLE_SCHEMA_OPTIONAL_TOP: tuple[str, ...] = ("bookmark_column",)
+_TABLE_SCHEMA_REQUIRED_COL: tuple[str, ...] = ("field", "header", "width")
+_TABLE_SCHEMA_OPTIONAL_COL: tuple[str, ...] = ("escape",)
+# Whitelist of supported escape policies. Add new ones here AND extend
+# the dispatcher in `directives._make_tabular_directive` in the same
+# commit.
+_TABLE_SCHEMA_ESCAPE_POLICIES: tuple[str, ...] = ("escape_rtf", "raw")
+
+
+def _validate_table_schema_entry(name: str, entry: object) -> dict:
+    """Validate one top-level entry in `assets/table-schemas.yaml`.
+
+    Returns the validated dict (typed view). Fails-loud (sys.exit(1))
+    on any structural problem with the schema entry — a misconfigured
+    schema file is a build-fatal error, not a render-time surprise.
+    """
+    if not isinstance(entry, dict):
+        log.error(
+            "table-schemas %s: must be a mapping; got %s",
+            name, type(entry).__name__,
+        )
+        sys.exit(1)
+    unknown_top = set(entry.keys()) - set(
+        _TABLE_SCHEMA_REQUIRED_TOP + _TABLE_SCHEMA_OPTIONAL_TOP
+    )
+    if unknown_top:
+        log.error(
+            "table-schemas %s: unknown top-level key(s) %s; allowed: %s",
+            name, sorted(unknown_top),
+            sorted(_TABLE_SCHEMA_REQUIRED_TOP + _TABLE_SCHEMA_OPTIONAL_TOP),
+        )
+        sys.exit(1)
+    for req in _TABLE_SCHEMA_REQUIRED_TOP:
+        if req not in entry:
+            log.error("table-schemas %s: missing required top-level key %r", name, req)
+            sys.exit(1)
+    if not isinstance(entry["columns"], list) or not entry["columns"]:
+        log.error("table-schemas %s: 'columns' must be a non-empty list", name)
+        sys.exit(1)
+    bookmark_column = entry.get("bookmark_column")
+    if bookmark_column is not None:
+        if not isinstance(bookmark_column, int):
+            log.error(
+                "table-schemas %s: 'bookmark_column' must be an int; got %r",
+                name, bookmark_column,
+            )
+            sys.exit(1)
+        if not (0 <= bookmark_column < len(entry["columns"])):
+            log.error(
+                "table-schemas %s: 'bookmark_column' %d out of range "
+                "(have %d columns)", name, bookmark_column, len(entry["columns"]),
+            )
+            sys.exit(1)
+    for idx, col in enumerate(entry["columns"]):
+        if not isinstance(col, dict):
+            log.error(
+                "table-schemas %s column %d: must be a mapping; got %s",
+                name, idx, type(col).__name__,
+            )
+            sys.exit(1)
+        unknown_col = set(col.keys()) - set(
+            _TABLE_SCHEMA_REQUIRED_COL + _TABLE_SCHEMA_OPTIONAL_COL
+        )
+        if unknown_col:
+            log.error(
+                "table-schemas %s column %d: unknown key(s) %s; allowed: %s",
+                name, idx, sorted(unknown_col),
+                sorted(_TABLE_SCHEMA_REQUIRED_COL + _TABLE_SCHEMA_OPTIONAL_COL),
+            )
+            sys.exit(1)
+        for req in _TABLE_SCHEMA_REQUIRED_COL:
+            if req not in col:
+                log.error(
+                    "table-schemas %s column %d: missing required key %r",
+                    name, idx, req,
+                )
+                sys.exit(1)
+        if not isinstance(col["width"], int) or col["width"] <= 0:
+            log.error(
+                "table-schemas %s column %d: 'width' must be a positive int; got %r",
+                name, idx, col["width"],
+            )
+            sys.exit(1)
+        escape = col.get("escape", "escape_rtf")
+        if escape not in _TABLE_SCHEMA_ESCAPE_POLICIES:
+            log.error(
+                "table-schemas %s column %d: 'escape' %r not in %s",
+                name, idx, escape, list(_TABLE_SCHEMA_ESCAPE_POLICIES),
+            )
+            sys.exit(1)
+    return entry
+
+
+def load_table_schemas(path: Optional[str]) -> dict[str, dict]:
+    """Load `assets/table-schemas.yaml` into a validated `{name: schema}` dict.
+
+    Missing file is permissive (returns empty dict) — directive
+    registration just won't add any tabular entries, and any
+    `!FOO_TABLE!` directive referenced in the outline file will
+    fail-loud at walker-emit time via the unknown-directive path.
+
+    Malformed file is build-fatal: every entry runs through
+    `_validate_table_schema_entry` before returning. The validation
+    pass catches typos in field names, out-of-range bookmark_column
+    indexes, unsupported escape policies, and missing required keys.
+
+    Design: docs/design/markdown-master-outline-refactor.md §Q6.
+    """
+    if not path or not os.path.exists(path):
+        return {}
+    log.info("Loading table schemas from %s", path)
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        log.error(
+            "table-schemas root must be a mapping; got %s", type(data).__name__,
+        )
+        sys.exit(1)
+    return {name: _validate_table_schema_entry(name, entry) for name, entry in data.items()}
+
+
+def load_outline(path: Optional[str]) -> str:
+    """Load the markdown-master walker outline file (raw text).
+
+    Missing file is permissive (returns empty string) — the walker
+    then has nothing to emit, which is the correct Phase-1 / pre-
+    enablement default.
+    """
+    if not path or not os.path.exists(path):
+        return ""
+    log.info("Loading walker outline from %s", path)
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
 
 
 def load_non_scholar(path: Optional[str]) -> dict:

@@ -234,6 +234,44 @@ def _num_papers_with_undergraduate_coauthors(ctx: StatsContext) -> int:
     )
 
 
+@register("NUM_UNDERGRADUATE_COAUTHORS")
+def _num_undergraduate_coauthors(ctx: StatsContext) -> int:
+    """Distinct undergraduate (U) co-authors across all peer-reviewed
+    publications. Companion to NUM_PAPERS_WITH_UNDERGRADUATE_COAUTHORS:
+    that one counts papers, this counts people. Useful for B-section
+    prose phrasings like "Davis mentored #NUM_UNDERGRADUATE_COAUTHORS
+    undergraduates who co-authored peer-reviewed work."
+
+    Distinctness uses the normalized name string registered in the
+    students table (case + whitespace preserved as stored). A student
+    with multiple aliases ("Wenxin Jiang" / "Jiang, Wenxin") could
+    double-count IF they appear under different alias forms across
+    different bib entries; this is the same hazard `_is_student_led` and
+    related helpers carry. Acceptable in practice — the students table
+    seeds both forms, and the alias variants disambiguate the same
+    person consistently within one bib field.
+    """
+    if ctx.conn is None:
+        return 0
+    seen: set[str] = set()
+    for cit in _all_publications(ctx):
+        if not _is_peer_reviewed(cit):
+            continue
+        bib = ctx.title_to_bib.get(normalize_title(cit.title))
+        if not bib:
+            continue
+        raw_authors = bib.get("author", "") or ""
+        if not raw_authors:
+            continue
+        for name in raw_authors.split(" and "):
+            name = name.strip()
+            if not name:
+                continue
+            if lookup_student_type(ctx.conn, name) == "U":
+                seen.add(name)
+    return len(seen)
+
+
 @register("NUM_PATENTS")
 def _num_patents(ctx: StatsContext) -> int:
     """Count of issued patents in the C.19 list."""

@@ -44,6 +44,7 @@ from .builders import (
     build_under_review,
     load_candidate_information,
     load_non_scholar,
+    load_outline,
     load_section_prose,
     validate_non_scholar,
     _warn_section_prose_word_counts,
@@ -461,6 +462,38 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
             "polish passes without grep'ing for warnings."
         ),
     )
+    parser.add_argument(
+        "--use-markdown-master", action="store_true",
+        help=(
+            "Engage the markdown-master walker outline refactor "
+            "(docs/design/markdown-master-outline-refactor.md). When "
+            "set, sections listed in the --outline file emit via the "
+            "walker; matching entries in the legacy emit-order block "
+            "are skipped. Phase 2: C.19 Patents pilot. OFF by default."
+        ),
+    )
+    parser.add_argument(
+        "--outline", default="assets/outline.md",
+        help=(
+            "Path to the markdown-master walker outline file. The "
+            "walker reads this file when --use-markdown-master is set; "
+            "headings here become the document outline, !DIRECTIVE! "
+            "lines dispatch to registered renderers. Default: "
+            "assets/outline.md."
+        ),
+    )
+    parser.add_argument(
+        "--table-schemas", default="assets/table-schemas.yaml",
+        help=(
+            "Path to the declarative tabular-directive schema file. "
+            "Each entry auto-registers as a `!NAME!` directive whose "
+            "renderer emits an RtfTable from the row data on "
+            "RenderContext. Adding a new simple-table section requires "
+            "only (a) a YAML stanza here and (b) a `!DIRECTIVE!` line "
+            "in the outline file — no Python edit. Default: "
+            "assets/table-schemas.yaml."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -843,6 +876,36 @@ def main(argv: Optional[list[str]] = None) -> None:
         from .rtf import index_awards, index_student_awards
 
         ref_index: dict[str, str] = {}
+        # Per-bibkey section-override map for `@bibkey^SECTION` resolution.
+        # Populated by the bib citation registration (paper main bucket)
+        # and the Key Works registration (papers re-emitted at C.1). When
+        # a paper appears in both a main bucket and Key Works, both
+        # entries land here:
+        #   section_bibkey_index["davis2024impact"] = {
+        #       "C.4": "C.4.7",   # the main paper entry
+        #       "C.1": "C.1.3",   # the Key Works re-emit
+        #   }
+        # Bare `@davis2024impact` still resolves via ref_index → "C.4.7";
+        # `@davis2024impact^C.1` resolves via this map → "C.1.3".
+        section_bibkey_index: dict[str, dict[str, str]] = {}
+
+        def _record_section_bibkey(bib_key: str, code: str) -> None:
+            """Record `bib_key` as a known location at the section
+            prefix derived from `code` (e.g., "C.4.7" → prefix "C.4")."""
+            if not bib_key or not code:
+                return
+            # Section prefix is everything up to (but not including) the
+            # last `.N` segment. For "C.4.7" → "C.4". For "C.1.3" → "C.1".
+            # For "Section V, A.1.N|V.A.1.N" — pipe-form codes — skip
+            # since under-review entries aren't paper re-emits; the
+            # bibkey-vs-V.A.1 disambiguation problem doesn't arise here.
+            if "|" in code:
+                return
+            if "." not in code:
+                return
+            prefix = code.rsplit(".", 1)[0]
+            section_bibkey_index.setdefault(bib_key, {})[prefix] = code
+
         seen_ids: set[str] = set()
 
         def _register(item: object, code: str) -> None:
@@ -884,6 +947,7 @@ def main(argv: Optional[list[str]] = None) -> None:
                 sys.exit(1)
             seen_ids.add(bib_key)
             ref_index[bib_key] = code
+            _record_section_bibkey(bib_key, code)
 
         # Under-review entries live under Section V; the bare code "A.1.N"
         # collides with Section III's A.1 Identifiers entries (now also
@@ -897,6 +961,25 @@ def main(argv: Optional[list[str]] = None) -> None:
             bare = f"{ur_code}.{idx}"
             _register(ur, f"Section V, {bare}|V.{bare}")
         _register_simple(key_works, "Key Works")
+        # Key Works are re-emits of papers also present in C.4 / C.5 /
+        # etc. Add a `@bibkey^C.1` entry to the section override index
+        # for every key-work whose underlying bib entry resolves: each
+        # KeyWork.citation.title maps via bib_entries to a bibkey, and
+        # that bibkey is the same one used to register the C.4/C.5 entry
+        # above. Without this loop, `@davis2024impact` would still
+        # resolve to the C.4 emit (the only entry in ref_index) and
+        # there would be no way to reach the C.1 location.
+        kw_section_code = SECTION_CODES["Key Works"]
+        title_to_bibkey: dict[str, str] = {}
+        for entry in entries:
+            t = entry.get("title", "") or ""
+            bk = str(entry.get("ID", "") or "")
+            if t and bk:
+                title_to_bibkey[normalize_title(t)] = bk
+        for idx, kw in enumerate(key_works, 1):
+            bib_key = title_to_bibkey.get(normalize_title(kw.citation.title))
+            if bib_key:
+                _record_section_bibkey(bib_key, f"{kw_section_code}.{idx}")
         _register_simple(invited_talks, "Invited Talks")
         _register_simple(leadership_roles, "Leadership Roles")
         _register_simple(media_appearances, "Media Appearances")
@@ -948,8 +1031,11 @@ def main(argv: Optional[list[str]] = None) -> None:
         def _resolve(items: list, type_name: str) -> list:
             # link_format=True wraps each resolved code with sentinel chars
             # so write_rtf's final pass can convert them to RTF hyperlinks.
+            # section_bibkey_index enables `@bibkey^C.1` overrides for
+            # papers that appear in both a main section and Key Works.
             new_items, errors = resolve_refs_in_list(
                 items, type_name, ref_index, link_format=True,
+                section_bibkey_index=section_bibkey_index,
             )
             for idx, unresolved in errors:
                 _all_errors.append((type_name, idx, unresolved))
@@ -1007,8 +1093,10 @@ def main(argv: Optional[list[str]] = None) -> None:
                 for name in sorted(unresolved_macros):
                     _unresolved_macros.append((code, name))
                 # @-ref resolution: bibkey / grant-id / raw section code.
+                # section_bibkey_index enables `@bibkey^C.1` overrides.
                 new_p, unresolved = resolve_refs(
                     p, ref_index, link_format=True,
+                    section_bibkey_index=section_bibkey_index,
                 )
                 for u in unresolved:
                     _all_errors.append(("SectionProse", code, u))
@@ -1060,8 +1148,13 @@ def main(argv: Optional[list[str]] = None) -> None:
 
         if _all_errors:
             for type_name, idx, unresolved in _all_errors:
+                # `idx` is an int for list-item paths (Grant[3], Student[7])
+                # and a string code for the section-prose path
+                # (SectionProse[B.1]); `%s` accommodates both. Hard-coded
+                # `%d` here previously crashed the log call itself on every
+                # section-prose unresolved ref, masking the underlying typo.
                 log.error(
-                    "Unresolved @id ref @%s in %s[%d]; known ids: %s",
+                    "Unresolved @id ref @%s in %s[%s]; known ids: %s",
                     unresolved, type_name, idx,
                     sorted(ref_index.keys()) or "(none)",
                 )
@@ -1114,6 +1207,12 @@ def main(argv: Optional[list[str]] = None) -> None:
             section_prose=section_prose,
             pending_proposals=pending_proposals,
             sections_filter=_parse_sections_filter(args.sections),
+            use_markdown_master=args.use_markdown_master,
+            ref_index=ref_index,
+            macros=macros,
+            outline_text=load_outline(args.outline or None) if args.use_markdown_master else "",
+            table_schemas_path=args.table_schemas or None,
+            section_bibkey_index=section_bibkey_index,
         )
     finally:
         conn.close()

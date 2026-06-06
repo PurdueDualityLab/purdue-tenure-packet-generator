@@ -217,6 +217,50 @@ class TestMacroComputations:
         # grad-only and no-students excluded (no U); cve-with-undergrad excluded (not peer reviewed)
         assert compute_all(ctx)["NUM_PAPERS_WITH_UNDERGRADUATE_COAUTHORS"] == "2"
 
+    def test_num_undergraduate_coauthors_counts_distinct_people(self) -> None:
+        """Distinct count of U-students seen across peer-reviewed papers.
+        Companion to NUM_PAPERS_WITH_UNDERGRADUATE_COAUTHORS (which counts
+        papers). Repeated co-authorship by the same student counts ONCE;
+        CVE-only co-authors are excluded (not peer reviewed)."""
+        conn = _conn_with_students({
+            "Grad Person": "G",
+            "Undergrad One": "U",
+            "Undergrad Two": "U",
+            "Undergrad Three (CVE only)": "U",
+        })
+        cits = [
+            _cit(rank="Rank 1", title="paper-a"),
+            _cit(rank="Workshop", title="paper-b"),
+            _cit(rank="Rank 2", title="paper-c"),
+            _cit(rank="Rank 1", title="paper-d-repeat"),
+            _cit(rank="CVE", title="cve-only-u"),
+        ]
+        bib_entries = [
+            # paper-a: Undergrad One (peer-reviewed) → counted
+            _bib("paper-a", "Other Davis and Undergrad One and Grad Person"),
+            # paper-b: Undergrad Two (peer-reviewed) → counted
+            _bib("paper-b", "Undergrad Two and Other Davis"),
+            # paper-c: no undergrads
+            _bib("paper-c", "Grad Person and Other Davis"),
+            # paper-d-repeat: Undergrad One again → already in the set
+            _bib("paper-d-repeat", "Undergrad One and Other Davis"),
+            # cve-only-u: Undergrad Three but NOT peer-reviewed → excluded
+            _bib("cve-only-u", "Undergrad Three (CVE only) and Other Davis"),
+        ]
+        ctx = StatsContext(
+            publications={"Journals": cits},
+            bib_entries=bib_entries,
+            conn=conn,
+        )
+        # Distinct U-students across peer-reviewed: {Undergrad One, Undergrad Two} = 2.
+        assert compute_all(ctx)["NUM_UNDERGRADUATE_COAUTHORS"] == "2"
+
+    def test_num_undergraduate_coauthors_zero_when_no_conn(self) -> None:
+        """No SQLite connection → no student-type lookups → 0 by safety
+        (same posture as `_has_undergraduate_coauthor`)."""
+        ctx = StatsContext(publications={}, conn=None)
+        assert compute_all(ctx)["NUM_UNDERGRADUATE_COAUTHORS"] == "0"
+
     def test_num_patents_counts_patent_list(self) -> None:
         patents = [
             MagicMock(spec=Patent), MagicMock(spec=Patent), MagicMock(spec=Patent),

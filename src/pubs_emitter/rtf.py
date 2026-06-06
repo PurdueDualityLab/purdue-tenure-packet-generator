@@ -1362,6 +1362,11 @@ def _format_grant_amounts(grant: Grant) -> str:
     Multi-institution NSF Collab awards still show the full total here;
     Davis's credited share is conveyed via the percentage on the role
     line below.
+
+    Same convention for C.12 gifts: the cell shows the gross gift, and
+    the role-line percentage carries the candidate's share. The section
+    total at the top of the section sums credited share — see the
+    GRANT_TOTAL_LABELS map for the explicit labeling.
     """
     return _format_usd(grant.total_amount)
 
@@ -2994,6 +2999,12 @@ def write_rtf(
     section_prose: Optional[dict[str, list[str]]] = None,
     pending_proposals: Optional[list[Grant]] = None,
     sections_filter: Optional[set[str]] = None,
+    use_markdown_master: bool = False,
+    ref_index: Optional[dict[str, str]] = None,
+    macros: Optional[dict[str, str]] = None,
+    outline_text: str = "",
+    table_schemas_path: Optional[str] = None,
+    section_bibkey_index: Optional[dict[str, dict[str, str]]] = None,
 ) -> None:
     log.info("Generating RTF file: %s", path)
     paper_index = paper_index or {}
@@ -3049,13 +3060,75 @@ def write_rtf(
         i: f"Section V, {ur_code}.{i + 1}|V.{ur_code}.{i + 1}"
         for i in range(len(under_review))
     }
+    # Markdown-master migration set. Section names whose emit has
+    # migrated to the walker (and is therefore SKIPPED in the legacy
+    # emit-order block when `--use-markdown-master` is set). Grows one
+    # entry per phase of the refactor.
+    #   Phase 2 (2026-06): Patents
+    #   Phase 3 (planned): Grants, Students, Service, Awards, …
+    # Design: docs/design/markdown-master-outline-refactor.md.
+    _MIGRATED_SECTIONS: set[str] = {"Patents"} if use_markdown_master else set()
+
+    # When the walker is engaged, build the RenderContext + register
+    # the tabular directives ONCE up front. The walker is invoked
+    # inline at each migrated section's legacy emit site (NOT at the
+    # end of the emit-order block) so document ordering is preserved
+    # while sections migrate one at a time. `_walker_ctx` is None when
+    # the flag is off; the inline call sites guard on `_MIGRATED_SECTIONS`
+    # membership so the None case is unreachable on the walker path.
+    _walker_ctx: Optional["RenderContext"] = None  # noqa: F821 — local fwd-ref
+    if use_markdown_master:
+        from .directives import register_tabular_directives
+        from .section_walker import RenderContext, walk_section_prose  # noqa: F401
+        register_tabular_directives(table_schemas_path)
+        _walker_ctx = RenderContext(
+            ref_index=dict(ref_index or {}),
+            macros=dict(macros or {}),
+            section_bibkey_index={
+                k: dict(v) for k, v in (section_bibkey_index or {}).items()
+            },
+            publications=publications,
+            patents=patents,
+            grants_as_pi=grants_as_pi,
+            grants_as_co_pi=grants_as_co_pi,
+            gifts=gifts,
+            internal_grants=internal_grants,
+            pending_proposals=pending_proposals,
+            graduate_students=graduate_students,
+            postdocs_visiting=postdocs_visiting,
+            undergraduate_students=undergraduate_students,
+            student_awards=student_awards,
+            invited_talks=invited_talks,
+            leadership_roles=leadership_roles,
+            media_appearances=media_appearances,
+            conference_presentations=conference_presentations,
+            software_products=software_products,
+            undergrad_pathways=undergrad_pathways,
+            undergrad_products=undergrad_products,
+            entrepreneurial_activities=entrepreneurial_activities,
+            technology_transfer=technology_transfer,
+            course_development=course_development,
+            courses_taught=courses_taught,
+            university_service=university_service,
+            profession_service=profession_service,
+            national_service=national_service,
+            other_service=other_service,
+            under_review=under_review,
+            candidate_info=candidate_info,
+            paper_index=paper_index,
+        )
+
     # Per-section emission filter (set by --sections CLI flag). Returns
     # True for every section when no filter is supplied (default — emit
     # everything). When a filter is set, a section emits iff its code is
     # in the filter OR any code in the filter is a parent of its code
     # (so `--sections C.16` also emits the C.16.2.3 / C.16.2.4 / C.16.3.3
     # sub-sections, useful for "give me all of mentoring" requests).
+    # Sections in `_MIGRATED_SECTIONS` are unconditionally suppressed
+    # so the walker is the sole emit path for them.
     def _emit(section_key: Section) -> bool:
+        if section_key in _MIGRATED_SECTIONS:
+            return False
         if sections_filter is None:
             return True
         code = SECTION_CODES[section_key]
@@ -3326,8 +3399,20 @@ def write_rtf(
             render_course_development_section(course_development, out)
         # Subgroup: TECHNOLOGY TRANSFER frames C.19-C.22 (patents,
         # entrepreneurial activities, technology transfer, software
-        # products).
-        if _emit("Patents"):
+        # products). The subgroup heading emits regardless of the
+        # Patents migration so the downstream C.20-C.22 sections still
+        # appear under their banner.
+        if "Patents" in _MIGRATED_SECTIONS:
+            # Walker emits C.19 inline so the subgroup banner + C.19
+            # + the legacy-emit C.20-C.22 land in the canonical order.
+            # Phase 2: outline contains only the C.19 stanza so passing
+            # the full text is equivalent to passing a per-section
+            # slice. Phase 3 will add a per-code stanza-extraction
+            # helper when multiple stanzas live in the outline.
+            assert _walker_ctx is not None  # invariant: built above when flag set
+            _emit_subgroup_heading(out, "TECHNOLOGY TRANSFER")
+            walk_section_prose(outline_text, _walker_ctx, out)
+        elif _emit("Patents"):
             _emit_subgroup_heading(out, "TECHNOLOGY TRANSFER")
             render_patents_section(patents, out)
         if _emit("Entrepreneurial Activities"):

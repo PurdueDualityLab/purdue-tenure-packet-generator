@@ -268,13 +268,24 @@ SECTION_HEADINGS: dict[Section, str] = {
     "Pending Proposals": "Pending proposals.",
 }
 
-# Per-section "Total amount of ... :" label rendered above the numbered list.
+# Per-section "Total ... :" label rendered above the numbered list.
 # Sections not in this map don't render a total.
+#
+# Wording reflects what the total IS: the sum of `my_amount` (credited
+# share) across all entries in the section. The row cells display the
+# GROSS award amount (`total_amount`); the difference between gross and
+# credited is conveyed by the role-line percentage on each entry. The
+# section total is the right number for "what counts toward the
+# candidate's tenure dossier" and is the same value B.1's
+# `#TOTAL_EXTERNAL_FUNDING` macro consumes. "Candidate share" in the
+# label disambiguates from a casual reader's sum-of-displayed-amounts —
+# without the qualifier the totals look off whenever a row carries a
+# Co-PI percentage less than 100%.
 GRANT_TOTAL_LABELS: dict[Section, str] = {
-    "Grants PI": "Total amount of external funding as PI",
-    "Grants Co-PI": "Total amount of external funding as Co-PI or Co-I",
-    "Gifts": "Total amount of external gifts and voluntary support",
-    "Internal Grants": "Total amount of internal funding",
+    "Grants PI": "Total candidate share of external funding as PI",
+    "Grants Co-PI": "Total candidate share of external funding as Co-PI or Co-I",
+    "Gifts": "Total candidate share of external gifts and voluntary support",
+    "Internal Grants": "Total candidate share of internal funding",
 }
 
 # Sections whose entries render the tier marker with a "Venue rank: " prefix.
